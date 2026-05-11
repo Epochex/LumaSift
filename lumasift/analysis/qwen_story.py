@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 
+QWEN_STORY_PROMPT_VERSION = "qwen-story-v1"
 QWEN_STORY_PROMPT = """
 Act as a strict street/documentary photo editor. Rank selection value by story, human presence,
 decisive moment, emotional impact, visual tension, and editing potential. Technical flaws are
@@ -47,13 +49,42 @@ Return compact valid JSON only:
 """.strip()
 
 
-def _extract_message(response: dict[str, Any]) -> str:
-    choice = response.get("choices", [{}])[0]
-    message = choice.get("message", {})
-    content = message.get("content") or ""
-    if content.strip():
+def extract_qwen_response_text(response: Mapping[str, Any]) -> str:
+    candidates: list[Any] = [response.get("output_text")]
+    choices = response.get("choices")
+    if isinstance(choices, Sequence) and not isinstance(choices, (str, bytes, bytearray)):
+        for choice in choices:
+            if not isinstance(choice, Mapping):
+                continue
+            message = choice.get("message")
+            if isinstance(message, Mapping):
+                candidates.extend([message.get("content"), message.get("reasoning_content")])
+            candidates.extend([choice.get("text"), choice.get("content")])
+
+    for candidate in candidates:
+        text = _content_to_text(candidate).strip()
+        if text:
+            return text
+    raise ValueError("Qwen response did not contain text content")
+
+
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
         return content
-    return message.get("reasoning_content") or ""
+    if isinstance(content, Mapping):
+        for key in ("text", "content", "reasoning_content"):
+            value = content.get(key)
+            if isinstance(value, str):
+                return value
+        return ""
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes, bytearray)):
+        parts = [_content_to_text(item) for item in content]
+        return "\n".join(part for part in parts if part)
+    return ""
+
+
+def _extract_message(response: dict[str, Any]) -> str:
+    return extract_qwen_response_text(response)
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:

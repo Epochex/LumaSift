@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -35,10 +36,50 @@ def _load_raw(path: Path) -> LoadedImage:
     except ImportError as exc:
         raise RuntimeError("rawpy is required for ARW files. Install lumasift[raw].") from exc
 
+    errors: list[str] = []
     with rawpy.imread(str(path)) as raw:
-        rgb = raw.postprocess(use_camera_wb=True, output_bps=8)
+        try:
+            thumb = raw.extract_thumb()
+            if thumb.format == rawpy.ThumbFormat.JPEG:
+                with Image.open(BytesIO(thumb.data)) as image:
+                    rgb_image = ImageOps.exif_transpose(image).convert("RGB")
+                    rgb = np.asarray(rgb_image, dtype=np.uint8)
+                    width, height = rgb_image.size
+                return LoadedImage(
+                    path=path,
+                    kind="raw",
+                    rgb=rgb,
+                    width=width,
+                    height=height,
+                    errors=errors,
+                    exif={"raw_preview_source": "embedded_jpeg"},
+                )
+            if thumb.format == rawpy.ThumbFormat.BITMAP:
+                rgb = np.asarray(thumb.data, dtype=np.uint8)
+                height, width = rgb.shape[:2]
+                return LoadedImage(
+                    path=path,
+                    kind="raw",
+                    rgb=rgb,
+                    width=width,
+                    height=height,
+                    errors=errors,
+                    exif={"raw_preview_source": "embedded_bitmap"},
+                )
+        except Exception as exc:  # noqa: BLE001 - fallback to RAW postprocess is expected.
+            errors.append(f"embedded_preview_failed: {exc}")
+
+        rgb = raw.postprocess(use_camera_wb=True, output_bps=8, half_size=True)
     height, width = rgb.shape[:2]
-    return LoadedImage(path=path, kind="raw", rgb=rgb.astype(np.uint8), width=width, height=height)
+    return LoadedImage(
+        path=path,
+        kind="raw",
+        rgb=rgb.astype(np.uint8),
+        width=width,
+        height=height,
+        errors=errors,
+        exif={"raw_preview_source": "postprocess_half_size"},
+    )
 
 
 def load_image(path: Path) -> LoadedImage:

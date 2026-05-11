@@ -29,7 +29,11 @@ class RunState:
     def save_checkpoint(self, data: dict[str, Any]) -> None:
         tmp_path = self.checkpoint_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp_path.replace(self.checkpoint_path)
+        try:
+            tmp_path.replace(self.checkpoint_path)
+        except PermissionError:
+            self.checkpoint_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.unlink(missing_ok=True)
 
     def load_checkpoint(self) -> dict[str, Any] | None:
         if not self.checkpoint_path.exists():

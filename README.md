@@ -23,7 +23,9 @@ Implemented:
   - `technical_quality_score`
   - `final_selection_score`
 - Optional Qwen vision backend scaffold for Top-N deep analysis
-- Multi-key API rotation scaffold through environment variables
+- Multi-key API rotation through environment variables
+- Persistent Qwen response cache to avoid repeat API spend
+- Selected-photo editing advice in JSON and Markdown
 - CSV and JSON reports
 - Top-50 contact sheet
 - Demo image generator
@@ -59,10 +61,36 @@ outputs/runs/<run_id>/events.jsonl
 outputs/runs/<run_id>/checkpoint.json
 ```
 
+## Run A Limited Local Sample
+
+Use this for real culling tests without adding private photos to the repository. The script stages only the requested number of files under `outputs/local_sample`, runs the normal pipeline, rewrites reports back to the original photo paths, and removes staging files unless `--keep-staging` is passed.
+
+```bash
+python scripts/run_local_sample.py --input "D:/Photos/trip" --limit 50 --output ./outputs/local_sample
+```
+
+For a tiny smoke run:
+
+```bash
+python scripts/run_local_sample.py --input "D:/Photos/trip" --limit 10 --run-id trip-smoke
+```
+
+For the current Sony card folder:
+
+```bash
+python -m lumasift.app.main --input D:/DCIM --output ./outputs/dcim-local-10 --mode local_only --limit 10 --selected-ranks 1-5 --run-id dcim-local-10
+```
+
+For a larger local stability test:
+
+```bash
+python -m lumasift.app.main --input D:/DCIM --output ./outputs/dcim-local-200 --mode local_only --limit 200 --selected-ranks 1-10 --run-id dcim-local-200
+```
+
 ## Run On A Folder
 
 ```bash
-python -m lumasift.app.main --input "D:/Photos/trip" --output ./outputs --mode local_only
+python -m lumasift.app.main --input "D:/Photos/trip" --output ./outputs/trip --mode local_only --run-id trip-local
 ```
 
 ## Qwen Vision Mode
@@ -81,10 +109,35 @@ LUMASIFT_TOP_N_API_ANALYSIS=20
 Then run:
 
 ```bash
-python -m lumasift.app.main --input "./sample_photos" --output ./outputs --mode qwen_vision --top-n 20
+python -m lumasift.app.main --input "D:/Photos/trip" --output ./outputs/trip-qwen --mode qwen_vision --top-n 20 --run-id trip-qwen
 ```
 
 The pipeline first ranks locally, then sends only Top-N JPEG previews to Qwen for deeper story/editing analysis.
+
+For a cost-controlled real-photo smoke test:
+
+```bash
+python -m lumasift.app.main --input D:/DCIM --output ./outputs/dcim-qwen-10-top3 --mode qwen_vision --limit 10 --top-n 3 --selected-ranks 1-3 --run-id dcim-qwen-10-top3
+```
+
+Qwen responses are cached under the output folder. Re-running the same preview/model/prompt combination should reuse cached responses instead of spending API credits again.
+
+## Selected Editing Advice
+
+Use `--selected-ranks` or `--selected-paths` to generate concrete editing plans:
+
+```bash
+python -m lumasift.app.main --input D:/DCIM --output ./outputs/dcim-edit --mode local_only --limit 50 --selected-ranks 1,3,5-8
+```
+
+Expected additional outputs:
+
+```text
+outputs/.../selected_editing_advice.json
+outputs/.../selected_editing_advice.md
+```
+
+The advice includes recommended style, Lightroom-like global parameters, crop strategy, local dodge/burn actions, B&W/color recommendation, and grain/sharpness/motion-blur handling.
 
 ## Tests
 

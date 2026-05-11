@@ -4,8 +4,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from lumasift.analysis.editing_advice import build_selected_editing_advice
 from lumasift.analysis.local_story import analyze_local_story_proxy
-from lumasift.analysis.qwen_story import QWEN_STORY_PROMPT, merge_qwen_story_analysis
+from lumasift.analysis.qwen_story import QWEN_STORY_PROMPT, QWEN_STORY_PROMPT_VERSION, merge_qwen_story_analysis
 from lumasift.analysis.scoring import rank_records
 from lumasift.core.config import Settings
 from lumasift.core.keyring import ApiKeyRing
@@ -17,6 +18,7 @@ from lumasift.analysis.qwen_client import QwenVisionClient
 from lumasift.reports.contact_sheet import write_contact_sheet
 from lumasift.reports.csv_report import write_csv_report
 from lumasift.reports.json_report import write_json_report
+from lumasift.reports.markdown_report import write_selected_editing_advice_markdown
 
 
 @dataclass
@@ -49,9 +51,23 @@ class LumaSiftHarness:
         self.state = RunState(self.run_dir)
 
     def run(self) -> HarnessResult:
-        self.state.append_event("run_started", mode=self.settings.ai_mode)
-        photos = discover_photos(self.settings.input_dir, self.settings.supported_extensions)
-        self.state.append_event("manifest_created", count=len(photos), input_dir=str(self.settings.input_dir))
+        self.state.append_event("run_started", mode=self.settings.ai_mode, limit=self.settings.limit)
+        photos = discover_photos(self.settings.input_dir, self.settings.supported_extensions, limit=self.settings.limit)
+        self.state.append_event(
+            "manifest_created",
+            count=len(photos),
+            input_dir=str(self.settings.input_dir),
+            limit=self.settings.limit,
+        )
+
+        resume_from_index = 0
+        if self.settings.resume:
+            checkpoint = self.state.load_checkpoint()
+            if checkpoint is None:
+                self.state.append_event("resume_requested_but_no_checkpoint")
+            else:
+                resume_from_index = max(0, int(checkpoint.get("last_index", 0)))
+                self.state.append_event("run_resumed", last_index=resume_from_index)
 
         records: list[dict] = []
         failed = 0
@@ -60,6 +76,8 @@ class LumaSiftHarness:
             if stop_file.exists():
                 self.state.append_event("run_stopped_by_file", stop_file=str(stop_file))
                 break
+            if index <= resume_from_index:
+                continue
             try:
                 image = load_image(photo.path)
                 record = analyze_local_story_proxy(image)
@@ -94,6 +112,8 @@ class LumaSiftHarness:
         report_csv = self.settings.output_dir / "report.csv"
         report_json = self.settings.output_dir / "report.json"
         contact_sheet = self.settings.output_dir / "contact_sheet_top50.jpg"
+        selected_advice_json = self.settings.output_dir / "selected_editing_advice.json"
+        selected_advice_md = self.settings.output_dir / "selected_editing_advice.md"
         write_csv_report(report_csv, ranked)
         write_json_report(
             report_json,
@@ -105,6 +125,20 @@ class LumaSiftHarness:
             },
         )
         write_contact_sheet(contact_sheet, ranked[:50])
+        if self.settings.selected_ranks or self.settings.selected_paths:
+            selected_payload = build_selected_editing_advice(
+                ranked,
+                selected_ranks=self.settings.selected_ranks,
+                selected_paths=self.settings.selected_paths,
+            )
+            write_json_report(selected_advice_json, selected_payload)
+            write_selected_editing_advice_markdown(selected_advice_md, selected_payload)
+            self.state.append_event(
+                "selected_editing_advice_written",
+                count=selected_payload.get("selected_count", 0),
+                json=str(selected_advice_json),
+                markdown=str(selected_advice_md),
+            )
 
         summary = {
             "run_id": self.run_id,
@@ -134,7 +168,11 @@ class LumaSiftHarness:
                 continue
             try:
                 preview_path = create_jpeg_preview(Path(record["path"]), preview_dir)
-                response = client.analyze_image(preview_path, QWEN_STORY_PROMPT)
+                response = client.analyze_image(
+                    preview_path,
+                    QWEN_STORY_PROMPT,
+                    prompt_version=QWEN_STORY_PROMPT_VERSION,
+                )
                 merge_qwen_story_analysis(record, response)
                 self.state.append_event("qwen_analyzed", path=record["path"])
             except Exception as exc:  # noqa: BLE001 - API failures should not kill local output.

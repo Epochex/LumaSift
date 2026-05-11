@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import random
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
 from lumasift.core.keyring import ApiKeyRing
+from lumasift.storage.qwen_cache import (
+    QwenResponseCache,
+    default_qwen_cache_dir,
+    identify_image,
+    prompt_fingerprint,
+    scrub_secrets,
+)
+
+
+TRANSIENT_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
 class QwenVisionClient:
@@ -18,16 +30,44 @@ class QwenVisionClient:
         keyring: ApiKeyRing,
         max_tokens: int = 1024,
         timeout_seconds: int = 90,
+        response_cache: QwenResponseCache | None = None,
+        cache_dir: Path | None = None,
+        cache_enabled: bool = True,
+        max_retries: int = 3,
+        initial_backoff_seconds: float = 1.0,
+        max_backoff_seconds: float = 30.0,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.keyring = keyring
         self.max_tokens = max_tokens
         self.timeout_seconds = timeout_seconds
+        self.response_cache = response_cache
+        self.cache_dir = cache_dir
+        self.cache_enabled = cache_enabled
+        self.max_retries = max_retries
+        self.initial_backoff_seconds = initial_backoff_seconds
+        self.max_backoff_seconds = max_backoff_seconds
+        self.sleep = sleep
 
-    def analyze_image(self, image_path: Path, prompt: str) -> dict[str, Any]:
+    def analyze_image(self, image_path: Path, prompt: str, prompt_version: str | None = None) -> dict[str, Any]:
+        image_identity = identify_image(image_path)
+        cache = self._cache_for(image_path)
+        cache_key = None
+        if cache is not None:
+            cache_key = cache.make_key(
+                image=image_identity,
+                model=self.model,
+                prompt_version=prompt_version or prompt_fingerprint(prompt),
+            )
+            cached = cache.load(cache_key)
+            if cached is not None:
+                return cached
+
         if not self.keyring.has_keys():
             raise RuntimeError("No Qwen API keys configured")
+
         data_url = self._image_data_url(image_path)
         payload = {
             "model": self.model,
@@ -46,6 +86,7 @@ class QwenVisionClient:
         }
         last_error: Exception | None = None
         tried_without_response_format = False
+        retry_count = 0
         while True:
             try:
                 response = requests.post(
@@ -61,15 +102,54 @@ class QwenVisionClient:
                     payload.pop("response_format", None)
                     tried_without_response_format = True
                     continue
-                if response.status_code in {401, 403, 429} and self.keyring.rotate():
+                if response.status_code in {401, 403} and self.keyring.rotate():
+                    continue
+                if response.status_code == 429 and self.keyring.rotate():
+                    retry_count = 0
+                    continue
+                if response.status_code in TRANSIENT_STATUS_CODES and retry_count < self.max_retries:
+                    last_error = RuntimeError(self._status_error_message(response))
+                    self._backoff(retry_count)
+                    retry_count += 1
                     continue
                 response.raise_for_status()
-                return response.json()
+                response_data = scrub_secrets(response.json())
+                if cache is not None and cache_key is not None:
+                    cache.store(cache_key, image_identity, response_data)
+                return response_data
+            except requests.HTTPError as exc:
+                last_error = exc
+                break
             except requests.RequestException as exc:
                 last_error = exc
-                if not self.keyring.rotate():
-                    break
+                if retry_count < self.max_retries:
+                    self._backoff(retry_count)
+                    retry_count += 1
+                    continue
+                if self.keyring.rotate():
+                    retry_count = 0
+                    continue
+                break
         raise RuntimeError(f"Qwen vision request failed after key rotation: {last_error}")
+
+    def _cache_for(self, image_path: Path) -> QwenResponseCache | None:
+        if not self.cache_enabled:
+            return None
+        if self.response_cache is not None:
+            return self.response_cache
+        return QwenResponseCache(self.cache_dir or default_qwen_cache_dir(image_path))
+
+    def _backoff(self, retry_count: int) -> None:
+        delay = min(self.max_backoff_seconds, self.initial_backoff_seconds * (2**retry_count))
+        jitter = random.uniform(0, delay * 0.25)
+        self.sleep(delay + jitter)
+
+    @staticmethod
+    def _status_error_message(response: requests.Response) -> str:
+        body = getattr(response, "text", "")
+        if len(body) > 240:
+            body = f"{body[:240]}..."
+        return f"Qwen transient HTTP {response.status_code}: {body}"
 
     @staticmethod
     def _image_data_url(path: Path) -> str:

@@ -9,6 +9,13 @@ from lumasift.core.harness import LumaSiftHarness
 from lumasift.core.logging_setup import configure_logging
 
 
+def _non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be greater than or equal to 0")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lumasift",
@@ -16,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--input", type=Path, default=None, help="Input photo directory.")
     parser.add_argument("--output", type=Path, default=None, help="Output directory.")
+    parser.add_argument("--limit", type=_non_negative_int, default=None, help="Maximum number of photos to discover.")
     parser.add_argument(
         "--mode",
         choices=["local_only", "qwen_vision"],
@@ -23,7 +31,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Analysis mode. local_only avoids API calls.",
     )
     parser.add_argument("--top-n", type=int, default=None, help="Top-N candidates for API analysis.")
-    parser.add_argument("--run-id", default=None, help="Resume or name a run id.")
+    parser.add_argument(
+        "--selected-ranks",
+        default=None,
+        help="Comma/range selection for editing advice, for example '1,3,5-8'.",
+    )
+    parser.add_argument(
+        "--selected-paths",
+        default=None,
+        help="Comma-separated selected filenames or paths for editing advice.",
+    )
+    parser.add_argument("--run-id", default=None, help="Name a run id.")
+    parser.add_argument("--resume", action="store_true", help="Resume from an existing checkpoint for the run id.")
     return parser
 
 
@@ -38,6 +57,13 @@ def main(argv: list[str] | None = None) -> int:
         settings.ai_mode = args.mode
     if args.top_n is not None:
         settings.top_n_api_analysis = args.top_n
+    if args.limit is not None:
+        settings.limit = args.limit
+    if args.selected_ranks is not None:
+        settings.selected_ranks = args.selected_ranks
+    if args.selected_paths is not None:
+        settings.selected_paths = args.selected_paths
+    settings.resume = args.resume
 
     configure_logging(settings.output_dir)
     logging.info("Starting LumaSift run")
