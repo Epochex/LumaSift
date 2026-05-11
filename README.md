@@ -66,6 +66,12 @@ Unzip it and run:
 LumaSift/LumaSift.exe
 ```
 
+For a normal Windows installation experience, use:
+
+```text
+dist/installer/LumaSiftSetup.exe
+```
+
 Expected outputs after running an analysis:
 
 ```text
@@ -86,6 +92,8 @@ outputs/runs/<run_id>/checkpoint.json
 6. Review the thumbnail grid, select photos, and click **Generate Editing Advice for Selection**.
 
 The app remembers recent folders and run settings. API keys can be entered in the GUI for Qwen mode; leave the field empty to use `.env`. Saving keys locally is optional.
+
+The result grid uses placeholders first and fills thumbnails asynchronously, so review can start without waiting for every preview to finish.
 
 ## Qwen Vision Mode
 

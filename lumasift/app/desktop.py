@@ -70,6 +70,33 @@ class AnalysisWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class ThumbnailWorker(QObject):
+    thumbnail_ready = Signal(int, str)
+    finished = Signal()
+
+    def __init__(self, records: list[dict[str, Any]], output_dir: Path, max_side: int = 360) -> None:
+        super().__init__()
+        self.records = records
+        self.output_dir = output_dir
+        self.max_side = max_side
+        self.cancelled = False
+
+    def stop(self) -> None:
+        self.cancelled = True
+
+    def run(self) -> None:
+        preview_dir = self.output_dir / "gui_previews"
+        for index, record in enumerate(self.records):
+            if self.cancelled:
+                break
+            try:
+                preview_path = create_jpeg_preview(Path(record["path"]), preview_dir, max_side=self.max_side)
+                self.thumbnail_ready.emit(index, str(preview_path))
+            except Exception:
+                self.thumbnail_ready.emit(index, "")
+        self.finished.emit()
+
+
 class LumaSiftWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -80,6 +107,9 @@ class LumaSiftWindow(QMainWindow):
         self.settings_store = QSettings("LumaSift", "LumaSift")
         self.worker_thread: QThread | None = None
         self.worker: AnalysisWorker | None = None
+        self.thumbnail_thread: QThread | None = None
+        self.thumbnail_worker: ThumbnailWorker | None = None
+        self.visible_records: list[dict[str, Any]] = []
         self._build_ui()
         self._load_preferences()
         self._apply_style()
@@ -99,6 +129,7 @@ class LumaSiftWindow(QMainWindow):
 
         controls = self._build_controls()
         root.addWidget(controls)
+        root.addWidget(self._build_result_toolbar())
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.photo_list = QListWidget()
@@ -210,6 +241,43 @@ class LumaSiftWindow(QMainWindow):
         layout.addWidget(self.status_label, 4, 0, 1, 3)
         return group
 
+    def _build_result_toolbar(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("toolbar")
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Search filename, path, category, style...")
+        self.search_edit.textChanged.connect(self._populate_records)
+        self.category_filter = QComboBox()
+        self.category_filter.addItems(
+            [
+                "All categories",
+                "portfolio_candidate",
+                "strong_edit_candidate",
+                "story_candidate",
+                "technically_weak_but_interesting",
+                "ordinary_record",
+                "reject_candidate",
+                "failed",
+            ]
+        )
+        self.category_filter.currentTextChanged.connect(self._populate_records)
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItems(["Score high to low", "Score low to high", "Rank", "Filename A-Z"])
+        self.sort_combo.currentTextChanged.connect(self._populate_records)
+        self.result_count_label = QLabel("No results")
+        self.result_count_label.setObjectName("muted")
+
+        layout.addWidget(QLabel("Filter"))
+        layout.addWidget(self.search_edit, stretch=1)
+        layout.addWidget(self.category_filter)
+        layout.addWidget(self.sort_combo)
+        layout.addWidget(self.result_count_label)
+        return frame
+
     def _choose_input(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Choose photo folder", self.input_edit.text())
         if folder:
@@ -282,6 +350,7 @@ class LumaSiftWindow(QMainWindow):
         self.progress.setValue(100)
         self.run_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
+        self._refresh_filter_options()
         self._populate_records()
 
     def _analysis_failed(self, message: str) -> None:
@@ -308,18 +377,68 @@ class LumaSiftWindow(QMainWindow):
         self.status_label.setText(f"{label}: {current}/{total}")
 
     def _populate_records(self) -> None:
+        if not hasattr(self, "photo_list"):
+            return
+        self._stop_thumbnail_worker()
         self.photo_list.clear()
-        for record in self.records[: self.display_limit_spin.value()]:
+        self.visible_records = self._filtered_records()[: self.display_limit_spin.value()]
+        placeholder = self._placeholder_icon()
+        for record in self.visible_records:
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, record)
             score = float(record.get("final_selection_score", 0) or 0)
             title = f"#{record.get('rank')}  {score:.1f}\n{record.get('filename')}\n{record.get('category')}"
             item.setText(title)
             item.setToolTip(str(record.get("path", "")))
-            item.setIcon(self._record_icon(record))
+            item.setIcon(placeholder)
             item.setSizeHint(QSize(210, 210))
             self.photo_list.addItem(item)
-        self.status_label.setText(f"Loaded {min(len(self.records), self.display_limit_spin.value())}/{len(self.records)} ranked photos")
+        self.result_count_label.setText(f"Showing {len(self.visible_records)}/{len(self.records)}")
+        self.status_label.setText(f"Loaded {len(self.visible_records)}/{len(self.records)} ranked photos")
+        self._start_thumbnail_worker()
+
+    def _filtered_records(self) -> list[dict[str, Any]]:
+        records = list(self.records)
+        query = self.search_edit.text().strip().lower() if hasattr(self, "search_edit") else ""
+        category = self.category_filter.currentText() if hasattr(self, "category_filter") else "All categories"
+        if category and category != "All categories":
+            records = [record for record in records if str(record.get("category", "")) == category]
+        if query:
+            records = [
+                record
+                for record in records
+                if query
+                in " ".join(
+                    [
+                        str(record.get("filename", "")),
+                        str(record.get("path", "")),
+                        str(record.get("category", "")),
+                        str(record.get("recommended_style", "")),
+                    ]
+                ).lower()
+            ]
+
+        sort_key = self.sort_combo.currentText() if hasattr(self, "sort_combo") else "Score high to low"
+        if sort_key == "Score low to high":
+            records.sort(key=lambda item: float(item.get("final_selection_score", 0) or 0))
+        elif sort_key == "Filename A-Z":
+            records.sort(key=lambda item: str(item.get("filename", "")).lower())
+        elif sort_key == "Rank":
+            records.sort(key=lambda item: int(item.get("rank", 999999) or 999999))
+        else:
+            records.sort(key=lambda item: float(item.get("final_selection_score", 0) or 0), reverse=True)
+        return records
+
+    def _refresh_filter_options(self) -> None:
+        current = self.category_filter.currentText()
+        categories = sorted({str(record.get("category", "")) for record in self.records if record.get("category")})
+        self.category_filter.blockSignals(True)
+        self.category_filter.clear()
+        self.category_filter.addItem("All categories")
+        self.category_filter.addItems(categories)
+        if current in categories:
+            self.category_filter.setCurrentText(current)
+        self.category_filter.blockSignals(False)
 
     def _record_icon(self, record: dict[str, Any]) -> QIcon:
         try:
@@ -330,6 +449,42 @@ class LumaSiftWindow(QMainWindow):
             pixmap = QPixmap(180, 130)
             pixmap.fill(Qt.GlobalColor.lightGray)
             return QIcon(pixmap)
+
+    def _placeholder_icon(self) -> QIcon:
+        pixmap = QPixmap(180, 130)
+        pixmap.fill(Qt.GlobalColor.lightGray)
+        return QIcon(pixmap)
+
+    def _start_thumbnail_worker(self) -> None:
+        if not self.visible_records:
+            return
+        self.thumbnail_thread = QThread()
+        self.thumbnail_worker = ThumbnailWorker(self.visible_records, self.output_dir, max_side=360)
+        self.thumbnail_worker.moveToThread(self.thumbnail_thread)
+        self.thumbnail_thread.started.connect(self.thumbnail_worker.run)
+        self.thumbnail_worker.thumbnail_ready.connect(self._thumbnail_ready)
+        self.thumbnail_worker.finished.connect(self.thumbnail_thread.quit)
+        self.thumbnail_thread.finished.connect(self.thumbnail_thread.deleteLater)
+        self.thumbnail_thread.start()
+
+    def _stop_thumbnail_worker(self) -> None:
+        if self.thumbnail_worker is not None:
+            self.thumbnail_worker.stop()
+        if self.thumbnail_thread is not None and self.thumbnail_thread.isRunning():
+            self.thumbnail_thread.quit()
+            self.thumbnail_thread.wait(1500)
+        self.thumbnail_worker = None
+        self.thumbnail_thread = None
+
+    def _thumbnail_ready(self, index: int, preview_path: str) -> None:
+        if not preview_path or index >= self.photo_list.count():
+            return
+        item = self.photo_list.item(index)
+        if item is None:
+            return
+        pixmap = QPixmap(preview_path)
+        if not pixmap.isNull():
+            item.setIcon(QIcon(pixmap))
 
     def _show_selected_detail(self) -> None:
         selected = self.photo_list.selectedItems()
@@ -435,6 +590,7 @@ class LumaSiftWindow(QMainWindow):
             QLabel#title { font-size: 30px; font-weight: 700; color: #111; }
             QLabel#subtitle, QLabel#muted { color: #666; }
             QGroupBox { border: 1px solid #d0d0d0; border-radius: 4px; margin-top: 10px; padding: 12px; background: #fbfbfb; }
+            QFrame#toolbar { background: #f3f3f3; }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
             QLineEdit, QSpinBox, QComboBox, QTextEdit, QListWidget { background: #ffffff; border: 1px solid #c8c8c8; border-radius: 3px; padding: 5px; }
             QPushButton { background: #0078d4; color: white; border: none; border-radius: 3px; padding: 8px 12px; font-weight: 600; }
@@ -446,6 +602,14 @@ class LumaSiftWindow(QMainWindow):
             QProgressBar::chunk { background: #0078d4; }
             """
         )
+
+    def closeEvent(self, event: Any) -> None:
+        self._stop_thumbnail_worker()
+        if self.worker_thread is not None and self.worker_thread.isRunning():
+            self._cancel_analysis()
+            self.worker_thread.quit()
+            self.worker_thread.wait(1500)
+        super().closeEvent(event)
 
 
 def main() -> int:

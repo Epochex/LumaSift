@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from PySide6.QtWidgets import QApplication
 from PIL import Image
 
 from lumasift.core.config import Settings
@@ -78,4 +79,7 @@ def test_harness_writes_selected_editing_advice(tmp_path: Path) -> None:
 def test_desktop_app_module_imports() -> None:
     from lumasift.app.desktop import LumaSiftWindow
 
-    assert LumaSiftWindow.__name__ == "LumaSiftWindow"
+    app = QApplication.instance() or QApplication([])
+    window = LumaSiftWindow()
+    assert window.windowTitle() == "LumaSift - Local AI Photo Curation"
+    window.close()

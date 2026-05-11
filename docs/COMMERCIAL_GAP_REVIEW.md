@@ -10,14 +10,14 @@ This document tracks the gap between the current MVP and a mature commercial pho
 2. Progress feedback is basic.
    The app now exposes progress stages, but it still needs per-stage estimates, elapsed time, remaining time, and a visible queue for Qwen requests.
 
-3. Large-grid performance needs virtualized/lazy rendering.
-   The current grid limits display count, but a commercial app should virtualize thousands of thumbnails and load previews asynchronously.
+3. Large-grid performance has async thumbnails but still needs true virtualization.
+   The current grid limits display count and loads thumbnails asynchronously. A commercial app should still virtualize thousands of thumbnails with stable scroll position and prefetch windows.
 
 4. API configuration is usable but not fully secure.
    Keys can be entered in the GUI and optionally saved locally. A production product should use Windows Credential Manager/macOS Keychain instead of plain application settings.
 
-5. No installer yet.
-   The current friend-test package is a portable PyInstaller build. A commercial release should add signed installers, auto-update, versioned releases, and crash diagnostics.
+5. Installer exists but is not signed.
+   The current friend-test package includes an Inno Setup installer and a portable PyInstaller build. A commercial release should add code signing, auto-update, versioned releases, and crash diagnostics.
 
 6. No formal evaluation dashboard yet.
    The ranking pipeline needs a small labeled evaluation set and metrics such as Precision@K and NDCG@K to prove selection quality.

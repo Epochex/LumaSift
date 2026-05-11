@@ -32,3 +32,13 @@
   - app icon;
   - portable zip output;
   - exe launch smoke test.
+- Added async thumbnail loading in the GUI:
+  - placeholders appear immediately;
+  - thumbnails are generated off the UI thread;
+  - thumbnail generation is cancellable when the window closes or results refresh;
+  - preview cache filenames are collision-safe.
+- Added result search, category filter, sort controls, and display limits.
+- Added Inno Setup installer:
+  - `dist/installer/LumaSiftSetup.exe`;
+  - desktop/start menu shortcuts;
+  - portable zip remains available.

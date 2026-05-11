@@ -2,11 +2,19 @@
 
 ## Install
 
+Preferred:
+
+1. Run `LumaSiftSetup.exe`.
+2. Launch LumaSift from the Start Menu or desktop shortcut.
+
+Alternative portable mode:
+
 1. Unzip `LumaSift-Windows-Portable.zip`.
 2. Open the `LumaSift` folder.
 3. Double-click `LumaSift.exe`.
 
 No Python installation is required for the portable build.
+No Python installation is required for the installer build.
 
 ## First Run
 
