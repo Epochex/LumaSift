@@ -71,14 +71,14 @@ The product should not become a cloud RAW-upload SaaS. RAW files are too large, 
 Preferred product architecture:
 
 ```text
-Local FastAPI service
+PySide6 desktop application
   + Python core pipeline
-  + SQLite state/cache
-  + React local Web UI
-  + optional desktop shell later
+  + local preview / response cache
+  + RAW/JPEG/PNG loaders backed by LibRaw/Pillow/NumPy
+  + optional packaged Windows/macOS installers later
 ```
 
-The browser UI runs against `localhost`. Photos stay on the user's device. Only selected previews are sent to the configured vision model when enabled.
+The application runs locally and reads user-selected folders directly. Photos stay on the user's device. Only selected previews are sent to the configured vision model when enabled.
 
 ## Resume / Interview Value
 

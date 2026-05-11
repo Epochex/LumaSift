@@ -15,7 +15,7 @@ Prioritize functional completeness and development speed over unnecessary proces
 ## Checks
 
 - Run tests with `pytest` when tests are present.
-- Run `python scripts/run_demo.py` after changing the main pipeline.
+- After changing the GUI, verify `lumasift.app.desktop` imports and a `LumaSiftWindow` can be constructed.
 - Run formatters or linters only when they are already configured in the repository.
 
 ## Data Handling
@@ -25,6 +25,7 @@ Prioritize functional completeness and development speed over unnecessary proces
 
 ## Product Priority
 
+- First deliverable is a local graphical desktop application, not a command-line tool.
 - Primary value: story, human/documentary value, decisive moment, emotional impact, visual tension, and editing potential.
 - Secondary value: technical quality metrics used as cheap filters and recovery signals.
 - Do not let conventional technical imperfection automatically bury a photo if it has humanistic or street-photography potential.

@@ -3,12 +3,12 @@
 ## 2026-05-12
 
 - Established the first long-running development harness.
-- Added local-only CLI execution so the project can run without API spend.
+- Product surface is now a GUI-first local desktop application.
 - Added resumable run directories under `outputs/runs/<run_id>`.
 - Added JSONL event logging and atomic checkpoints.
 - Added environment-driven API configuration and multi-key rotation scaffolding.
 - Added story-first scoring fields so the product emphasizes humanistic/street-photo value over pure technical quality.
-- Added limited local scanning with `--limit` for safe testing against large folders such as `D:\DCIM`.
+- Added limited local scanning for safe testing against large folders such as `D:\DCIM`.
 - Added `--selected-ranks` and `--selected-paths` workflow for selected-photo editing plans.
 - Added persistent Qwen response cache and retry/backoff, avoiding repeated API spend for the same preview/model/prompt.
 - Improved RAW handling by using embedded RAW previews first, falling back to half-size RAW postprocess.
@@ -19,3 +19,10 @@
   - 10 ARW with Qwen Top-3: processed 10/10, Qwen analyzed 3 candidates and wrote editing guidance.
   - Qwen cache check: repeated same Top-3 run in roughly 2.5 seconds, indicating cached responses.
   - 200 ARW local-only: processed 200/200, 0 failures, roughly 29 seconds.
+- Switched first deliverable to a local graphical application with PySide6:
+  - folder picker;
+  - local/qwen mode switch;
+  - scan limit and Qwen Top-N controls;
+  - thumbnail grid;
+  - detail panel;
+  - multi-select editing advice generation.

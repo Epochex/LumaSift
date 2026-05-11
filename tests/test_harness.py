@@ -3,7 +3,6 @@ from pathlib import Path
 
 from PIL import Image
 
-from lumasift.app.main import build_parser
 from lumasift.core.config import Settings
 from lumasift.core.harness import LumaSiftHarness
 
@@ -58,28 +57,6 @@ def test_harness_resume_skips_checkpointed_prefix(tmp_path: Path) -> None:
     assert sorted(record["filename"] for record in report["records"]) == ["1.jpg", "2.jpg"]
 
 
-def test_cli_parses_limit_and_resume() -> None:
-    args = build_parser().parse_args(
-        [
-            "--input",
-            "D:\\DCIM",
-            "--limit",
-            "12",
-            "--run-id",
-            "real-run",
-            "--selected-ranks",
-            "1,3-4",
-            "--resume",
-        ]
-    )
-
-    assert args.input == Path("D:\\DCIM")
-    assert args.limit == 12
-    assert args.run_id == "real-run"
-    assert args.selected_ranks == "1,3-4"
-    assert args.resume is True
-
-
 def test_harness_writes_selected_editing_advice(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
@@ -96,3 +73,9 @@ def test_harness_writes_selected_editing_advice(tmp_path: Path) -> None:
 
     assert (output_dir / "selected_editing_advice.json").exists()
     assert "Rank 1" in (output_dir / "selected_editing_advice.md").read_text(encoding="utf-8")
+
+
+def test_desktop_app_module_imports() -> None:
+    from lumasift.app.desktop import LumaSiftWindow
+
+    assert LumaSiftWindow.__name__ == "LumaSiftWindow"

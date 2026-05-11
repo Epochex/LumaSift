@@ -8,7 +8,7 @@ The goal is not to label photos as simply good or bad. The goal is to rank large
 
 Implemented:
 
-- Python package and CLI: `python -m lumasift.app.main`
+- Local desktop GUI entry point: `lumasift`
 - Recursive image discovery
 - PNG/JPG/JPEG loading with Pillow
 - ARW loading path through optional `rawpy`
@@ -28,7 +28,6 @@ Implemented:
 - Selected-photo editing advice in JSON and Markdown
 - CSV and JSON reports
 - Top-50 contact sheet
-- Demo image generator
 - JSONL run events and checkpoint files for long-running jobs
 
 The local-only scores are intentionally weak proxies. Real story, documentary, and artistic judgments should come from Qwen vision review or human selection. The local pass exists to make large-folder processing cheap and robust.
@@ -45,13 +44,17 @@ Optional ARW support:
 python -m pip install -e .[raw]
 ```
 
-## Run Demo
+## Launch The App
+
+After installation, launch the graphical application:
 
 ```bash
-python scripts/run_demo.py
+lumasift
 ```
 
-Expected outputs:
+The first user-facing release is GUI-first. The previous command-line workflow has been removed from the product surface.
+
+Expected outputs after running an analysis:
 
 ```text
 outputs/report.csv
@@ -61,37 +64,14 @@ outputs/runs/<run_id>/events.jsonl
 outputs/runs/<run_id>/checkpoint.json
 ```
 
-## Run A Limited Local Sample
+## GUI Workflow
 
-Use this for real culling tests without adding private photos to the repository. The script stages only the requested number of files under `outputs/local_sample`, runs the normal pipeline, rewrites reports back to the original photo paths, and removes staging files unless `--keep-staging` is passed.
-
-```bash
-python scripts/run_local_sample.py --input "D:/Photos/trip" --limit 50 --output ./outputs/local_sample
-```
-
-For a tiny smoke run:
-
-```bash
-python scripts/run_local_sample.py --input "D:/Photos/trip" --limit 10 --run-id trip-smoke
-```
-
-For the current Sony card folder:
-
-```bash
-python -m lumasift.app.main --input D:/DCIM --output ./outputs/dcim-local-10 --mode local_only --limit 10 --selected-ranks 1-5 --run-id dcim-local-10
-```
-
-For a larger local stability test:
-
-```bash
-python -m lumasift.app.main --input D:/DCIM --output ./outputs/dcim-local-200 --mode local_only --limit 200 --selected-ranks 1-10 --run-id dcim-local-200
-```
-
-## Run On A Folder
-
-```bash
-python -m lumasift.app.main --input "D:/Photos/trip" --output ./outputs/trip --mode local_only --run-id trip-local
-```
+1. Choose a local photo folder, for example `D:/DCIM`.
+2. Choose an output folder.
+3. Select `local_only` for fast local culling or `qwen_vision` for Top-N visual review.
+4. Set scan limit and Qwen Top-N.
+5. Click **Analyze Folder**.
+6. Review the thumbnail grid, select photos, and click **Generate Editing Advice for Selection**.
 
 ## Qwen Vision Mode
 
@@ -106,31 +86,15 @@ LUMASIFT_VISION_MAX_TOKENS=4096
 LUMASIFT_TOP_N_API_ANALYSIS=20
 ```
 
-Then run:
-
-```bash
-python -m lumasift.app.main --input "D:/Photos/trip" --output ./outputs/trip-qwen --mode qwen_vision --top-n 20 --run-id trip-qwen
-```
-
-The pipeline first ranks locally, then sends only Top-N JPEG previews to Qwen for deeper story/editing analysis.
-
-For a cost-controlled real-photo smoke test:
-
-```bash
-python -m lumasift.app.main --input D:/DCIM --output ./outputs/dcim-qwen-10-top3 --mode qwen_vision --limit 10 --top-n 3 --selected-ranks 1-3 --run-id dcim-qwen-10-top3
-```
+The GUI first ranks locally, then sends only Top-N JPEG previews to Qwen for deeper story/editing analysis when `qwen_vision` is selected.
 
 Qwen responses are cached under the output folder. Re-running the same preview/model/prompt combination should reuse cached responses instead of spending API credits again.
 
 ## Selected Editing Advice
 
-Use `--selected-ranks` or `--selected-paths` to generate concrete editing plans:
+Use the thumbnail grid to select one or more photos, then generate concrete editing plans.
 
-```bash
-python -m lumasift.app.main --input D:/DCIM --output ./outputs/dcim-edit --mode local_only --limit 50 --selected-ranks 1,3,5-8
-```
-
-Expected additional outputs:
+Expected advice outputs:
 
 ```text
 outputs/.../selected_editing_advice.json
