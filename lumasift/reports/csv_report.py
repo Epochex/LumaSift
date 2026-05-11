@@ -1,0 +1,46 @@
+from __future__ import annotations
+
+import csv
+import json
+from pathlib import Path
+
+
+CSV_FIELDS = [
+    "rank",
+    "path",
+    "filename",
+    "extension",
+    "width",
+    "height",
+    "technical_quality_score",
+    "storytelling_score",
+    "human_documentary_value_score",
+    "decisive_moment_score",
+    "emotional_impact_score",
+    "visual_tension_score",
+    "editing_potential_score",
+    "final_selection_score",
+    "category",
+    "recommended_style",
+    "positive_reasons",
+    "negative_reasons",
+    "best_editing_direction",
+    "crop_strategy",
+    "local_adjustments",
+    "specific_edit_parameters",
+]
+
+
+def _cell(value: object) -> object:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
+def write_csv_report(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for record in records:
+            writer.writerow({field: _cell(record.get(field, "")) for field in CSV_FIELDS})
