@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
@@ -8,18 +9,18 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QSettings, QSize, Qt, QThread, Signal
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import QEasingCurve, QObject, QPropertyAnimation, QSettings, QSize, Qt, QThread, Signal
+from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
-    QFormLayout,
     QFrame,
+    QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -101,7 +102,7 @@ class LumaSiftWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("LumaSift - Local AI Photo Curation")
-        self.resize(1280, 820)
+        self.resize(1440, 900)
         self.records: list[dict[str, Any]] = []
         self.output_dir = Path("./outputs/gui")
         self.settings_store = QSettings("LumaSift", "LumaSift")
@@ -110,98 +111,222 @@ class LumaSiftWindow(QMainWindow):
         self.thumbnail_thread: QThread | None = None
         self.thumbnail_worker: ThumbnailWorker | None = None
         self.visible_records: list[dict[str, Any]] = []
+        self.workflow_steps: dict[str, QFrame] = {}
+        self.stat_labels: dict[str, QLabel] = {}
+        self._animations: list[QPropertyAnimation] = []
         self._build_ui()
         self._load_preferences()
         self._apply_style()
+        self._update_workflow("import")
+        self._update_dashboard()
 
     def _build_ui(self) -> None:
         central = QWidget()
         root = QVBoxLayout(central)
-        root.setContentsMargins(14, 14, 14, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(12)
 
-        title = QLabel("LumaSift")
-        title.setObjectName("title")
-        subtitle = QLabel("Local-first AI culling for story-driven street and documentary photography")
-        subtitle.setObjectName("subtitle")
-        root.addWidget(title)
-        root.addWidget(subtitle)
-
-        controls = self._build_controls()
-        root.addWidget(controls)
+        root.addWidget(self._build_header())
+        root.addWidget(self._build_workflow())
+        root.addWidget(self._build_controls())
         root.addWidget(self._build_result_toolbar())
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setObjectName("mainSplitter")
         self.photo_list = QListWidget()
+        self.photo_list.setObjectName("photoGrid")
         self.photo_list.setViewMode(QListWidget.ViewMode.IconMode)
         self.photo_list.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.photo_list.setMovement(QListWidget.Movement.Static)
         self.photo_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.photo_list.setIconSize(QSize(180, 130))
-        self.photo_list.setSpacing(10)
+        self.photo_list.setIconSize(QSize(210, 148))
+        self.photo_list.setSpacing(12)
         self.photo_list.itemSelectionChanged.connect(self._show_selected_detail)
+        self._show_empty_grid("Drop into the workflow by choosing a folder, then run analysis.")
         splitter.addWidget(self.photo_list)
 
-        detail_panel = QWidget()
+        detail_panel = QFrame()
+        detail_panel.setObjectName("detailPanel")
+        self._apply_shadow(detail_panel, blur=22, y=8, alpha=24)
         detail_layout = QVBoxLayout(detail_panel)
-        detail_layout.setContentsMargins(10, 0, 0, 0)
+        detail_layout.setContentsMargins(14, 14, 14, 14)
+        detail_layout.setSpacing(10)
+        detail_title = QLabel("Review cockpit")
+        detail_title.setObjectName("sectionTitle")
+        detail_hint = QLabel("Select one or more ranked photos to inspect score reasons and generate an editing plan.")
+        detail_hint.setObjectName("muted")
+        detail_hint.setWordWrap(True)
+        detail_layout.addWidget(detail_title)
+        detail_layout.addWidget(detail_hint)
         self.detail_text = QTextEdit()
+        self.detail_text.setObjectName("detailText")
         self.detail_text.setReadOnly(True)
-        self.detail_text.setPlaceholderText("Run an analysis, then select photos to inspect story scores and editing guidance.")
+        self.detail_text.setHtml(self._empty_detail_html())
         detail_layout.addWidget(self.detail_text)
 
         advice_buttons = QHBoxLayout()
-        self.generate_advice_button = QPushButton("Generate Editing Advice for Selection")
+        self.generate_advice_button = QPushButton("Editing Plan")
+        self.generate_advice_button.setObjectName("primaryButton")
         self.generate_advice_button.clicked.connect(self._generate_selected_advice)
         advice_buttons.addWidget(self.generate_advice_button)
         self.open_output_button = QPushButton("Open Output")
+        self.open_output_button.setObjectName("secondaryButton")
         self.open_output_button.clicked.connect(lambda: self._open_path(self.output_dir))
         advice_buttons.addWidget(self.open_output_button)
         self.open_contact_button = QPushButton("Open Contact Sheet")
+        self.open_contact_button.setObjectName("secondaryButton")
         self.open_contact_button.clicked.connect(lambda: self._open_path(self.output_dir / "contact_sheet_top50.jpg"))
         advice_buttons.addWidget(self.open_contact_button)
         detail_layout.addLayout(advice_buttons)
         splitter.addWidget(detail_panel)
-        splitter.setSizes([820, 420])
+        splitter.setSizes([930, 430])
         root.addWidget(splitter, stretch=1)
 
         self.setCentralWidget(central)
 
-    def _build_controls(self) -> QGroupBox:
-        group = QGroupBox("Run")
+    def _build_header(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("hero")
+        self._apply_shadow(frame, blur=24, y=8, alpha=18)
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
+
+        copy = QVBoxLayout()
+        title = QLabel("LumaSift")
+        title.setObjectName("title")
+        subtitle = QLabel("Local-first AI photo curation for story, impact, and editing potential.")
+        subtitle.setObjectName("subtitle")
+        copy.addWidget(title)
+        copy.addWidget(subtitle)
+        layout.addLayout(copy, stretch=1)
+
+        for key, label in [
+            ("scanned", "Scanned"),
+            ("shown", "Shown"),
+            ("selected", "Selected"),
+            ("mode", "Mode"),
+        ]:
+            card = QFrame()
+            card.setObjectName("statCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(12, 9, 12, 9)
+            value = QLabel("0" if key != "mode" else "Local")
+            value.setObjectName("statValue")
+            caption = QLabel(label)
+            caption.setObjectName("statCaption")
+            card_layout.addWidget(value)
+            card_layout.addWidget(caption)
+            self.stat_labels[key] = value
+            layout.addWidget(card)
+        return frame
+
+    def _build_workflow(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("workflow")
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        for key, title, caption in [
+            ("import", "1. Import", "Choose local RAW/JPG folder"),
+            ("local", "2. Pre-score", "Fast local CV and preview cache"),
+            ("qwen", "3. Deep review", "Qwen only for high-value candidates"),
+            ("edit", "4. Edit plan", "Multi-select concrete tuning guidance"),
+        ]:
+            step = QFrame()
+            step.setObjectName("stepCard")
+            step.setProperty("state", "idle")
+            step_layout = QVBoxLayout(step)
+            step_layout.setContentsMargins(14, 11, 14, 11)
+            step_layout.setSpacing(4)
+            heading = QLabel(title)
+            heading.setObjectName("stepTitle")
+            body = QLabel(caption)
+            body.setObjectName("stepCaption")
+            body.setWordWrap(True)
+            step_layout.addWidget(heading)
+            step_layout.addWidget(body)
+            self.workflow_steps[key] = step
+            layout.addWidget(step, stretch=1)
+        return frame
+
+    def _build_controls(self) -> QFrame:
+        group = QFrame()
+        group.setObjectName("controlCard")
+        self._apply_shadow(group, blur=24, y=8, alpha=20)
         layout = QGridLayout(group)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setHorizontalSpacing(10)
+        layout.setVerticalSpacing(9)
 
         self.input_edit = QLineEdit("D:/DCIM")
+        self.input_edit.setObjectName("pathEdit")
         browse_input = QPushButton("Browse")
+        browse_input.setObjectName("secondaryButton")
         browse_input.clicked.connect(self._choose_input)
-        layout.addWidget(QLabel("Photo folder"), 0, 0)
+        source_label = QLabel("Photo folder")
+        source_label.setObjectName("fieldLabel")
+        layout.addWidget(source_label, 0, 0)
         layout.addWidget(self.input_edit, 0, 1)
         layout.addWidget(browse_input, 0, 2)
 
         self.output_edit = QLineEdit(str(self.output_dir))
+        self.output_edit.setObjectName("pathEdit")
         browse_output = QPushButton("Browse")
+        browse_output.setObjectName("secondaryButton")
         browse_output.clicked.connect(self._choose_output)
-        layout.addWidget(QLabel("Output folder"), 1, 0)
+        output_label = QLabel("Output folder")
+        output_label.setObjectName("fieldLabel")
+        layout.addWidget(output_label, 1, 0)
         layout.addWidget(self.output_edit, 1, 1)
         layout.addWidget(browse_output, 1, 2)
 
-        options = QWidget()
-        options_layout = QFormLayout(options)
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["local_only", "qwen_vision"])
         self.mode_combo.currentTextChanged.connect(self._sync_mode_controls)
+        self.mode_combo.setFixedWidth(160)
         self.limit_spin = QSpinBox()
         self.limit_spin.setRange(1, 100000)
         self.limit_spin.setValue(50)
+        self.limit_spin.setFixedWidth(96)
         self.top_n_spin = QSpinBox()
         self.top_n_spin.setRange(1, 500)
         self.top_n_spin.setValue(5)
+        self.top_n_spin.setFixedWidth(88)
         self.selected_top_spin = QSpinBox()
         self.selected_top_spin.setRange(1, 100)
         self.selected_top_spin.setValue(10)
+        self.selected_top_spin.setFixedWidth(88)
         self.display_limit_spin = QSpinBox()
         self.display_limit_spin.setRange(20, 2000)
         self.display_limit_spin.setValue(300)
+        self.display_limit_spin.setFixedWidth(96)
+
+        option_bar = QFrame()
+        option_bar.setObjectName("optionBar")
+        option_layout = QHBoxLayout(option_bar)
+        option_layout.setContentsMargins(0, 0, 0, 0)
+        option_layout.setSpacing(10)
+        for label, control in [
+            ("Mode", self.mode_combo),
+            ("Scan", self.limit_spin),
+            ("Qwen Top", self.top_n_spin),
+            ("Advice Top", self.selected_top_spin),
+            ("Show", self.display_limit_spin),
+        ]:
+            mini = QFrame()
+            mini.setObjectName("miniControl")
+            mini_layout = QVBoxLayout(mini)
+            mini_layout.setContentsMargins(10, 8, 10, 8)
+            mini_layout.setSpacing(3)
+            mini_label = QLabel(label)
+            mini_label.setObjectName("miniLabel")
+            mini_layout.addWidget(mini_label)
+            mini_layout.addWidget(control)
+            option_layout.addWidget(mini)
+        option_layout.addStretch(1)
+        layout.addWidget(option_bar, 2, 0, 1, 3)
+
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setPlaceholderText("Optional: comma-separated Qwen keys. Leave empty to use .env.")
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
@@ -213,43 +338,44 @@ class LumaSiftWindow(QMainWindow):
         key_layout.addWidget(self.api_key_edit, stretch=1)
         key_layout.addWidget(self.show_key_checkbox)
         self.save_keys_checkbox = QCheckBox("Save API keys locally")
-        self.cache_note = QLabel("Qwen mode sends only Top-N JPEG previews and uses response cache.")
+        self.cache_note = QLabel("Qwen mode uploads only Top-N compressed JPEG previews; RAW files stay local.")
         self.cache_note.setObjectName("muted")
-        options_layout.addRow("Mode", self.mode_combo)
-        options_layout.addRow("Scan limit", self.limit_spin)
-        options_layout.addRow("Qwen Top-N", self.top_n_spin)
-        options_layout.addRow("Auto advice Top-N", self.selected_top_spin)
-        options_layout.addRow("Display Top-N", self.display_limit_spin)
-        options_layout.addRow("Qwen API keys", key_row)
-        options_layout.addRow("", self.save_keys_checkbox)
-        options_layout.addRow("", self.cache_note)
-        layout.addWidget(options, 2, 0, 1, 3)
+        api_label = QLabel("Qwen keys")
+        api_label.setObjectName("fieldLabel")
+        layout.addWidget(api_label, 3, 0)
+        layout.addWidget(key_row, 3, 1, 1, 2)
+        layout.addWidget(self.save_keys_checkbox, 4, 1)
+        layout.addWidget(self.cache_note, 4, 2)
 
         self.run_button = QPushButton("Analyze Folder")
+        self.run_button.setObjectName("primaryButton")
         self.run_button.clicked.connect(self._start_analysis)
         self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setObjectName("secondaryButton")
         self.cancel_button.clicked.connect(self._cancel_analysis)
         self.cancel_button.setEnabled(False)
         self.progress = QProgressBar()
+        self.progress.setObjectName("runProgress")
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.status_label = QLabel("Ready")
         self.status_label.setObjectName("muted")
-        layout.addWidget(self.run_button, 3, 0)
-        layout.addWidget(self.cancel_button, 3, 1)
-        layout.addWidget(self.progress, 3, 2)
-        layout.addWidget(self.status_label, 4, 0, 1, 3)
+        layout.addWidget(self.run_button, 5, 0)
+        layout.addWidget(self.cancel_button, 5, 1)
+        layout.addWidget(self.progress, 5, 2)
+        layout.addWidget(self.status_label, 6, 0, 1, 3)
         return group
 
     def _build_result_toolbar(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("toolbar")
+        self._apply_shadow(frame, blur=18, y=6, alpha=14)
         layout = QHBoxLayout(frame)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(8)
 
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Search filename, path, category, style...")
+        self.search_edit.setPlaceholderText("Search filename, category, style...")
         self.search_edit.textChanged.connect(self._populate_records)
         self.category_filter = QComboBox()
         self.category_filter.addItems(
@@ -269,9 +395,11 @@ class LumaSiftWindow(QMainWindow):
         self.sort_combo.addItems(["Score high to low", "Score low to high", "Rank", "Filename A-Z"])
         self.sort_combo.currentTextChanged.connect(self._populate_records)
         self.result_count_label = QLabel("No results")
-        self.result_count_label.setObjectName("muted")
+        self.result_count_label.setObjectName("resultCount")
 
-        layout.addWidget(QLabel("Filter"))
+        filter_label = QLabel("Review board")
+        filter_label.setObjectName("sectionTitle")
+        layout.addWidget(filter_label)
         layout.addWidget(self.search_edit, stretch=1)
         layout.addWidget(self.category_filter)
         layout.addWidget(self.sort_combo)
@@ -283,6 +411,7 @@ class LumaSiftWindow(QMainWindow):
         if folder:
             self.input_edit.setText(folder)
             self._save_preferences()
+            self._update_workflow("import")
 
     def _choose_output(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Choose output folder", self.output_edit.text())
@@ -327,7 +456,9 @@ class LumaSiftWindow(QMainWindow):
         self.progress.setValue(0)
         self.status_label.setText("Analyzing...")
         self.photo_list.clear()
-        self.detail_text.clear()
+        self.detail_text.setHtml(self._empty_detail_html())
+        self._update_workflow("local")
+        self._update_dashboard()
 
         self.worker_thread = QThread()
         self.worker = AnalysisWorker(settings=settings, run_id="gui-run")
@@ -352,6 +483,9 @@ class LumaSiftWindow(QMainWindow):
         self.cancel_button.setEnabled(False)
         self._refresh_filter_options()
         self._populate_records()
+        self._update_workflow("edit")
+        self._update_dashboard(payload["summary"])
+        self._fade_in(self.photo_list)
 
     def _analysis_failed(self, message: str) -> None:
         self.status_label.setText("Failed")
@@ -359,9 +493,11 @@ class LumaSiftWindow(QMainWindow):
         self.progress.setValue(0)
         self.run_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
+        self._update_workflow("import")
         QMessageBox.critical(self, "Analysis failed", message)
 
     def _analysis_progress(self, stage: str, current: int, total: int) -> None:
+        self._update_workflow("qwen" if stage == "qwen" else "local")
         if total <= 0:
             self.progress.setValue(0)
             self.status_label.setText(f"{stage}: preparing...")
@@ -382,20 +518,36 @@ class LumaSiftWindow(QMainWindow):
         self._stop_thumbnail_worker()
         self.photo_list.clear()
         self.visible_records = self._filtered_records()[: self.display_limit_spin.value()]
+        if not self.visible_records:
+            self.result_count_label.setText(f"Showing 0/{len(self.records)}")
+            self.status_label.setText("No ranked photos to show yet")
+            self._update_dashboard()
+            self._show_empty_grid("No results yet. Run analysis or loosen the current filter.")
+            return
         placeholder = self._placeholder_icon()
         for record in self.visible_records:
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, record)
             score = float(record.get("final_selection_score", 0) or 0)
-            title = f"#{record.get('rank')}  {score:.1f}\n{record.get('filename')}\n{record.get('category')}"
+            category = str(record.get("category", "")).replace("_", " ")
+            style = str(record.get("recommended_style", "")).replace("_", " ")
+            title = f"#{record.get('rank')} | {score:.1f}\n{record.get('filename')}\n{category}\n{style}"
             item.setText(title)
             item.setToolTip(str(record.get("path", "")))
             item.setIcon(placeholder)
-            item.setSizeHint(QSize(210, 210))
+            item.setSizeHint(QSize(244, 252))
             self.photo_list.addItem(item)
         self.result_count_label.setText(f"Showing {len(self.visible_records)}/{len(self.records)}")
         self.status_label.setText(f"Loaded {len(self.visible_records)}/{len(self.records)} ranked photos")
+        self._update_dashboard()
         self._start_thumbnail_worker()
+
+    def _show_empty_grid(self, message: str) -> None:
+        self.photo_list.clear()
+        item = QListWidgetItem(message)
+        item.setFlags(Qt.ItemFlag.NoItemFlags)
+        item.setSizeHint(QSize(520, 150))
+        self.photo_list.addItem(item)
 
     def _filtered_records(self) -> list[dict[str, Any]]:
         records = list(self.records)
@@ -451,8 +603,8 @@ class LumaSiftWindow(QMainWindow):
             return QIcon(pixmap)
 
     def _placeholder_icon(self) -> QIcon:
-        pixmap = QPixmap(180, 130)
-        pixmap.fill(Qt.GlobalColor.lightGray)
+        pixmap = QPixmap(210, 148)
+        pixmap.fill(QColor("#e8edf3"))
         return QIcon(pixmap)
 
     def _start_thumbnail_worker(self) -> None:
@@ -489,28 +641,59 @@ class LumaSiftWindow(QMainWindow):
     def _show_selected_detail(self) -> None:
         selected = self.photo_list.selectedItems()
         if not selected:
-            self.detail_text.clear()
+            self.detail_text.setHtml(self._empty_detail_html())
+            self._update_dashboard()
             return
         record = selected[0].data(Qt.ItemDataRole.UserRole)
-        self.detail_text.setPlainText(self._format_record_detail(record, len(selected)))
+        self.detail_text.setHtml(self._format_record_detail_html(record, len(selected)))
+        self._update_dashboard()
+        self._fade_in(self.detail_text, duration=180)
 
-    def _format_record_detail(self, record: dict[str, Any], selected_count: int) -> str:
-        reasons = "\n".join(f"- {item}" for item in record.get("positive_reasons", [])[:4])
-        negatives = "\n".join(f"- {item}" for item in record.get("negative_reasons", [])[:4])
-        params = json.dumps(record.get("specific_edit_parameters", {}), ensure_ascii=False, indent=2)
-        return (
-            f"Selected: {selected_count}\n\n"
-            f"Rank #{record.get('rank')}  Score {record.get('final_selection_score')}\n"
-            f"File: {record.get('filename')}\n"
-            f"Category: {record.get('category')}\n"
-            f"Style: {record.get('recommended_style')}\n\n"
-            f"Story interpretation:\n{record.get('story_interpretation', '')}\n\n"
-            f"Why keep:\n{reasons or '- pending vision review'}\n\n"
-            f"Risks:\n{negatives or '- none recorded'}\n\n"
-            f"Editing direction:\n{record.get('best_editing_direction', '')}\n\n"
-            f"Crop:\n{record.get('crop_strategy', '')}\n\n"
-            f"Parameters:\n{params}"
+    def _format_record_detail_html(self, record: dict[str, Any], selected_count: int) -> str:
+        score = float(record.get("final_selection_score", 0) or 0)
+        category = self._escape(str(record.get("category", ""))).replace("_", " ")
+        style = self._escape(str(record.get("recommended_style", ""))).replace("_", " ")
+        filename = self._escape(str(record.get("filename", "")))
+        story = self._escape(str(record.get("story_interpretation", "") or "Qwen review has not been run yet."))
+        direction = self._escape(str(record.get("best_editing_direction", "") or "Use the selected-photo editing plan for detailed parameters."))
+        crop = self._escape(str(record.get("crop_strategy", "") or "No crop instruction recorded."))
+        positives = self._html_list(record.get("positive_reasons", [])[:5], "pending vision review")
+        negatives = self._html_list(record.get("negative_reasons", [])[:5], "none recorded")
+        params = record.get("specific_edit_parameters", {}) or {}
+        params_rows = "".join(
+            f"<tr><td>{self._escape(str(key)).replace('_', ' ')}</td><td>{self._escape(str(value))}</td></tr>"
+            for key, value in params.items()
         )
+        if not params_rows:
+            params_rows = "<tr><td>Parameters</td><td>Generate an editing plan for selected photos.</td></tr>"
+        return f"""
+        <html><head>{self._detail_html_style()}</head><body>
+        <div class="detail-shell">
+          <div class="hero-line">
+            <span class="rank">Rank #{self._escape(str(record.get("rank", "-")))}</span>
+            <span class="score">{score:.1f}</span>
+          </div>
+          <h2>{filename}</h2>
+          <p class="meta">Selected {selected_count} | {category} | {style}</p>
+          {self._score_bar("Final selection", score)}
+          {self._score_bar("Story / documentary", record.get("street_documentary_potential_score", 0))}
+          {self._score_bar("Composition", record.get("composition_score", 0))}
+          {self._score_bar("Editability", record.get("editability_score", 0))}
+          <h3>Story read</h3>
+          <p>{story}</p>
+          <h3>Why it can work</h3>
+          {positives}
+          <h3>Risks to control</h3>
+          {negatives}
+          <h3>Editing direction</h3>
+          <p>{direction}</p>
+          <h3>Crop</h3>
+          <p>{crop}</p>
+          <h3>Concrete parameters</h3>
+          <table>{params_rows}</table>
+        </div>
+        </body></html>
+        """
 
     def _generate_selected_advice(self) -> None:
         selected_items = self.photo_list.selectedItems()
@@ -527,8 +710,10 @@ class LumaSiftWindow(QMainWindow):
         md_path = self.output_dir / "selected_editing_advice.md"
         write_json_report(json_path, payload)
         write_markdown_report(md_path, render_selected_editing_advice_markdown(payload))
-        self.detail_text.setPlainText(render_selected_editing_advice_markdown(payload))
+        self.detail_text.setHtml(self._format_advice_html(payload))
         self.status_label.setText(f"Editing advice written: {md_path}")
+        self._update_workflow("edit")
+        self._fade_in(self.detail_text)
 
     def _cancel_analysis(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -545,6 +730,8 @@ class LumaSiftWindow(QMainWindow):
         self.api_key_edit.setEnabled(qwen_enabled)
         self.show_key_checkbox.setEnabled(qwen_enabled)
         self.save_keys_checkbox.setEnabled(qwen_enabled)
+        self.stat_labels.get("mode", QLabel()).setText("Qwen" if qwen_enabled else "Local")
+        self._update_workflow("qwen" if qwen_enabled else "import")
 
     def _load_preferences(self) -> None:
         self.input_edit.setText(str(self.settings_store.value("input_dir", "D:/DCIM")))
@@ -583,23 +770,238 @@ class LumaSiftWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Open failed", str(exc))
 
+    def _apply_shadow(self, widget: QWidget, *, blur: int, y: int, alpha: int) -> None:
+        shadow = QGraphicsDropShadowEffect(widget)
+        shadow.setBlurRadius(blur)
+        shadow.setOffset(0, y)
+        shadow.setColor(QColor(15, 23, 42, alpha))
+        widget.setGraphicsEffect(shadow)
+
+    def _fade_in(self, widget: QWidget, *, duration: int = 260) -> None:
+        effect = QGraphicsOpacityEffect(widget)
+        widget.setGraphicsEffect(effect)
+        animation = QPropertyAnimation(effect, b"opacity", self)
+        animation.setDuration(duration)
+        animation.setStartValue(0.35)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.finished.connect(lambda: self._animations.remove(animation) if animation in self._animations else None)
+        self._animations.append(animation)
+        animation.start()
+
+    def _update_workflow(self, active: str) -> None:
+        order = ["import", "local", "qwen", "edit"]
+        active_index = order.index(active) if active in order else 0
+        for index, key in enumerate(order):
+            step = self.workflow_steps.get(key)
+            if step is None:
+                continue
+            if index < active_index:
+                state = "done"
+            elif index == active_index:
+                state = "active"
+            else:
+                state = "idle"
+            step.setProperty("state", state)
+            step.style().unpolish(step)
+            step.style().polish(step)
+
+    def _update_dashboard(self, summary: dict[str, Any] | None = None) -> None:
+        if not self.stat_labels:
+            return
+        scanned = summary.get("scanned", len(self.records)) if summary else len(self.records)
+        selected = self.photo_list.selectedItems() if hasattr(self, "photo_list") else []
+        mode = "Qwen" if hasattr(self, "mode_combo") and self.mode_combo.currentText() == "qwen_vision" else "Local"
+        self.stat_labels["scanned"].setText(str(scanned))
+        self.stat_labels["shown"].setText(str(len(self.visible_records)))
+        self.stat_labels["selected"].setText(str(len(selected)))
+        self.stat_labels["mode"].setText(mode)
+
+    def _empty_detail_html(self) -> str:
+        return """
+        <html><head>{style}</head><body>
+        <div class="empty-state">
+          <h2>Start with a local folder</h2>
+          <p>Scan RAW/JPG/PNG locally, rank by story value and editing potential, then select photos for a concrete editing plan.</p>
+          <table>
+            <tr><td>1</td><td>Choose D:/DCIM or another photo folder.</td></tr>
+            <tr><td>2</td><td>Run local analysis first for speed and privacy.</td></tr>
+            <tr><td>3</td><td>Enable Qwen only for the top candidates when deeper visual critique is needed.</td></tr>
+          </table>
+        </div>
+        </body></html>
+        """.format(style=self._detail_html_style())
+
+    def _escape(self, value: str) -> str:
+        return html.escape(value, quote=True)
+
+    def _html_list(self, values: list[Any], fallback: str) -> str:
+        items = [str(item) for item in values if str(item).strip()]
+        if not items:
+            items = [fallback]
+        return "<ul>" + "".join(f"<li>{self._escape(item)}</li>" for item in items) + "</ul>"
+
+    def _score_bar(self, label: str, value: Any) -> str:
+        try:
+            score = max(0.0, min(100.0, float(value or 0)))
+        except (TypeError, ValueError):
+            score = 0.0
+        return (
+            "<div class='score-row'>"
+            f"<span>{self._escape(label)}</span><b>{score:.0f}</b>"
+            f"<div class='bar'><div style='width:{score:.0f}%;'></div></div>"
+            "</div>"
+        )
+
+    def _format_advice_html(self, payload: dict[str, Any]) -> str:
+        markdown = render_selected_editing_advice_markdown(payload)
+        escaped = self._escape(markdown)
+        count = int(payload.get("selected_count", 0) or 0)
+        return f"""
+        <html><head>{self._detail_html_style()}</head><body>
+        <h2>Editing plan for {count} selected photos</h2>
+        <p class="meta">The plan is also written to selected_editing_advice.md and selected_editing_advice.json.</p>
+        <pre>{escaped}</pre>
+        </body></html>
+        """
+
+    def _detail_html_style(self) -> str:
+        return """
+        <style>
+        body { color: #162033; font-family: Segoe UI, Microsoft YaHei; font-size: 12px; }
+        h2 { margin: 0 0 4px 0; font-size: 20px; color: #0f172a; }
+        h3 { margin: 16px 0 6px 0; font-size: 13px; color: #0f172a; }
+        p { line-height: 1.45; margin: 4px 0 8px 0; color: #334155; }
+        ul { margin: 4px 0 8px 18px; padding: 0; }
+        li { margin-bottom: 5px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+        td { border-bottom: 1px solid #e2e8f0; padding: 6px; vertical-align: top; }
+        pre { white-space: pre-wrap; background: #f8fafc; border: 1px solid #d8e0ea; border-radius: 8px; padding: 10px; }
+        .hero-line { margin-bottom: 8px; }
+        .rank { color: #2563eb; font-weight: 800; }
+        .score { float: right; color: #0f172a; font-size: 28px; font-weight: 900; }
+        .meta { color: #64748b; }
+        .score-row { margin: 8px 0 10px 0; }
+        .score-row span { font-weight: 700; color: #334155; }
+        .score-row b { float: right; color: #0f172a; }
+        .bar { margin-top: 4px; height: 8px; background: #e2e8f0; border-radius: 4px; }
+        .bar div { height: 8px; background: #2563eb; border-radius: 4px; }
+        </style>
+        """
+
     def _apply_style(self) -> None:
         self.setStyleSheet(
             """
-            QMainWindow, QWidget { background: #f3f3f3; color: #202020; font-family: Segoe UI, Microsoft YaHei; }
-            QLabel#title { font-size: 30px; font-weight: 700; color: #111; }
-            QLabel#subtitle, QLabel#muted { color: #666; }
-            QGroupBox { border: 1px solid #d0d0d0; border-radius: 4px; margin-top: 10px; padding: 12px; background: #fbfbfb; }
-            QFrame#toolbar { background: #f3f3f3; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
-            QLineEdit, QSpinBox, QComboBox, QTextEdit, QListWidget { background: #ffffff; border: 1px solid #c8c8c8; border-radius: 3px; padding: 5px; }
-            QPushButton { background: #0078d4; color: white; border: none; border-radius: 3px; padding: 8px 12px; font-weight: 600; }
-            QPushButton:hover { background: #106ebe; }
-            QPushButton:disabled { background: #a0a0a0; }
-            QListWidget::item { background: #ffffff; border: 1px solid #dddddd; border-radius: 4px; padding: 6px; }
-            QListWidget::item:selected { border: 2px solid #0078d4; background: #e8f2fb; }
-            QProgressBar { border: 1px solid #c8c8c8; border-radius: 3px; text-align: center; background: #ffffff; }
-            QProgressBar::chunk { background: #0078d4; }
+            QMainWindow, QWidget {
+                background: #eef2f6;
+                color: #17202a;
+                font-family: Segoe UI, Microsoft YaHei;
+                font-size: 12px;
+            }
+            QLabel { background: transparent; }
+            QLabel#title { font-size: 34px; font-weight: 800; color: #0f172a; letter-spacing: 0px; }
+            QLabel#subtitle { color: #425466; font-size: 13px; }
+            QLabel#muted, QLabel#statCaption, QLabel#stepCaption { color: #64748b; }
+            QLabel#sectionTitle { font-size: 14px; font-weight: 800; color: #0f172a; }
+            QLabel#fieldLabel { color: #334155; font-weight: 700; }
+            QLabel#miniLabel { color: #64748b; font-weight: 700; }
+            QFrame#hero, QFrame#controlCard, QFrame#toolbar, QFrame#detailPanel {
+                background: #ffffff;
+                border: 1px solid #d8e0ea;
+                border-radius: 8px;
+            }
+            QFrame#statCard {
+                background: #f6f9fc;
+                border: 1px solid #dce5ef;
+                border-radius: 8px;
+                min-width: 92px;
+            }
+            QFrame#optionBar { background: transparent; border: none; }
+            QFrame#miniControl {
+                background: #f8fafc;
+                border: 1px solid #dbe5ee;
+                border-radius: 8px;
+            }
+            QLabel#statValue { font-size: 20px; font-weight: 800; color: #0b5cab; }
+            QFrame#workflow { background: transparent; }
+            QFrame#stepCard {
+                background: #ffffff;
+                border: 1px solid #d8e0ea;
+                border-radius: 8px;
+            }
+            QFrame#stepCard[state="active"] {
+                background: #eff6ff;
+                border: 2px solid #2563eb;
+            }
+            QFrame#stepCard[state="done"] {
+                background: #ecfdf5;
+                border: 1px solid #34d399;
+            }
+            QLabel#stepTitle { font-weight: 800; color: #0f172a; }
+            QLineEdit, QSpinBox, QComboBox, QTextEdit, QListWidget {
+                background: #ffffff;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                padding: 7px;
+                selection-background-color: #bfdbfe;
+            }
+            QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QTextEdit:focus {
+                border: 2px solid #2563eb;
+            }
+            QPushButton {
+                border: none;
+                border-radius: 6px;
+                padding: 9px 13px;
+                font-weight: 800;
+            }
+            QPushButton#primaryButton { background: #2563eb; color: #ffffff; }
+            QPushButton#primaryButton:hover { background: #1d4ed8; }
+            QPushButton#secondaryButton { background: #e8eef6; color: #0f172a; }
+            QPushButton#secondaryButton:hover { background: #dbe7f3; }
+            QPushButton:disabled { background: #cbd5e1; color: #64748b; }
+            QListWidget#photoGrid {
+                background: #f8fafc;
+                border: 1px solid #d8e0ea;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QListWidget#photoGrid::item {
+                background: #ffffff;
+                border: 1px solid #d9e2ec;
+                border-radius: 8px;
+                padding: 8px;
+                color: #1e293b;
+            }
+            QListWidget#photoGrid::item:hover {
+                border: 1px solid #60a5fa;
+                background: #f8fbff;
+            }
+            QListWidget#photoGrid::item:selected {
+                border: 2px solid #2563eb;
+                background: #eff6ff;
+            }
+            QLabel#resultCount {
+                background: #eef2ff;
+                color: #1e40af;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-weight: 800;
+            }
+            QTextEdit#detailText {
+                background: #fbfdff;
+                border: 1px solid #d8e0ea;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QProgressBar {
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                text-align: center;
+                background: #f8fafc;
+                height: 18px;
+                font-weight: 700;
+            }
+            QProgressBar::chunk { background: #2563eb; border-radius: 5px; }
             """
         )
 

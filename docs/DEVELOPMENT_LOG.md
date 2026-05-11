@@ -42,3 +42,9 @@
   - `dist/installer/LumaSiftSetup.exe`;
   - desktop/start menu shortcuts;
   - portable zip remains available.
+- Reworked the desktop UI toward a more commercial local-first product flow:
+  - added a top dashboard for scanned/shown/selected/mode state;
+  - added a four-step workflow strip covering import, local pre-score, Qwen review, and editing plan;
+  - replaced the old run form with a compact control deck;
+  - added result-board styling, empty-state guidance, and fade-in transitions;
+  - replaced plain text detail output with visual score bars and structured review/edit sections.

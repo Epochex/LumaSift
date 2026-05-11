@@ -22,7 +22,12 @@ foreach ($RuntimeDir in @("outputs", "runs", ".lumasift_cache")) {
         Remove-Item -LiteralPath $RuntimePath -Recurse -Force
     }
 }
-Get-ChildItem -LiteralPath $AppDistDir -Recurse -Include *.log -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+$LogFiles = Get-ChildItem -LiteralPath $AppDistDir -Recurse -Filter "*.log" -File -ErrorAction SilentlyContinue
+foreach ($LogFile in $LogFiles) {
+    if ($null -ne $LogFile -and (Test-Path -LiteralPath $LogFile.FullName)) {
+        Remove-Item -LiteralPath $LogFile.FullName -Force -ErrorAction SilentlyContinue
+    }
+}
 
 $PackageDir = Join-Path $Root "dist"
 $ZipPath = Join-Path $PackageDir "LumaSift-Windows-Portable.zip"
@@ -63,7 +68,8 @@ if (-not $SkipInstaller) {
     }
 
     if ($Iscc) {
-        & $Iscc.Source packaging\LumaSiftInstaller.iss
+        $IsccPath = if ($Iscc.Source) { $Iscc.Source } else { $Iscc.FullName }
+        & $IsccPath packaging\LumaSiftInstaller.iss
         Write-Host "Built installer:"
         Write-Host (Join-Path $PackageDir "installer\LumaSiftSetup.exe")
     } else {
