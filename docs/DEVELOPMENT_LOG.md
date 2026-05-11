@@ -26,3 +26,9 @@
   - thumbnail grid;
   - detail panel;
   - multi-select editing advice generation.
+- Added commercial friend-test packaging:
+  - PyInstaller spec;
+  - Windows build script;
+  - app icon;
+  - portable zip output;
+  - exe launch smoke test.

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QSize, Qt, QThread, Signal
+from PySide6.QtCore import QObject, QSettings, QSize, Qt, QThread, Signal
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -46,6 +48,7 @@ from lumasift.reports.markdown_report import render_selected_editing_advice_mark
 class AnalysisWorker(QObject):
     finished = Signal(dict)
     failed = Signal(str)
+    progress = Signal(str, int, int)
 
     def __init__(self, settings: Settings, run_id: str) -> None:
         super().__init__()
@@ -55,7 +58,11 @@ class AnalysisWorker(QObject):
     def run(self) -> None:
         try:
             configure_logging(self.settings.output_dir)
-            result = LumaSiftHarness(settings=self.settings, run_id=self.run_id).run()
+            result = LumaSiftHarness(
+                settings=self.settings,
+                run_id=self.run_id,
+                progress_callback=lambda stage, current, total: self.progress.emit(stage, current, total),
+            ).run()
             report = json.loads(result.report_json.read_text(encoding="utf-8"))
             self.finished.emit({"summary": result.summary, "report": report, "output_dir": str(self.settings.output_dir)})
         except Exception as exc:  # noqa: BLE001 - GUI must show failures instead of crashing.
@@ -70,9 +77,11 @@ class LumaSiftWindow(QMainWindow):
         self.resize(1280, 820)
         self.records: list[dict[str, Any]] = []
         self.output_dir = Path("./outputs/gui")
+        self.settings_store = QSettings("LumaSift", "LumaSift")
         self.worker_thread: QThread | None = None
         self.worker: AnalysisWorker | None = None
         self._build_ui()
+        self._load_preferences()
         self._apply_style()
 
     def _build_ui(self) -> None:
@@ -114,9 +123,12 @@ class LumaSiftWindow(QMainWindow):
         self.generate_advice_button = QPushButton("Generate Editing Advice for Selection")
         self.generate_advice_button.clicked.connect(self._generate_selected_advice)
         advice_buttons.addWidget(self.generate_advice_button)
-        self.open_output_button = QPushButton("Choose Output Folder")
-        self.open_output_button.clicked.connect(self._choose_output)
+        self.open_output_button = QPushButton("Open Output")
+        self.open_output_button.clicked.connect(lambda: self._open_path(self.output_dir))
         advice_buttons.addWidget(self.open_output_button)
+        self.open_contact_button = QPushButton("Open Contact Sheet")
+        self.open_contact_button.clicked.connect(lambda: self._open_path(self.output_dir / "contact_sheet_top50.jpg"))
+        advice_buttons.addWidget(self.open_contact_button)
         detail_layout.addLayout(advice_buttons)
         splitter.addWidget(detail_panel)
         splitter.setSizes([820, 420])
@@ -146,6 +158,7 @@ class LumaSiftWindow(QMainWindow):
         options_layout = QFormLayout(options)
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["local_only", "qwen_vision"])
+        self.mode_combo.currentTextChanged.connect(self._sync_mode_controls)
         self.limit_spin = QSpinBox()
         self.limit_spin.setRange(1, 100000)
         self.limit_spin.setValue(50)
@@ -155,37 +168,60 @@ class LumaSiftWindow(QMainWindow):
         self.selected_top_spin = QSpinBox()
         self.selected_top_spin.setRange(1, 100)
         self.selected_top_spin.setValue(10)
+        self.display_limit_spin = QSpinBox()
+        self.display_limit_spin.setRange(20, 2000)
+        self.display_limit_spin.setValue(300)
+        self.api_key_edit = QLineEdit()
+        self.api_key_edit.setPlaceholderText("Optional: comma-separated Qwen keys. Leave empty to use .env.")
+        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.show_key_checkbox = QCheckBox("Show")
+        self.show_key_checkbox.toggled.connect(self._toggle_key_visibility)
+        key_row = QWidget()
+        key_layout = QHBoxLayout(key_row)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        key_layout.addWidget(self.api_key_edit, stretch=1)
+        key_layout.addWidget(self.show_key_checkbox)
+        self.save_keys_checkbox = QCheckBox("Save API keys locally")
         self.cache_note = QLabel("Qwen mode sends only Top-N JPEG previews and uses response cache.")
         self.cache_note.setObjectName("muted")
         options_layout.addRow("Mode", self.mode_combo)
         options_layout.addRow("Scan limit", self.limit_spin)
         options_layout.addRow("Qwen Top-N", self.top_n_spin)
         options_layout.addRow("Auto advice Top-N", self.selected_top_spin)
+        options_layout.addRow("Display Top-N", self.display_limit_spin)
+        options_layout.addRow("Qwen API keys", key_row)
+        options_layout.addRow("", self.save_keys_checkbox)
         options_layout.addRow("", self.cache_note)
         layout.addWidget(options, 2, 0, 1, 3)
 
         self.run_button = QPushButton("Analyze Folder")
         self.run_button.clicked.connect(self._start_analysis)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self._cancel_analysis)
+        self.cancel_button.setEnabled(False)
         self.progress = QProgressBar()
-        self.progress.setRange(0, 1)
+        self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.status_label = QLabel("Ready")
         self.status_label.setObjectName("muted")
         layout.addWidget(self.run_button, 3, 0)
-        layout.addWidget(self.progress, 3, 1)
-        layout.addWidget(self.status_label, 3, 2)
+        layout.addWidget(self.cancel_button, 3, 1)
+        layout.addWidget(self.progress, 3, 2)
+        layout.addWidget(self.status_label, 4, 0, 1, 3)
         return group
 
     def _choose_input(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Choose photo folder", self.input_edit.text())
         if folder:
             self.input_edit.setText(folder)
+            self._save_preferences()
 
     def _choose_output(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Choose output folder", self.output_edit.text())
         if folder:
             self.output_edit.setText(folder)
             self.output_dir = Path(folder)
+            self._save_preferences()
 
     def _start_analysis(self) -> None:
         input_dir = Path(self.input_edit.text()).expanduser()
@@ -202,9 +238,25 @@ class LumaSiftWindow(QMainWindow):
         settings.limit = self.limit_spin.value()
         settings.top_n_api_analysis = self.top_n_spin.value()
         settings.selected_ranks = f"1-{self.selected_top_spin.value()}"
+        keys_text = self.api_key_edit.text().strip()
+        if keys_text:
+            settings.vision_api_keys = [key.strip() for key in keys_text.split(",") if key.strip()]
+        if settings.ai_mode == "qwen_vision" and not settings.vision_api_keys:
+            QMessageBox.warning(
+                self,
+                "Qwen API key missing",
+                "qwen_vision requires API keys. Enter keys in the Qwen API keys field or configure .env.",
+            )
+            return
+
+        self._save_preferences()
+        stop_file = output_dir / "STOP_LUMASIFT"
+        stop_file.unlink(missing_ok=True)
 
         self.run_button.setEnabled(False)
-        self.progress.setRange(0, 0)
+        self.cancel_button.setEnabled(True)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
         self.status_label.setText("Analyzing...")
         self.photo_list.clear()
         self.detail_text.clear()
@@ -215,6 +267,7 @@ class LumaSiftWindow(QMainWindow):
         self.worker_thread.started.connect(self.worker.run)
         self.worker.finished.connect(self._analysis_finished)
         self.worker.failed.connect(self._analysis_failed)
+        self.worker.progress.connect(self._analysis_progress)
         self.worker.finished.connect(self.worker_thread.quit)
         self.worker.failed.connect(self.worker_thread.quit)
         self.worker_thread.finished.connect(self.worker_thread.deleteLater)
@@ -225,9 +278,10 @@ class LumaSiftWindow(QMainWindow):
         self.status_label.setText(
             f"Done: {payload['summary']['processed']} processed, {payload['summary']['failed']} failed"
         )
-        self.progress.setRange(0, 1)
-        self.progress.setValue(1)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(100)
         self.run_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
         self._populate_records()
 
     def _analysis_failed(self, message: str) -> None:
@@ -235,11 +289,27 @@ class LumaSiftWindow(QMainWindow):
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
         self.run_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
         QMessageBox.critical(self, "Analysis failed", message)
+
+    def _analysis_progress(self, stage: str, current: int, total: int) -> None:
+        if total <= 0:
+            self.progress.setValue(0)
+            self.status_label.setText(f"{stage}: preparing...")
+            return
+        value = int((current / total) * 100)
+        self.progress.setValue(max(0, min(100, value)))
+        label = {
+            "manifest": "Scanning files",
+            "local": "Local RAW/preview analysis",
+            "qwen": "Qwen vision review",
+            "done": "Done",
+        }.get(stage, stage)
+        self.status_label.setText(f"{label}: {current}/{total}")
 
     def _populate_records(self) -> None:
         self.photo_list.clear()
-        for record in self.records[:500]:
+        for record in self.records[: self.display_limit_spin.value()]:
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, record)
             score = float(record.get("final_selection_score", 0) or 0)
@@ -249,6 +319,7 @@ class LumaSiftWindow(QMainWindow):
             item.setIcon(self._record_icon(record))
             item.setSizeHint(QSize(210, 210))
             self.photo_list.addItem(item)
+        self.status_label.setText(f"Loaded {min(len(self.records), self.display_limit_spin.value())}/{len(self.records)} ranked photos")
 
     def _record_icon(self, record: dict[str, Any]) -> QIcon:
         try:
@@ -303,6 +374,59 @@ class LumaSiftWindow(QMainWindow):
         write_markdown_report(md_path, render_selected_editing_advice_markdown(payload))
         self.detail_text.setPlainText(render_selected_editing_advice_markdown(payload))
         self.status_label.setText(f"Editing advice written: {md_path}")
+
+    def _cancel_analysis(self) -> None:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        (self.output_dir / "STOP_LUMASIFT").write_text("stop", encoding="utf-8")
+        self.status_label.setText("Cancel requested. Finishing current photo...")
+        self.cancel_button.setEnabled(False)
+
+    def _toggle_key_visibility(self, enabled: bool) -> None:
+        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Normal if enabled else QLineEdit.EchoMode.Password)
+
+    def _sync_mode_controls(self) -> None:
+        qwen_enabled = self.mode_combo.currentText() == "qwen_vision"
+        self.top_n_spin.setEnabled(qwen_enabled)
+        self.api_key_edit.setEnabled(qwen_enabled)
+        self.show_key_checkbox.setEnabled(qwen_enabled)
+        self.save_keys_checkbox.setEnabled(qwen_enabled)
+
+    def _load_preferences(self) -> None:
+        self.input_edit.setText(str(self.settings_store.value("input_dir", "D:/DCIM")))
+        self.output_edit.setText(str(self.settings_store.value("output_dir", "./outputs/gui")))
+        self.output_dir = Path(self.output_edit.text())
+        self.limit_spin.setValue(int(self.settings_store.value("limit", 50)))
+        self.top_n_spin.setValue(int(self.settings_store.value("top_n", 5)))
+        self.selected_top_spin.setValue(int(self.settings_store.value("selected_top", 10)))
+        self.display_limit_spin.setValue(int(self.settings_store.value("display_limit", 300)))
+        mode = str(self.settings_store.value("mode", "local_only"))
+        self.mode_combo.setCurrentText(mode if mode in {"local_only", "qwen_vision"} else "local_only")
+        saved_keys = str(self.settings_store.value("api_keys", ""))
+        self.api_key_edit.setText(saved_keys)
+        self.save_keys_checkbox.setChecked(bool(saved_keys))
+        self._sync_mode_controls()
+
+    def _save_preferences(self) -> None:
+        self.settings_store.setValue("input_dir", self.input_edit.text())
+        self.settings_store.setValue("output_dir", self.output_edit.text())
+        self.settings_store.setValue("limit", self.limit_spin.value())
+        self.settings_store.setValue("top_n", self.top_n_spin.value())
+        self.settings_store.setValue("selected_top", self.selected_top_spin.value())
+        self.settings_store.setValue("display_limit", self.display_limit_spin.value())
+        self.settings_store.setValue("mode", self.mode_combo.currentText())
+        if self.save_keys_checkbox.isChecked():
+            self.settings_store.setValue("api_keys", self.api_key_edit.text())
+        else:
+            self.settings_store.remove("api_keys")
+
+    def _open_path(self, path: Path) -> None:
+        try:
+            if not path.exists():
+                QMessageBox.information(self, "Not found", f"Path does not exist yet:\n{path}")
+                return
+            os.startfile(path)  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Open failed", str(exc))
 
     def _apply_style(self) -> None:
         self.setStyleSheet(

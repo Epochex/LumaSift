@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "pyinstaller>=6.11",
     "pytest>=8.2",
 ]
 raw = [
@@ -31,6 +32,9 @@ lumasift = "lumasift.app.desktop:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["lumasift*"]
+
+[tool.setuptools.package-data]
+lumasift = ["resources/*.ico"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

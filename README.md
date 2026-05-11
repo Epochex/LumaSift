@@ -54,6 +54,18 @@ lumasift
 
 The first user-facing release is GUI-first. The previous command-line workflow has been removed from the product surface.
 
+For friend testing on Windows, use the portable package:
+
+```text
+dist/LumaSift-Windows-Portable.zip
+```
+
+Unzip it and run:
+
+```text
+LumaSift/LumaSift.exe
+```
+
 Expected outputs after running an analysis:
 
 ```text
@@ -72,6 +84,8 @@ outputs/runs/<run_id>/checkpoint.json
 4. Set scan limit and Qwen Top-N.
 5. Click **Analyze Folder**.
 6. Review the thumbnail grid, select photos, and click **Generate Editing Advice for Selection**.
+
+The app remembers recent folders and run settings. API keys can be entered in the GUI for Qwen mode; leave the field empty to use `.env`. Saving keys locally is optional.
 
 ## Qwen Vision Mode
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from lumasift.analysis.editing_advice import build_selected_editing_advice
 from lumasift.analysis.local_story import analyze_local_story_proxy
@@ -43,16 +44,27 @@ class HarnessResult:
 
 
 class LumaSiftHarness:
-    def __init__(self, settings: Settings, run_id: str | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        run_id: str | None = None,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> None:
         self.settings = settings
         self.settings.ensure_dirs()
         self.run_id = run_id or time.strftime("%Y%m%d-%H%M%S")
         self.run_dir = self.settings.output_dir / "runs" / self.run_id
         self.state = RunState(self.run_dir)
+        self.progress_callback = progress_callback
+
+    def _progress(self, stage: str, current: int, total: int) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(stage, current, total)
 
     def run(self) -> HarnessResult:
         self.state.append_event("run_started", mode=self.settings.ai_mode, limit=self.settings.limit)
         photos = discover_photos(self.settings.input_dir, self.settings.supported_extensions, limit=self.settings.limit)
+        self._progress("manifest", 0, len(photos))
         self.state.append_event(
             "manifest_created",
             count=len(photos),
@@ -104,6 +116,7 @@ class LumaSiftHarness:
                     "failed": failed,
                 }
             )
+            self._progress("local", index, len(photos))
 
         ranked = rank_records(records)
         if self.settings.ai_mode == "qwen_vision":
@@ -147,6 +160,7 @@ class LumaSiftHarness:
             "failed": failed,
         }
         self.state.append_event("run_completed", **summary)
+        self._progress("done", len(photos), len(photos))
         return HarnessResult(summary=summary, report_csv=report_csv, report_json=report_json, run_dir=self.run_dir)
 
     def _apply_qwen_vision(self, ranked: list[dict]) -> list[dict]:
@@ -163,10 +177,12 @@ class LumaSiftHarness:
         )
         preview_dir = self.settings.output_dir / "previews"
         updated = list(ranked)
-        for record in updated[: self.settings.top_n_api_analysis]:
+        candidates = updated[: self.settings.top_n_api_analysis]
+        for qwen_index, record in enumerate(candidates, start=1):
             if record.get("category") == "failed":
                 continue
             try:
+                self._progress("qwen", qwen_index - 1, len(candidates))
                 preview_path = create_jpeg_preview(Path(record["path"]), preview_dir)
                 response = client.analyze_image(
                     preview_path,
@@ -178,4 +194,6 @@ class LumaSiftHarness:
             except Exception as exc:  # noqa: BLE001 - API failures should not kill local output.
                 record.setdefault("errors", []).append(f"qwen_vision_failed: {exc}")
                 self.state.append_event("qwen_failed", path=record.get("path"), error=str(exc))
+            finally:
+                self._progress("qwen", qwen_index, len(candidates))
         return rank_records(updated)
