@@ -15,6 +15,7 @@ from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
+    QAbstractSpinBox,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -106,6 +107,9 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "grid_tooltip": "双击照片打开大图预览",
         "advanced_settings": "高级设置",
         "hide_advanced": "收起设置",
+        "review_mode": "筛片模式",
+        "show_setup": "展开设置",
+        "new_scan": "重新分析",
         "running_grid": "正在分析，结果会自动出现。",
         "empty_filtered": "没有匹配结果，调整筛选条件。",
         "done": "完成",
@@ -173,6 +177,9 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "grid_tooltip": "Double-click a photo to open the large preview",
         "advanced_settings": "Advanced",
         "hide_advanced": "Hide Settings",
+        "review_mode": "Review Mode",
+        "show_setup": "Show Setup",
+        "new_scan": "Analyze Again",
         "running_grid": "Analysis is running. Results will appear here.",
         "empty_filtered": "No matches. Adjust filters.",
         "done": "Done",
@@ -592,6 +599,7 @@ class LumaSiftWindow(QMainWindow):
         self.current_run_id = ""
         self.pending_close = False
         self.allow_close = False
+        self.review_mode = False
         self.preview_dialogs: list[LargePreviewDialog] = []
         self._build_ui()
         self._load_preferences()
@@ -641,6 +649,7 @@ class LumaSiftWindow(QMainWindow):
             ("qwen_keys", self.static_labels.get("qwen_keys")),
             ("review_board", self.static_labels.get("review_board")),
             ("review_cockpit", self.static_labels.get("review_cockpit")),
+            ("review_mode", self.static_labels.get("review_mode")),
         ]:
             if label:
                 label.setText(self._t(key))
@@ -674,6 +683,8 @@ class LumaSiftWindow(QMainWindow):
             self.run_button.setText(self._t("analyze"))
             self.cancel_button.setText(self._t("cancel"))
             self.advanced_button.setText(self._t("hide_advanced") if self.advanced_panel.isVisible() else self._t("advanced_settings"))
+            self.review_setup_button.setText(self._t("show_setup"))
+            self.review_new_scan_button.setText(self._t("new_scan"))
             self.search_edit.setPlaceholderText(self._t("search"))
             self.photo_list.setToolTip(self._t("grid_tooltip"))
             self.detail_hint_label.setText(self._t("detail_hint"))
@@ -739,9 +750,15 @@ class LumaSiftWindow(QMainWindow):
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(12)
 
-        root.addWidget(self._build_header())
-        root.addWidget(self._build_workflow())
-        root.addWidget(self._build_controls())
+        self.header_frame = self._build_header()
+        self.workflow_frame = self._build_workflow()
+        self.controls_frame = self._build_controls()
+        self.review_bar = self._build_review_bar()
+        root.addWidget(self.header_frame)
+        root.addWidget(self.workflow_frame)
+        root.addWidget(self.controls_frame)
+        root.addWidget(self.review_bar)
+        self.review_bar.setVisible(False)
         root.addWidget(self._build_result_toolbar())
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -768,7 +785,7 @@ class LumaSiftWindow(QMainWindow):
 
         detail_panel = QFrame()
         detail_panel.setObjectName("detailPanel")
-        detail_panel.setMinimumWidth(360)
+        detail_panel.setMinimumWidth(420)
         self._apply_shadow(detail_panel, blur=22, y=8, alpha=24)
         detail_layout = QVBoxLayout(detail_panel)
         detail_layout.setContentsMargins(12, 12, 12, 12)
@@ -835,7 +852,7 @@ class LumaSiftWindow(QMainWindow):
         action_grid.addWidget(self.open_contact_button, 1, 2)
         detail_layout.addWidget(action_bar, stretch=0)
         splitter.addWidget(detail_panel)
-        splitter.setSizes([980, 420])
+        splitter.setSizes([900, 520])
         root.addWidget(splitter, stretch=1)
 
         self.setCentralWidget(central)
@@ -918,6 +935,32 @@ class LumaSiftWindow(QMainWindow):
             layout.addWidget(step, stretch=1)
         return frame
 
+    def _build_review_bar(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("reviewBar")
+        self._apply_shadow(frame, blur=18, y=6, alpha=18)
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(12, 9, 12, 9)
+        layout.setSpacing(10)
+
+        mode_label = QLabel("")
+        mode_label.setObjectName("sectionTitle")
+        self.static_labels["review_mode"] = mode_label
+        self.review_summary_label = QLabel("")
+        self.review_summary_label.setObjectName("muted")
+        self.review_setup_button = QPushButton("")
+        self.review_setup_button.setObjectName("ghostButton")
+        self.review_setup_button.clicked.connect(lambda: self._exit_review_mode(show_advanced=True))
+        self.review_new_scan_button = QPushButton("")
+        self.review_new_scan_button.setObjectName("secondaryButton")
+        self.review_new_scan_button.clicked.connect(lambda: self._exit_review_mode(show_advanced=False))
+
+        layout.addWidget(mode_label)
+        layout.addWidget(self.review_summary_label, stretch=1)
+        layout.addWidget(self.review_setup_button)
+        layout.addWidget(self.review_new_scan_button)
+        return frame
+
     def _build_controls(self) -> QFrame:
         group = QFrame()
         group.setObjectName("controlCard")
@@ -995,19 +1038,31 @@ class LumaSiftWindow(QMainWindow):
         self.limit_spin = QSpinBox()
         self.limit_spin.setRange(1, 100000)
         self.limit_spin.setValue(50)
-        self.limit_spin.setFixedWidth(96)
+        self.limit_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.limit_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.limit_spin.setFixedWidth(118)
+        self.limit_spin.setMinimumHeight(34)
         self.top_n_spin = QSpinBox()
         self.top_n_spin.setRange(1, 500)
         self.top_n_spin.setValue(5)
-        self.top_n_spin.setFixedWidth(88)
+        self.top_n_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.top_n_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.top_n_spin.setFixedWidth(118)
+        self.top_n_spin.setMinimumHeight(34)
         self.selected_top_spin = QSpinBox()
         self.selected_top_spin.setRange(1, 100)
         self.selected_top_spin.setValue(10)
-        self.selected_top_spin.setFixedWidth(88)
+        self.selected_top_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.selected_top_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.selected_top_spin.setFixedWidth(118)
+        self.selected_top_spin.setMinimumHeight(34)
         self.display_limit_spin = QSpinBox()
         self.display_limit_spin.setRange(20, 2000)
         self.display_limit_spin.setValue(300)
-        self.display_limit_spin.setFixedWidth(96)
+        self.display_limit_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.display_limit_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.display_limit_spin.setFixedWidth(118)
+        self.display_limit_spin.setMinimumHeight(34)
 
         self.advanced_panel = QFrame()
         self.advanced_panel.setObjectName("advancedPanel")
@@ -1029,6 +1084,7 @@ class LumaSiftWindow(QMainWindow):
         ]:
             mini = QFrame()
             mini.setObjectName("miniControl")
+            mini.setMinimumWidth(132)
             mini_layout = QVBoxLayout(mini)
             mini_layout.setContentsMargins(10, 8, 10, 8)
             mini_layout.setSpacing(3)
@@ -1130,10 +1186,15 @@ class LumaSiftWindow(QMainWindow):
             self._save_preferences()
 
     def _toggle_advanced_panel(self) -> None:
+        if self.review_mode:
+            self._exit_review_mode(show_advanced=True)
+            return
         self.advanced_panel.setVisible(not self.advanced_panel.isVisible())
         self.advanced_button.setText(self._t("hide_advanced") if self.advanced_panel.isVisible() else self._t("advanced_settings"))
 
     def _focus_workflow_step(self, step: str) -> None:
+        if self.review_mode:
+            self._exit_review_mode(show_advanced=step in {"local", "qwen"})
         self._update_workflow(step)
         if step == "import":
             self.input_edit.setFocus()
@@ -1151,7 +1212,31 @@ class LumaSiftWindow(QMainWindow):
         elif step == "edit":
             self.generate_advice_button.setFocus()
 
+    def _enter_review_mode(self, summary: dict[str, Any] | None = None) -> None:
+        self.review_mode = True
+        self.header_frame.setVisible(False)
+        self.workflow_frame.setVisible(False)
+        self.controls_frame.setVisible(False)
+        self.advanced_panel.setVisible(False)
+        self.review_bar.setVisible(True)
+        processed = summary.get("processed", len(self.records)) if summary else len(self.records)
+        failed = summary.get("failed", 0) if summary else 0
+        visible = len(self.visible_records)
+        self.review_summary_label.setText(f"{processed} / {failed} | {visible}")
+        self._update_dashboard(summary)
+
+    def _exit_review_mode(self, *, show_advanced: bool) -> None:
+        self.review_mode = False
+        self.header_frame.setVisible(True)
+        self.workflow_frame.setVisible(True)
+        self.controls_frame.setVisible(True)
+        self.review_bar.setVisible(False)
+        self.advanced_panel.setVisible(show_advanced)
+        self.advanced_button.setText(self._t("hide_advanced") if show_advanced else self._t("advanced_settings"))
+
     def _start_analysis(self) -> None:
+        if self.review_mode:
+            self._exit_review_mode(show_advanced=False)
         input_dir = Path(self.input_edit.text()).expanduser()
         output_dir = Path(self.output_edit.text()).expanduser()
         if not input_dir.exists():
@@ -1184,6 +1269,8 @@ class LumaSiftWindow(QMainWindow):
 
         self.run_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
+        self.advanced_panel.setVisible(False)
+        self.advanced_button.setText(self._t("advanced_settings"))
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.status_label.setText(self._t("step_local"))
@@ -1231,8 +1318,11 @@ class LumaSiftWindow(QMainWindow):
         self._update_workflow("edit")
         self._update_dashboard(payload["summary"])
         self._fade_in(self.photo_list)
+        self._enter_review_mode(payload["summary"])
 
     def _analysis_failed(self, message: str) -> None:
+        if self.review_mode:
+            self._exit_review_mode(show_advanced=True)
         self.status_label.setText(self._t("failed"))
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
@@ -1783,7 +1873,7 @@ class LumaSiftWindow(QMainWindow):
             QLabel#sectionTitle { font-size: 14px; font-weight: 900; color: #f8fafc; }
             QLabel#fieldLabel { color: #c8d4e0; font-weight: 800; }
             QLabel#miniLabel { color: #9fb0c2; font-weight: 800; }
-            QFrame#hero, QFrame#controlCard, QFrame#toolbar, QFrame#detailPanel {
+            QFrame#hero, QFrame#controlCard, QFrame#toolbar, QFrame#detailPanel, QFrame#reviewBar {
                 background: #151b22;
                 border: 1px solid #26313d;
                 border-radius: 8px;
@@ -1809,6 +1899,7 @@ class LumaSiftWindow(QMainWindow):
                 background: #151b22;
                 border: 1px solid #293646;
                 border-radius: 8px;
+                min-width: 132px;
             }
             QLabel#statValue { font-size: 20px; font-weight: 900; color: #8fd3ff; }
             QFrame#workflow { background: transparent; }
@@ -1836,6 +1927,16 @@ class LumaSiftWindow(QMainWindow):
             }
             QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QTextEdit:focus {
                 border: 2px solid #2ea8ff;
+            }
+            QSpinBox {
+                font-size: 14px;
+                font-weight: 900;
+                padding-left: 10px;
+                padding-right: 10px;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                width: 0px;
+                border: none;
             }
             QPushButton {
                 border: none;

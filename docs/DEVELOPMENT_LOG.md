@@ -89,3 +89,9 @@
 - Moved mode, scan limits, Qwen top-N, display count, and API key controls into a collapsed Advanced panel so the default path is folder -> analyze -> review.
 - Made workflow steps clickable; each step focuses the relevant control instead of relying on explanatory text.
 - Compressed photo cards and added a visual summary block in the review panel before detailed reasons and editing parameters.
+
+## 2026-05-12 - Review mode collapse
+- Added an automatic review mode after analysis completes: header, workflow, input, and advanced controls collapse into a compact review bar.
+- Added setup/re-analyze buttons in review mode so the user can recover controls without losing screening space.
+- Increased the review panel minimum width and split ratio so AI critique and action buttons remain usable during screening.
+- Improved advanced numeric controls by widening them, removing tiny spin arrows, and increasing value contrast.
