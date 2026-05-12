@@ -21,6 +21,7 @@ from lumasift.reports.contact_sheet import write_contact_sheet
 from lumasift.reports.csv_report import write_csv_report
 from lumasift.reports.json_report import write_json_report
 from lumasift.reports.markdown_report import write_selected_editing_advice_markdown
+from lumasift.analysis.user_feedback import apply_user_feedback_fields, normalized_user_label
 from lumasift.storage.state_db import LumaSiftStateDb
 
 
@@ -148,9 +149,10 @@ class LumaSiftHarness:
             )
             self._progress("local", index, len(photos))
 
-        ranked = rank_records(records)
+        ranked = self._apply_persisted_user_feedback(rank_records(records))
         if self.settings.ai_mode == "qwen_vision":
             ranked = self._apply_qwen_vision(ranked)
+        ranked = self._apply_persisted_user_feedback(rank_records(ranked))
         self._persist_manifest_records(ranked)
 
         report_csv = self.settings.output_dir / "report.csv"
@@ -210,7 +212,18 @@ class LumaSiftHarness:
         )
         preview_dir = self.settings.output_dir / "previews"
         updated = list(ranked)
-        candidates = updated[: self.settings.top_n_api_analysis]
+        if not self.settings.qwen_include_rejected:
+            for record in updated:
+                if normalized_user_label(record.get("user_label")) == "reject":
+                    record["qwen_status"] = "skipped_user_reject"
+                    record["qwen_skip_reason"] = "user_label_reject"
+        eligible = [
+            record
+            for record in updated
+            if record.get("category") != "failed"
+            and (self.settings.qwen_include_rejected or normalized_user_label(record.get("user_label")) != "reject")
+        ]
+        candidates = eligible[: self.settings.top_n_api_analysis]
         self._event(
             "qwen_queue_prepared",
             total=len(candidates),
@@ -272,6 +285,18 @@ class LumaSiftHarness:
             finally:
                 self._progress("qwen", qwen_index, len(candidates))
         return rank_records(updated)
+
+    def _apply_persisted_user_feedback(self, records: list[dict]) -> list[dict]:
+        labels: dict[str, str] = {}
+        if self.state_db is not None:
+            labels = self.state_db.load_labels(str(record.get("path", "")) for record in records if record.get("path"))
+        for record in records:
+            path = str(record.get("path", ""))
+            normalized = str(Path(path).expanduser().resolve()) if path else ""
+            if normalized in labels:
+                record["user_label"] = labels[normalized]
+            apply_user_feedback_fields(record)
+        return records
 
     def _reusable_manifest_record(self, path: Path) -> dict | None:
         if self.state_db is None:

@@ -185,6 +185,16 @@ def exercise_label_workflow(window: Any, selection_model_type: Any) -> list[dict
     checks.append(check_value(count_visible_label(window, "reject") >= 1, "reject_filter_after_relabel", visible_label_detail(window)))
 
     set_combo_data(window.label_filter, "all")
+    set_combo_data(window.sort_combo, "user_priority")
+    window._populate_records()
+    sorted_labels = [record.get("user_label") or "unlabeled" for record in getattr(window.photo_model, "records", [])[:4]]
+    checks.append(
+        check_value(
+            bool(sorted_labels) and sorted_labels[0] == "keep" and sorted_labels[-1] != "keep",
+            "user_priority_sort_surfaces_keep",
+            f"labels={sorted_labels}",
+        )
+    )
     window._populate_records()
     select_rows(window, [0], selection_model_type)
     checks.append(check_value(bool(window._selected_record_indexes()), "selection_restored_after_filter_reset", f"selected={len(window._selected_record_indexes())}"))

@@ -40,6 +40,7 @@ class Settings:
     vision_api_keys: list[str] = field(default_factory=list)
     vision_max_tokens: int = 4096
     request_timeout_seconds: int = 90
+    qwen_include_rejected: bool = False
     weights: ScoreWeights = field(default_factory=ScoreWeights)
 
     @classmethod
@@ -57,6 +58,7 @@ class Settings:
             vision_model=os.getenv("LUMASIFT_VISION_MODEL", "qwen3.6-plus"),
             vision_api_keys=_split_keys(os.getenv("LUMASIFT_VISION_API_KEYS")),
             vision_max_tokens=int(os.getenv("LUMASIFT_VISION_MAX_TOKENS", "4096")),
+            qwen_include_rejected=_optional_bool(os.getenv("LUMASIFT_QWEN_INCLUDE_REJECTED")),
         )
 
     def ensure_dirs(self) -> None:
@@ -68,3 +70,9 @@ def _optional_int(value: str | None) -> int | None:
     if value is None or value.strip() == "":
         return None
     return int(value)
+
+
+def _optional_bool(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}

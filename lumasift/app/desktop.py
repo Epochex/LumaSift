@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from lumasift.analysis.editing_advice import build_selected_editing_advice
+from lumasift.analysis.user_feedback import apply_user_feedback_fields, normalized_user_label
 from lumasift.core.config import Settings
 from lumasift.core.harness import LumaSiftHarness
 from lumasift.core.logging_setup import configure_logging
@@ -97,6 +98,7 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "sort_low": "低分优先",
         "sort_rank": "排名",
         "sort_name": "文件名",
+        "sort_user": "标记优先",
         "no_results": "无结果",
         "review_cockpit": "评审",
         "detail_hint": "选中照片后查看评分、理由和修图参数。",
@@ -170,6 +172,7 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "sort_low": "Score low to high",
         "sort_rank": "Rank",
         "sort_name": "Filename A-Z",
+        "sort_user": "Label priority",
         "no_results": "No results",
         "review_cockpit": "Review",
         "detail_hint": "Select photos to inspect scores, reasons, and editing parameters.",
@@ -927,6 +930,7 @@ class LumaSiftWindow(QMainWindow):
         self.sort_combo.clear()
         for text_key, data in [
             ("sort_high", "score_desc"),
+            ("sort_user", "user_priority"),
             ("sort_low", "score_asc"),
             ("sort_rank", "rank"),
             ("sort_name", "filename"),
@@ -1392,7 +1396,7 @@ class LumaSiftWindow(QMainWindow):
         self.label_filter.addItems(["All labels", "keep", "maybe", "reject", "unlabeled"])
         self.label_filter.currentTextChanged.connect(self._populate_records)
         self.sort_combo = QComboBox()
-        self.sort_combo.addItems(["Score high to low", "Score low to high", "Rank", "Filename A-Z"])
+        self.sort_combo.addItems(["Score high to low", "Label priority", "Score low to high", "Rank", "Filename A-Z"])
         self.sort_combo.currentTextChanged.connect(self._populate_records)
         self.result_count_label = QLabel("")
         self.result_count_label.setObjectName("resultCount")
@@ -1743,8 +1747,7 @@ class LumaSiftWindow(QMainWindow):
         return record
 
     def _normalized_user_label(self, record: dict[str, Any]) -> str:
-        label = str(record.get("user_label", "") or "").strip()
-        return "" if label in {"", "unlabeled"} else label
+        return normalized_user_label(record.get("user_label"))
 
     def _selected_record_keys(self) -> set[str]:
         keys: set[str] = set()
@@ -1805,6 +1808,14 @@ class LumaSiftWindow(QMainWindow):
         sort_key = self.sort_combo.currentData() if hasattr(self, "sort_combo") else "score_desc"
         if sort_key == "score_asc":
             records.sort(key=lambda item: float(item.get("final_selection_score", 0) or 0))
+        elif sort_key == "user_priority":
+            records.sort(
+                key=lambda item: (
+                    int(item.get("user_feedback_priority", 0) or 0),
+                    float(item.get("final_selection_score", 0) or 0),
+                ),
+                reverse=True,
+            )
         elif sort_key == "filename":
             records.sort(key=lambda item: str(item.get("filename", "")).lower())
         elif sort_key == "rank":
@@ -2099,6 +2110,8 @@ class LumaSiftWindow(QMainWindow):
             record = self._canonical_record(display_record)
             record["user_label"] = label
             display_record["user_label"] = label
+            apply_user_feedback_fields(record)
+            apply_user_feedback_fields(display_record)
             changed_keys.add(self._record_key(record))
             self.state_db.set_user_label(
                 path=record["path"],
@@ -2179,6 +2192,7 @@ class LumaSiftWindow(QMainWindow):
             normalized = str(Path(path).expanduser().resolve()) if path else ""
             if normalized in labels:
                 record["user_label"] = labels[normalized]
+            apply_user_feedback_fields(record)
 
     def _write_current_reports(self) -> None:
         if not self.records:

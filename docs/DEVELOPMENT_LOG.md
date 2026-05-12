@@ -166,3 +166,10 @@
 - Added safe rerun reuse: unchanged successful local records can be reused from SQLite, while failed records and Qwen-enriched records are not reused for local-only runs.
 - Exposed the Qwen response cache key digest from the client and stored it on Qwen-reviewed records when available.
 - Verified against 200 private local RAW files: first manifest run processed 200/200 in 32.18 seconds with 200 manifest preview paths; a second unchanged run reused 200/200 records in 3.39 seconds.
+
+## 2026-05-12 - User feedback without score pollution
+- Added explicit report fields separating model output from user feedback: `model_final_selection_score`, `model_category`, `user_feedback_priority`, `user_feedback_action`, and `qwen_skip_reason`.
+- Existing keep/maybe/reject labels now surface as workflow priority without changing `final_selection_score` or `category`.
+- Added a GUI `标记优先` / `Label priority` sort mode so previously kept images can be surfaced in future review sessions.
+- Qwen review now skips records labeled `reject` by default and records `skipped_user_reject`; `LUMASIFT_QWEN_INCLUDE_REJECTED=1` can opt back in.
+- Verified a 200 RAW manifest reuse run after the change: 200/200 reused in 3.79 seconds and all 200 records carried the new feedback/model fields.

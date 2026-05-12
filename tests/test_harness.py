@@ -83,6 +83,32 @@ def test_harness_does_not_reuse_qwen_record_for_local_only_run(tmp_path: Path) -
     assert report["records"][0].get("qwen_model") is None
 
 
+def test_harness_applies_user_feedback_without_changing_model_score(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    keep_photo = input_dir / "keep.jpg"
+    reject_photo = input_dir / "reject.jpg"
+    Image.new("RGB", (32, 32), color=(220, 40, 40)).save(keep_photo)
+    Image.new("RGB", (32, 32), color=(40, 40, 40)).save(reject_photo)
+    db = LumaSiftStateDb(tmp_path / "state.sqlite")
+    db.set_user_label(path=keep_photo, label="keep")
+    db.set_user_label(path=reject_photo, label="reject")
+
+    settings = Settings(input_dir=input_dir, output_dir=output_dir, ai_mode="local_only")
+    LumaSiftHarness(settings=settings, run_id="feedback-run", state_db=db).run()
+    report = json.loads((output_dir / "report.json").read_text(encoding="utf-8"))
+
+    by_name = {record["filename"]: record for record in report["records"]}
+    assert by_name["keep.jpg"]["user_label"] == "keep"
+    assert by_name["keep.jpg"]["user_feedback_priority"] == 2
+    assert by_name["keep.jpg"]["user_feedback_action"] == "surface"
+    assert by_name["keep.jpg"]["model_final_selection_score"] == by_name["keep.jpg"]["final_selection_score"]
+    assert by_name["keep.jpg"]["model_category"] == by_name["keep.jpg"]["category"]
+    assert by_name["reject.jpg"]["user_feedback_action"] == "skip_qwen"
+    assert "user_feedback_priority" in (output_dir / "report.csv").read_text(encoding="utf-8-sig").splitlines()[0]
+
+
 def test_harness_respects_limit(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
@@ -160,6 +186,36 @@ def test_qwen_stage_cancels_pending_candidates_without_network(tmp_path: Path) -
     assert [record["qwen_status"] for record in result] == ["cancelled", "cancelled", "cancelled"]
     assert all("qwen_vision_cancelled" in record["errors"] for record in result)
     assert any(event["type"] == "qwen_queue_cancelled" and event["cancelled"] == 3 for event in events)
+
+
+def test_qwen_stage_skips_rejected_user_labels_by_default(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    events: list[dict] = []
+    settings = Settings(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        ai_mode="qwen_vision",
+        vision_api_keys=["test-key"],
+        top_n_api_analysis=3,
+    )
+    harness = LumaSiftHarness(settings=settings, run_id="skip-reject", event_callback=events.append)
+    ranked = [
+        {
+            "filename": "reject.jpg",
+            "path": str(input_dir / "reject.jpg"),
+            "category": "story_candidate",
+            "final_selection_score": 90,
+            "user_label": "reject",
+        }
+    ]
+
+    result = harness._apply_qwen_vision(ranked)
+
+    assert result[0]["qwen_status"] == "skipped_user_reject"
+    assert result[0]["qwen_skip_reason"] == "user_label_reject"
+    assert any(event["type"] == "qwen_queue_prepared" and event["total"] == 0 for event in events)
 
 
 def test_desktop_app_module_imports() -> None:
