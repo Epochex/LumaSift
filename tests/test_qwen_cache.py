@@ -7,7 +7,7 @@ import requests
 
 from lumasift.analysis import qwen_client
 from lumasift.analysis.qwen_client import QwenVisionClient
-from lumasift.analysis.qwen_story import extract_qwen_response_text
+from lumasift.analysis.qwen_story import build_qwen_story_prompt, extract_qwen_response_text, merge_qwen_story_analysis
 from lumasift.core.keyring import ApiKeyRing
 
 
@@ -119,3 +119,56 @@ def test_extract_qwen_response_text_handles_multimodal_content() -> None:
 def test_extract_qwen_response_text_reports_missing_text() -> None:
     with pytest.raises(ValueError, match="text content"):
         extract_qwen_response_text({"choices": []})
+
+
+def test_qwen_prompt_requires_visible_story_evidence() -> None:
+    prompt = build_qwen_story_prompt(
+        {
+            "filename": "frame.arw",
+            "group_size": 3,
+            "group_rank": 1,
+            "is_group_best": True,
+            "local_metrics": {"brightness": 118.2, "contrast": 42.1},
+        }
+    )
+
+    assert "visible_evidence" in prompt
+    assert "subject_relationship" in prompt
+    assert "decisive_moment_read" in prompt
+    assert "why_this_frame" in prompt
+    assert "不要写“画面有故事感”" in prompt
+    assert "frame.arw" in prompt
+    assert "group_size" in prompt
+
+
+def test_merge_qwen_story_analysis_preserves_evidence_fields() -> None:
+    record: dict[str, object] = {}
+    response = {
+        "model": "qwen-test",
+        "choices": [
+            {
+                "message": {
+                    "content": """
+                    {
+                      "final_selection_score": 88,
+                      "visible_evidence": ["行人被车流和招牌夹在中间"],
+                      "subject_relationship": "人物和街道标识形成城市压力关系",
+                      "decisive_moment_read": "人物刚进入路口，遮挡还没有破坏动作",
+                      "why_this_frame": "这一帧比邻近帧更清楚地保留了行人与车辆的间距",
+                      "avoid_overediting": "不要抹掉街道颗粒和招牌信息",
+                      "why_keep": ["具体动作和环境关系同时成立"],
+                      "why_deprioritize": ["边缘车辆略抢眼"]
+                    }
+                    """
+                }
+            }
+        ],
+    }
+
+    merge_qwen_story_analysis(record, response)
+
+    assert record["visible_evidence"] == ["行人被车流和招牌夹在中间"]
+    assert record["subject_relationship"] == "人物和街道标识形成城市压力关系"
+    assert record["why_this_frame"].startswith("这一帧")
+    assert record["avoid_overediting"] == "不要抹掉街道颗粒和招牌信息"
+    assert record["positive_reasons"] == ["具体动作和环境关系同时成立"]

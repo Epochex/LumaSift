@@ -85,6 +85,10 @@ def main() -> int:
     app.processEvents()
     snapshots.append(capture(window, args.output, "review_with_records", review_checks(window) + label_checks))
 
+    window.detail_text.verticalScrollBar().setValue(window.detail_text.verticalScrollBar().maximum())
+    app.processEvents()
+    snapshots.append(capture(window, args.output, "review_detail_scrolled", review_scrolled_checks(window)))
+
     window._generate_selected_advice()
     app.processEvents()
     snapshots.append(capture(window, args.output, "editing_plan", editing_plan_checks(window)))
@@ -144,10 +148,15 @@ def make_records(photo_dir: Path, *, count: int) -> list[dict[str, Any]]:
                 "composition_score": max(score - 8, 25.0),
                 "editability_score": max(score - 6, 25.0),
                 "story_interpretation": "Synthetic UI smoke record for checking review density and detail hierarchy.",
+                "visible_evidence": ["pedestrians crossing the frame", "street signs and vehicle edges create layered context"],
+                "subject_relationship": "The main pedestrian cluster sits against vehicles and signage, giving a readable street relationship.",
+                "decisive_moment_read": "The frame works if the pedestrian spacing remains separated rather than merged into the car edge.",
+                "why_this_frame": "Within the synthetic group this first frame is treated as the clearest group winner.",
                 "best_editing_direction": "Preserve the humanistic read and increase local contrast without over-cleaning.",
                 "crop_strategy": "Keep the subject relationship readable; avoid over-tight cropping.",
                 "positive_reasons": ["clear subject relationship", "usable story signal"],
                 "negative_reasons": ["watch edge distractions"],
+                "avoid_overediting": "Keep environmental signage and street texture readable.",
                 "specific_edit_parameters": {
                     "exposure": "+0.15",
                     "contrast": "+12",
@@ -359,8 +368,22 @@ def review_checks(window: Any) -> list[dict[str, Any]]:
         check_value(window.photo_model.rowCount() >= 1, "records_rendered", f"row_count={window.photo_model.rowCount()}"),
         check_value("G3" in window.photo_model.data(window.photo_model.index(0, 0), 0), "group_badge_visible", window.photo_model.data(window.photo_model.index(0, 0), 0)),
         check_value(("相似组" in plain_text) or ("Group" in plain_text), "group_detail_visible", plain_text[:500]),
+        check_value(("可见证据" in plain_text) or ("Visible Evidence" in plain_text), "story_evidence_visible", plain_text[:800]),
+        check_value(("为什么是这张" in plain_text) or ("Why This Frame" in plain_text), "why_this_frame_visible", plain_text[:800]),
         check_value("Not available in local_only mode" not in plain_text, "review_no_english_local_fallback", "local fallback localized"),
         check_value("Run qwen_vision mode" not in plain_text, "review_no_english_qwen_fallback", "qwen fallback localized"),
+    ]
+
+
+def review_scrolled_checks(window: Any) -> list[dict[str, Any]]:
+    text_rect = window.detail_text.geometry()
+    button_rect = window.keep_button.geometry()
+    plain_text = window.detail_text.toPlainText()
+    return [
+        check_value(window.detail_text.verticalScrollBar().value() >= 0, "detail_scrollbar_alive", f"value={window.detail_text.verticalScrollBar().value()}"),
+        check_value(text_rect.height() >= 260, "detail_text_keeps_height_after_scroll", f"detail={text_rect.width()}x{text_rect.height()}"),
+        check_value(button_rect.height() >= 36, "action_buttons_keep_height_after_scroll", f"keep={button_rect.width()}x{button_rect.height()}"),
+        check_value(("裁切" in plain_text) or ("Crop" in plain_text), "detail_scroll_text_not_corrupted", plain_text[-800:]),
     ]
 
 
@@ -422,6 +445,8 @@ def source_state() -> dict[str, Any]:
     files = [
         ROOT / "lumasift" / "app" / "desktop.py",
         ROOT / "lumasift" / "analysis" / "grouping.py",
+        ROOT / "lumasift" / "analysis" / "local_story.py",
+        ROOT / "lumasift" / "analysis" / "qwen_story.py",
         ROOT / "lumasift" / "core" / "harness.py",
         ROOT / "lumasift" / "storage" / "state_db.py",
         ROOT / "scripts" / "ui_smoke.py",

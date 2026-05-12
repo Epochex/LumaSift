@@ -45,6 +45,15 @@ def _text_value(value: object) -> str:
 
 
 def _first_reason(record: dict) -> str:
+    for field in ("why_this_frame", "decisive_moment_read", "subject_relationship"):
+        value = record.get(field)
+        if isinstance(value, str) and value.strip():
+            return _text_value(value)
+    value = record.get("visible_evidence")
+    if isinstance(value, list) and value:
+        return _text_value(value[0])
+    if isinstance(value, str) and value:
+        return _text_value(value)
     for field in ("positive_reasons", "negative_reasons", "errors"):
         value = record.get(field)
         if isinstance(value, list) and value:

@@ -37,12 +37,18 @@ CSV_FIELDS = [
     "is_group_best",
     "group_best_path",
     "group_score_delta",
+    "visible_evidence",
+    "subject_relationship",
+    "decisive_moment_read",
+    "why_this_frame",
+    "story_interpretation",
     "recommended_style",
     "positive_reasons",
     "negative_reasons",
     "best_editing_direction",
     "crop_strategy",
     "local_adjustments",
+    "avoid_overediting",
     "specific_edit_parameters",
 ]
 

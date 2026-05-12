@@ -5,7 +5,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 from PIL import Image
 
-from lumasift.app.desktop import LargePreviewWorker, PhotoListModel
+from lumasift.app.desktop import LargePreviewWorker, LumaSiftWindow, PhotoListModel
 
 
 def test_photo_list_model_handles_large_record_sets() -> None:
@@ -46,3 +46,37 @@ def test_large_preview_worker_creates_cached_preview(tmp_path) -> None:
 
     assert emitted
     assert emitted[0].endswith(".preview.jpg")
+
+
+def test_detail_html_renders_qwen_story_evidence() -> None:
+    app = QApplication.instance() or QApplication([])
+    _ = app
+    window = LumaSiftWindow()
+    window.language = "zh"
+    html = window._format_record_detail_html(
+        {
+            "rank": 1,
+            "filename": "candidate.arw",
+            "final_selection_score": 88.5,
+            "category": "story_candidate",
+            "recommended_style": "muted_humanistic_color",
+            "user_label": "keep",
+            "story_interpretation": "行人、车辆和街角标识形成城市压迫感。",
+            "visible_evidence": ["行人正穿过车辆之间的空隙", "KFC 招牌提供地点线索"],
+            "subject_relationship": "人物被车流和商业标识包围。",
+            "decisive_moment_read": "动作尚未被遮挡，是可读的街头瞬间。",
+            "why_this_frame": "这一帧的人车间距比相邻帧更完整。",
+            "avoid_overediting": "不要抹掉街道颗粒和招牌信息。",
+            "positive_reasons": ["人和环境关系具体"],
+            "negative_reasons": ["边缘车辆略抢眼"],
+            "specific_edit_parameters": {"contrast": "+12"},
+        },
+        1,
+    )
+
+    assert "可见证据" in html
+    assert "行人正穿过车辆之间的空隙" in html
+    assert "为什么是这张" in html
+    assert "这一帧的人车间距" in html
+    assert "float:" not in html
+    window.close()

@@ -23,6 +23,26 @@ def test_harness_runs_local_only(tmp_path: Path) -> None:
     assert result.report_csv.exists()
     assert result.report_json.exists()
     assert (output_dir / "runs" / "test-run" / "events.jsonl").exists()
+    record = json.loads(result.report_json.read_text(encoding="utf-8"))["records"][0]
+    assert "Local pre-screen only" in record["story_interpretation"]
+    assert record["positive_reasons"] != ["Local proxy detected workable tonal/detail structure."]
+
+
+def test_local_fallback_reasons_vary_by_image_metrics(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    Image.new("RGB", (48, 48), color=(8, 8, 8)).save(input_dir / "dark.jpg")
+    Image.new("RGB", (48, 48), color=(235, 235, 235)).save(input_dir / "bright.jpg")
+
+    settings = Settings(input_dir=input_dir, output_dir=output_dir, ai_mode="local_only")
+    result = LumaSiftHarness(settings=settings, run_id="local-varied").run()
+    records = json.loads(result.report_json.read_text(encoding="utf-8"))["records"]
+    reasons = {record["filename"]: " ".join(record["negative_reasons"]) for record in records}
+
+    assert "dark" in reasons["dark.jpg"].lower()
+    assert "bright" in reasons["bright.jpg"].lower()
+    assert reasons["dark.jpg"] != reasons["bright.jpg"]
 
 
 def test_harness_persists_and_reuses_sqlite_manifest(tmp_path: Path) -> None:
@@ -297,6 +317,7 @@ def test_qwen_stage_writes_prompt_version_and_cache_key(tmp_path: Path, monkeypa
             pass
 
         def analyze_image(self, *args: object, **kwargs: object) -> dict:
+            assert "visible_evidence" in str(args[1])
             return {
                 "model": "qwen-test",
                 "choices": [{"message": {"content": '{"final_selection_score": 91, "category": "strong_edit_candidate"}'}}],
@@ -317,7 +338,7 @@ def test_qwen_stage_writes_prompt_version_and_cache_key(tmp_path: Path, monkeypa
         ]
     )
 
-    assert result[0]["qwen_prompt_version"] == "qwen-story-v1"
+    assert result[0]["qwen_prompt_version"] == "qwen-story-v2"
     assert result[0]["qwen_cache_key"] == "cache-digest"
 
 

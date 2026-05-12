@@ -1976,13 +1976,16 @@ class LumaSiftWindow(QMainWindow):
 
     def _first_score(self, record: dict[str, Any], *keys: str) -> float:
         for key in keys:
-            try:
-                value = float(record.get(key, 0) or 0)
-            except (TypeError, ValueError):
-                value = 0.0
+            value = self._number(record.get(key, 0))
             if value:
                 return value
         return 0.0
+
+    def _number(self, value: Any) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _display_category(self, value: Any) -> str:
         raw = str(value or "")
@@ -2023,9 +2026,27 @@ class LumaSiftWindow(QMainWindow):
 
     def _display_story(self, record: dict[str, Any]) -> str:
         raw = str(record.get("story_interpretation", "") or "").strip()
-        if self.language == "zh" and (not raw or raw == "Not available in local_only mode."):
-            return "本地模式已完成技术与可修潜力预筛；故事性、人物关系和决定性瞬间建议对 Top-N 启用 Qwen 深评。"
+        if self.language == "zh" and (not raw or raw == "Not available in local_only mode." or raw.startswith("Local pre-screen only:")):
+            return self._local_story_summary(record)
         return raw or ("Qwen review has not been run yet." if self.language != "zh" else "等待深度评审。")
+
+    def _local_story_summary(self, record: dict[str, Any]) -> str:
+        metrics = record.get("local_metrics") if isinstance(record.get("local_metrics"), dict) else {}
+        brightness = self._number(metrics.get("brightness"))
+        contrast = self._number(metrics.get("contrast"))
+        tension = self._first_score(record, "visual_tension_score")
+        editability = self._first_score(record, "editability_score", "editing_potential_score")
+        parts = [
+            "本地预筛只能判断明暗、边缘密度、可修空间和技术风险，不能真正识别人、手势、情绪和决定性瞬间。",
+            f"这张的亮度约 {brightness:.0f}、对比约 {contrast:.0f}、视觉结构代理分 {tension:.0f}、可修潜力 {editability:.0f}。",
+        ]
+        if tension >= 62:
+            parts.append("结构密度较高，可能存在街头层次或现场张力，建议放入 Top-N 深评确认内容是否成立。")
+        elif editability >= 68:
+            parts.append("文件可修空间较好，但是否有故事价值仍需要 Qwen 或人工看图判断。")
+        else:
+            parts.append("目前更像技术预筛候选，最终保留应以画面内容和人文信息为准。")
+        return "".join(parts)
 
     def _display_direction(self, record: dict[str, Any]) -> str:
         raw = str(record.get("best_editing_direction", "") or "").strip()
@@ -2041,6 +2062,18 @@ class LumaSiftWindow(QMainWindow):
                 replacements = {
                     "Local proxy detected workable tonal/detail structure.": "本地指标显示画面仍有可用的明暗和细节结构。",
                     "Semantic story and human-documentary value require Qwen vision review.": "故事感、人物关系和人文价值需要 Qwen 视觉深评确认。",
+                    "Local contrast and edge structure can support a stronger documentary edit.": "本地对比和边缘结构足以支撑更有力度的纪实处理。",
+                    "Moderate tonal separation leaves room for a restrained humanistic edit.": "明暗分离中等，适合做克制的人文彩色或轻纪实处理。",
+                    "Brightness is in a recoverable range with usable midtone information.": "亮度处在可恢复区间，中间调仍有可用信息。",
+                    "Dense local structure suggests possible street-layer tension worth a vision pass.": "局部结构密度较高，可能有街头层次和现场张力，值得深评。",
+                    "Tonal range suggests the file can tolerate meaningful Lightroom shaping.": "明暗范围允许较明确的 Lightroom 塑形。",
+                    "Low contrast may need careful local separation before the frame reads clearly.": "对比较低，需要先做局部分离，否则主体关系可能不清楚。",
+                    "The frame is dark; check whether shadow detail still carries story information.": "画面偏暗，要确认阴影里是否仍有故事信息。",
+                    "The frame is bright; protect highlights before judging subtle subject detail.": "画面偏亮，先保护高光，再判断细节是否成立。",
+                    "Highlight clipping is visible enough to constrain recovery.": "高光溢出会限制后期恢复。",
+                    "Shadow clipping may hide important documentary cues.": "阴影死黑可能藏掉关键纪实线索。",
+                    "Semantic story, human relationship, and decisive moment still require Qwen or human review.": "真实故事、人物关系和决定性瞬间仍需要 Qwen 或人工看图确认。",
+                    "Local proxy found enough recoverable structure for manual review.": "本地代理发现仍有可恢复结构，值得人工扫一眼。",
                     "pending vision review": "等待视觉深评",
                 }
                 text = replacements.get(text, text)
@@ -2060,6 +2093,11 @@ class LumaSiftWindow(QMainWindow):
         crop = self._escape(str(record.get("crop_strategy", "") or ("先不裁切；进入修图方案后再给具体比例。" if self.language == "zh" else "No crop instruction recorded.")))
         positives = self._html_list(self._localized_reasons(record.get("positive_reasons", [])[:4], positive=True), "本地指标显示仍有可修空间" if self.language == "zh" else "pending vision review")
         negatives = self._html_list(self._localized_reasons(record.get("negative_reasons", [])[:4], positive=False), "暂无明显风险" if self.language == "zh" else "none recorded")
+        visible_evidence = self._html_list(record.get("visible_evidence", [])[:6], "")
+        subject_relationship = self._escape(str(record.get("subject_relationship", "") or ""))
+        decisive_moment = self._escape(str(record.get("decisive_moment_read", "") or ""))
+        why_this_frame = self._escape(str(record.get("why_this_frame", "") or ""))
+        avoid_overediting = self._escape(str(record.get("avoid_overediting", "") or ""))
         params = record.get("specific_edit_parameters", {}) or {}
         params_rows = "".join(
             f"<tr><td>{self._escape(str(key)).replace('_', ' ')}</td><td>{self._escape(str(value))}</td></tr>"
@@ -2081,6 +2119,11 @@ class LumaSiftWindow(QMainWindow):
             "direction": "方向" if self.language == "zh" else "Direction",
             "crop": "裁切" if self.language == "zh" else "Crop",
             "params": "参数" if self.language == "zh" else "Parameters",
+            "evidence": "可见证据" if self.language == "zh" else "Visible Evidence",
+            "relationship": "关系" if self.language == "zh" else "Relationship",
+            "moment": "瞬间" if self.language == "zh" else "Moment",
+            "frame": "为什么是这张" if self.language == "zh" else "Why This Frame",
+            "avoid": "别修掉" if self.language == "zh" else "Do Not Remove",
         }
         group_size = int(record.get("group_size", 1) or 1)
         group_text = ""
@@ -2097,18 +2140,23 @@ class LumaSiftWindow(QMainWindow):
         <html><head>{self._detail_html_style()}</head><body>
         <div class="detail-shell">
           <div class="summary-card">
-            <span class="rank">#{self._escape(str(record.get("rank", "-")))}</span>
-            <span class="score">{score:.1f}</span>
-            <h2>{filename}</h2>
+            <table class="head-table"><tr>
+              <td><span class="rank">#{self._escape(str(record.get("rank", "-")))}</span><h2>{filename}</h2></td>
+              <td class="score-cell">{score:.1f}</td>
+            </tr></table>
             <p class="meta">{labels["selected"]} {selected_count} | {category} | {style} | {labels["user_label"]}: {user_label}{group_text}</p>
-            <div class="metrics">
-              <div><b>{story_score:.0f}</b><span>{labels["story"]}</span></div>
-              <div><b>{human_score:.0f}</b><span>{labels["human"]}</span></div>
-              <div><b>{editability_score:.0f}</b><span>{labels["editability"]}</span></div>
-            </div>
+            <table class="metrics"><tr>
+              <td><b>{story_score:.0f}</b><br><span>{labels["story"]}</span></td>
+              <td><b>{human_score:.0f}</b><br><span>{labels["human"]}</span></td>
+              <td><b>{editability_score:.0f}</b><br><span>{labels["editability"]}</span></td>
+            </tr></table>
           </div>
           <h3>{labels["story_read"]}</h3>
           <p>{story}</p>
+          {f'<h3>{labels["evidence"]}</h3>{visible_evidence}' if visible_evidence else ''}
+          {f'<h3>{labels["relationship"]}</h3><p>{subject_relationship}</p>' if subject_relationship else ''}
+          {f'<h3>{labels["moment"]}</h3><p>{decisive_moment}</p>' if decisive_moment else ''}
+          {f'<h3>{labels["frame"]}</h3><p>{why_this_frame}</p>' if why_this_frame else ''}
           <h3>{labels["why"]}</h3>
           {positives}
           <h3>{labels["risks"]}</h3>
@@ -2119,6 +2167,7 @@ class LumaSiftWindow(QMainWindow):
           <p>{crop}</p>
           <h3>{labels["params"]}</h3>
           <table>{params_rows}</table>
+          {f'<h3>{labels["avoid"]}</h3><p>{avoid_overediting}</p>' if avoid_overediting else ''}
         </div>
         </body></html>
         """
@@ -2319,6 +2368,9 @@ class LumaSiftWindow(QMainWindow):
         widget.setGraphicsEffect(shadow)
 
     def _fade_in(self, widget: QWidget, *, duration: int = 260) -> None:
+        if isinstance(widget, QTextEdit):
+            widget.setGraphicsEffect(None)
+            return
         effect = QGraphicsOpacityEffect(widget)
         widget.setGraphicsEffect(effect)
         animation = QPropertyAnimation(effect, b"opacity", self)
@@ -2386,6 +2438,8 @@ class LumaSiftWindow(QMainWindow):
     def _html_list(self, values: list[Any], fallback: str) -> str:
         items = [str(item) for item in values if str(item).strip()]
         if not items:
+            if not fallback:
+                return ""
             items = [fallback]
         return "<ul>" + "".join(f"<li>{self._escape(item)}</li>" for item in items) + "</ul>"
 
@@ -2492,10 +2546,10 @@ class LumaSiftWindow(QMainWindow):
         return f"""
         <div class="advice-card">
           <div class="advice-head">
-            <span class="rank">{text["rank"]} {rank}</span>
-            <span class="pill">{category}</span>
-            <span class="score small-score">{score:.1f}</span>
-            <h2>{filename}</h2>
+            <table class="head-table"><tr>
+              <td><span class="rank">{text["rank"]} {rank}</span><span class="pill">{category}</span><h2>{filename}</h2></td>
+              <td class="score-cell">{score:.1f}</td>
+            </tr></table>
             <p class="meta">{text["style"]}: {style} | {text["tone"]}: {tone_text} - {tone_reason}</p>
           </div>
           <h3>{text["direction"]}</h3>
@@ -2528,16 +2582,19 @@ class LumaSiftWindow(QMainWindow):
         .advice-head h2 { margin-top: 5px; }
         .pill { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 8px; background: #17324a; color: #8fd3ff; font-weight: 800; }
         .rank { color: #ffd400; font-weight: 900; }
-        .score { float: right; color: #f8fafc; font-size: 32px; font-weight: 900; }
+        .head-table { margin-top: 0; border: 0; }
+        .head-table td { border: 0; padding: 0; }
+        .score-cell { color: #f8fafc; font-size: 30px; font-weight: 900; text-align: right; width: 92px; }
+        .score { color: #f8fafc; font-size: 28px; font-weight: 900; }
         .small-score { font-size: 24px; }
         .meta { color: #93a4b8; }
-        .metrics { display: table; width: 100%; margin-top: 10px; border-spacing: 6px 0; }
-        .metrics div { display: table-cell; background: #0c1117; border: 1px solid #26313d; border-radius: 8px; padding: 8px; text-align: center; }
+        .metrics { margin-top: 10px; }
+        .metrics td { background: #0c1117; border: 1px solid #26313d; padding: 8px; text-align: center; width: 33%; }
         .metrics b { display: block; color: #ffd400; font-size: 18px; }
         .metrics span { color: #9fb0c2; font-size: 11px; }
         .score-row { margin: 8px 0 10px 0; }
         .score-row span { font-weight: 700; color: #c8d4e0; }
-        .score-row b { float: right; color: #f8fafc; }
+        .score-row b { color: #f8fafc; }
         .bar { margin-top: 4px; height: 8px; background: #26313d; border-radius: 4px; }
         .bar div { height: 8px; background: #00a6ff; border-radius: 4px; }
         .param-table td:nth-child(1) { width: 42%; color: #9fb0c2; }

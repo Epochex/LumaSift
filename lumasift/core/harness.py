@@ -9,7 +9,7 @@ from typing import Callable
 from lumasift.analysis.editing_advice import build_selected_editing_advice
 from lumasift.analysis.local_story import analyze_local_story_proxy
 from lumasift.analysis.grouping import apply_similarity_groups, compute_average_color, compute_dhash
-from lumasift.analysis.qwen_story import QWEN_STORY_PROMPT, QWEN_STORY_PROMPT_VERSION, merge_qwen_story_analysis
+from lumasift.analysis.qwen_story import QWEN_STORY_PROMPT_VERSION, build_qwen_story_prompt, merge_qwen_story_analysis
 from lumasift.analysis.scoring import rank_records
 from lumasift.core.config import Settings
 from lumasift.core.keyring import ApiKeyRing
@@ -262,7 +262,7 @@ class LumaSiftHarness:
                 record["preview_path"] = str(preview_path)
                 response = client.analyze_image(
                     preview_path,
-                    QWEN_STORY_PROMPT,
+                    build_qwen_story_prompt(record),
                     prompt_version=QWEN_STORY_PROMPT_VERSION,
                 )
                 merge_qwen_story_analysis(record, response)

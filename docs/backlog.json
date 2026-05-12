@@ -454,6 +454,29 @@
         "UI smoke checks decision-button dimensions, icon-only controls, compact Qwen state, and source file state."
       ],
       "risk": "Symbol-only controls must use glyphs covered by the selected font or stable Qt standard icons."
+    },
+    {
+      "id": "LS-036",
+      "title": "Stabilize review cockpit scrolling and Qwen story prompt v2",
+      "priority": 0,
+      "status": "done",
+      "dependencies": [
+        "LS-003",
+        "LS-033",
+        "LS-020"
+      ],
+      "area": "review-workflow",
+      "source": "user_feedback",
+      "rationale": "After Top-N review, the right cockpit could repaint incorrectly during mouse-wheel scrolling, and the analysis text was too generic for story-first street/documentary selection.",
+      "acceptance": [
+        "Right cockpit detail scrolling remains visually stable and keeps the action controls usable.",
+        "UI smoke includes a scrolled-detail screenshot and checks right-panel/action-button stability.",
+        "Qwen prompt requires concrete visible evidence, subject relationship, decisive moment read, and why-this-frame judgment.",
+        "Qwen response merge, GUI detail, CSV, and contact sheet preserve the new story-evidence fields.",
+        "Local-only fallback clearly presents itself as technical pre-screening and varies reasons by image metrics.",
+        "A live Qwen smoke confirms the v2 prompt returns concrete visible evidence instead of generic photo-review phrasing."
+      ],
+      "risk": "Prompt quality still needs larger human-labeled evaluation, but v2 prevents the most obvious generic analysis failure."
     }
   ]
 }

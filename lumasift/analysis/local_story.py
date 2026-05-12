@@ -76,6 +76,57 @@ def _category(score: float) -> str:
     return "reject_candidate"
 
 
+def _local_reasons(metrics: dict[str, float], story_scores: dict[str, float]) -> tuple[list[str], list[str]]:
+    brightness = metrics["brightness"]
+    contrast = metrics["contrast"]
+    highlight_clip = metrics["highlight_clipping_ratio"]
+    shadow_clip = metrics["shadow_clipping_ratio"]
+    visual_tension = story_scores["visual_tension_score"]
+    editability = story_scores["editing_potential_score"]
+
+    positive: list[str] = []
+    negative: list[str] = []
+    if contrast >= 42:
+        positive.append("Local contrast and edge structure can support a stronger documentary edit.")
+    elif contrast >= 24:
+        positive.append("Moderate tonal separation leaves room for a restrained humanistic edit.")
+    else:
+        negative.append("Low contrast may need careful local separation before the frame reads clearly.")
+
+    if 78 <= brightness <= 158:
+        positive.append("Brightness is in a recoverable range with usable midtone information.")
+    elif brightness < 78:
+        negative.append("The frame is dark; check whether shadow detail still carries story information.")
+    else:
+        negative.append("The frame is bright; protect highlights before judging subtle subject detail.")
+
+    if visual_tension >= 62:
+        positive.append("Dense local structure suggests possible street-layer tension worth a vision pass.")
+    if editability >= 68:
+        positive.append("Tonal range suggests the file can tolerate meaningful Lightroom shaping.")
+    if highlight_clip >= 0.02:
+        negative.append("Highlight clipping is visible enough to constrain recovery.")
+    if shadow_clip >= 0.02:
+        negative.append("Shadow clipping may hide important documentary cues.")
+
+    if not positive:
+        positive.append("Local proxy found enough recoverable structure for manual review.")
+    if not negative:
+        negative.append("Semantic story, human relationship, and decisive moment still require Qwen or human review.")
+    return positive[:4], negative[:4]
+
+
+def _local_read(metrics: dict[str, float], story_scores: dict[str, float]) -> str:
+    return (
+        "Local pre-screen only: this pass can judge tonal recoverability, contrast, edge density, and editing headroom, "
+        "but it cannot truly identify people, gestures, story, or decisive moment. "
+        f"Brightness {metrics['brightness']:.0f}, contrast {metrics['contrast']:.0f}, "
+        f"visual-structure proxy {story_scores['visual_tension_score']:.0f}, "
+        f"editing-potential proxy {story_scores['editing_potential_score']:.0f}. "
+        "Use Qwen deep review for Top-N frames before making a final story-first keep/reject decision."
+    )
+
+
 def analyze_local_story_proxy(image: LoadedImage) -> dict:
     technical, metrics = _technical_score(image.rgb)
     story_scores = _story_proxy_scores(image.rgb)
@@ -88,8 +139,7 @@ def analyze_local_story_proxy(image: LoadedImage) -> dict:
         + story_scores["editing_potential_score"] * 0.12
         + technical * 0.06
     )
-    positive = ["Local proxy detected workable tonal/detail structure."]
-    negative = ["Semantic story and human-documentary value require Qwen vision review."]
+    positive, negative = _local_reasons(metrics, story_scores)
     return {
         "path": str(image.path),
         "filename": image.path.name,
@@ -104,7 +154,7 @@ def analyze_local_story_proxy(image: LoadedImage) -> dict:
         "local_metrics": metrics,
         "positive_reasons": positive,
         "negative_reasons": negative,
-        "story_interpretation": "Not available in local_only mode.",
+        "story_interpretation": _local_read(metrics, story_scores),
         "best_editing_direction": "Run qwen_vision mode for concrete artistic editing guidance.",
         "recommended_style": "pending_vision_review",
         "specific_edit_parameters": {},

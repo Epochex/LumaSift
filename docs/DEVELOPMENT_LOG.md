@@ -199,3 +199,12 @@
 - UI smoke now covers group badges, group filters, and group detail text.
 - Verified against 200 private local RAW files: first grouping run processed 200/200 in 34.34 seconds, produced 114 groups, max group size 7, stored 200 visual hashes, and estimated 86 Qwen calls saved by skipping non-winning group members. Manifest reuse processed 200/200 in 3.49 seconds.
 - Ran a live Qwen smoke using local development keys on 8 private RAW files with Top-2 group winners: 2 Qwen requests completed, 0 failed, and grouped non-winners were skipped as expected.
+
+## 2026-05-12 - Review cockpit scroll fix and Qwen story prompt v2
+- Removed the opacity graphics effect from the right `QTextEdit` detail cockpit because scrolling during Qt rich-text effects could repaint the panel incorrectly and make text appear dim.
+- Simplified the cockpit HTML/CSS away from float/table-cell layout and added a UI smoke screenshot/check for the detail panel after scrolling to the bottom.
+- Upgraded Qwen to `qwen-story-v2`, requiring visible evidence, subject relationship, decisive moment read, why-this-frame judgment, avoid-overediting guidance, and concrete story interpretation in Chinese text.
+- The Qwen merge path, GUI cockpit, CSV report, and contact sheet now preserve or surface these story-evidence fields.
+- Local-only fallback now explicitly presents itself as technical pre-screening and varies reasons by brightness, contrast, clipping, visual structure, and editability instead of repeating one generic line.
+- Verification: `python -m pytest -q` passed with 50 tests, and `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed with the new scrolled-detail screenshot.
+- Live Qwen v2 smoke on 4 private local RAW files with Top-1 deep review completed in 81.40 seconds, processed 4/4 with 0 failures, and returned concrete evidence for the reviewed frame including station signage, foreground passenger, background pedestrians, platform/signage context, and a negative decisive-moment judgment.

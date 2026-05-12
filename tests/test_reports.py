@@ -9,7 +9,16 @@ from lumasift.reports.json_report import write_json_report
 
 
 def test_report_writers(tmp_path: Path) -> None:
-    records = [{"rank": 1, "filename": "a.jpg", "final_selection_score": 77.7, "positive_reasons": ["x"]}]
+    records = [
+        {
+            "rank": 1,
+            "filename": "a.jpg",
+            "final_selection_score": 77.7,
+            "positive_reasons": ["x"],
+            "story_interpretation": "具体街头关系成立。",
+            "visible_evidence": ["行人和车流形成关系"],
+        }
+    ]
     csv_path = tmp_path / "report.csv"
     json_path = tmp_path / "report.json"
 
@@ -17,6 +26,8 @@ def test_report_writers(tmp_path: Path) -> None:
     write_json_report(json_path, {"records": records})
 
     assert "a.jpg" in csv_path.read_text(encoding="utf-8-sig")
+    assert "story_interpretation" in csv_path.read_text(encoding="utf-8-sig")
+    assert "具体街头关系成立" in csv_path.read_text(encoding="utf-8-sig")
     assert json.loads(json_path.read_text(encoding="utf-8"))["records"][0]["rank"] == 1
 
 
@@ -37,6 +48,23 @@ def test_contact_sheet_caption_includes_culling_context() -> None:
     assert "crosswalk_candidate.jpg" in caption
     assert "why: Gesture and layered street" in caption
     assert "style: high_contrast_mono" in caption
+
+
+def test_contact_sheet_caption_prefers_story_evidence() -> None:
+    record = {
+        "rank": 2,
+        "filename": "street_frame.jpg",
+        "final_selection_score": 84.0,
+        "category": "story_candidate",
+        "why_this_frame": "This frame preserves the pedestrian gap before the car blocks it.",
+        "positive_reasons": ["Generic fallback reason."],
+        "recommended_style": "muted_humanistic_color",
+    }
+
+    caption = "\n".join(_caption_lines(record))
+
+    assert "why: This frame preserves" in caption
+    assert "Generic fallback" not in caption
 
 
 def test_contact_sheet_writes_ranked_photo_sheet(tmp_path: Path) -> None:
