@@ -48,3 +48,9 @@
   - replaced the old run form with a compact control deck;
   - added result-board styling, empty-state guidance, and fade-in transitions;
   - replaced plain text detail output with visual score bars and structured review/edit sections.
+- Added the first persistent review-state layer:
+  - local SQLite state database under the user profile;
+  - run history table for GUI analysis runs;
+  - per-photo keep/maybe/reject labels;
+  - label filter in the review board;
+  - labels are merged into future runs and written back to CSV/JSON reports.

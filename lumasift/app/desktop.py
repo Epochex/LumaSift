@@ -42,8 +42,10 @@ from lumasift.core.config import Settings
 from lumasift.core.harness import LumaSiftHarness
 from lumasift.core.logging_setup import configure_logging
 from lumasift.io.preview import create_jpeg_preview
+from lumasift.reports.csv_report import write_csv_report
 from lumasift.reports.json_report import write_json_report
 from lumasift.reports.markdown_report import render_selected_editing_advice_markdown, write_markdown_report
+from lumasift.storage.state_db import LumaSiftStateDb
 
 
 class AnalysisWorker(QObject):
@@ -79,6 +81,7 @@ class ThumbnailWorker(QObject):
         super().__init__()
         self.records = records
         self.output_dir = output_dir
+        self.current_run_id = f"gui-{time.strftime('%Y%m%d-%H%M%S')}"
         self.max_side = max_side
         self.cancelled = False
 
@@ -114,6 +117,8 @@ class LumaSiftWindow(QMainWindow):
         self.workflow_steps: dict[str, QFrame] = {}
         self.stat_labels: dict[str, QLabel] = {}
         self._animations: list[QPropertyAnimation] = []
+        self.state_db = LumaSiftStateDb()
+        self.current_run_id = ""
         self._build_ui()
         self._load_preferences()
         self._apply_style()
@@ -165,6 +170,18 @@ class LumaSiftWindow(QMainWindow):
         detail_layout.addWidget(self.detail_text)
 
         advice_buttons = QHBoxLayout()
+        self.keep_button = QPushButton("Keep")
+        self.keep_button.setObjectName("markKeepButton")
+        self.keep_button.clicked.connect(lambda: self._mark_selected("keep"))
+        advice_buttons.addWidget(self.keep_button)
+        self.maybe_button = QPushButton("Maybe")
+        self.maybe_button.setObjectName("markMaybeButton")
+        self.maybe_button.clicked.connect(lambda: self._mark_selected("maybe"))
+        advice_buttons.addWidget(self.maybe_button)
+        self.reject_button = QPushButton("Reject")
+        self.reject_button.setObjectName("markRejectButton")
+        self.reject_button.clicked.connect(lambda: self._mark_selected("reject"))
+        advice_buttons.addWidget(self.reject_button)
         self.generate_advice_button = QPushButton("Editing Plan")
         self.generate_advice_button.setObjectName("primaryButton")
         self.generate_advice_button.clicked.connect(self._generate_selected_advice)
@@ -391,6 +408,9 @@ class LumaSiftWindow(QMainWindow):
             ]
         )
         self.category_filter.currentTextChanged.connect(self._populate_records)
+        self.label_filter = QComboBox()
+        self.label_filter.addItems(["All labels", "keep", "maybe", "reject", "unlabeled"])
+        self.label_filter.currentTextChanged.connect(self._populate_records)
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["Score high to low", "Score low to high", "Rank", "Filename A-Z"])
         self.sort_combo.currentTextChanged.connect(self._populate_records)
@@ -402,6 +422,7 @@ class LumaSiftWindow(QMainWindow):
         layout.addWidget(filter_label)
         layout.addWidget(self.search_edit, stretch=1)
         layout.addWidget(self.category_filter)
+        layout.addWidget(self.label_filter)
         layout.addWidget(self.sort_combo)
         layout.addWidget(self.result_count_label)
         return frame
@@ -461,7 +482,7 @@ class LumaSiftWindow(QMainWindow):
         self._update_dashboard()
 
         self.worker_thread = QThread()
-        self.worker = AnalysisWorker(settings=settings, run_id="gui-run")
+        self.worker = AnalysisWorker(settings=settings, run_id=self.current_run_id)
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)
         self.worker.finished.connect(self._analysis_finished)
@@ -474,6 +495,15 @@ class LumaSiftWindow(QMainWindow):
 
     def _analysis_finished(self, payload: dict) -> None:
         self.records = list(payload["report"].get("records", []))
+        self._merge_user_labels()
+        self.state_db.record_run(
+            run_id=str(payload["summary"].get("run_id", self.current_run_id)),
+            input_dir=self.input_edit.text(),
+            output_dir=str(self.output_dir),
+            ai_mode=self.mode_combo.currentText(),
+            summary=payload["summary"],
+        )
+        self._write_current_reports()
         self.status_label.setText(
             f"Done: {payload['summary']['processed']} processed, {payload['summary']['failed']} failed"
         )
@@ -531,7 +561,8 @@ class LumaSiftWindow(QMainWindow):
             score = float(record.get("final_selection_score", 0) or 0)
             category = str(record.get("category", "")).replace("_", " ")
             style = str(record.get("recommended_style", "")).replace("_", " ")
-            title = f"#{record.get('rank')} | {score:.1f}\n{record.get('filename')}\n{category}\n{style}"
+            user_label = str(record.get("user_label", "") or "unlabeled")
+            title = f"#{record.get('rank')} | {score:.1f} | {user_label}\n{record.get('filename')}\n{category}\n{style}"
             item.setText(title)
             item.setToolTip(str(record.get("path", "")))
             item.setIcon(placeholder)
@@ -553,8 +584,14 @@ class LumaSiftWindow(QMainWindow):
         records = list(self.records)
         query = self.search_edit.text().strip().lower() if hasattr(self, "search_edit") else ""
         category = self.category_filter.currentText() if hasattr(self, "category_filter") else "All categories"
+        label_filter = self.label_filter.currentText() if hasattr(self, "label_filter") else "All labels"
         if category and category != "All categories":
             records = [record for record in records if str(record.get("category", "")) == category]
+        if label_filter and label_filter != "All labels":
+            if label_filter == "unlabeled":
+                records = [record for record in records if not record.get("user_label")]
+            else:
+                records = [record for record in records if str(record.get("user_label", "")) == label_filter]
         if query:
             records = [
                 record
@@ -565,6 +602,7 @@ class LumaSiftWindow(QMainWindow):
                         str(record.get("filename", "")),
                         str(record.get("path", "")),
                         str(record.get("category", "")),
+                        str(record.get("user_label", "")),
                         str(record.get("recommended_style", "")),
                     ]
                 ).lower()
@@ -653,6 +691,7 @@ class LumaSiftWindow(QMainWindow):
         score = float(record.get("final_selection_score", 0) or 0)
         category = self._escape(str(record.get("category", ""))).replace("_", " ")
         style = self._escape(str(record.get("recommended_style", ""))).replace("_", " ")
+        user_label = self._escape(str(record.get("user_label", "") or "unlabeled"))
         filename = self._escape(str(record.get("filename", "")))
         story = self._escape(str(record.get("story_interpretation", "") or "Qwen review has not been run yet."))
         direction = self._escape(str(record.get("best_editing_direction", "") or "Use the selected-photo editing plan for detailed parameters."))
@@ -674,7 +713,7 @@ class LumaSiftWindow(QMainWindow):
             <span class="score">{score:.1f}</span>
           </div>
           <h2>{filename}</h2>
-          <p class="meta">Selected {selected_count} | {category} | {style}</p>
+          <p class="meta">Selected {selected_count} | {category} | {style} | user label: {user_label}</p>
           {self._score_bar("Final selection", score)}
           {self._score_bar("Story / documentary", record.get("street_documentary_potential_score", 0))}
           {self._score_bar("Composition", record.get("composition_score", 0))}
@@ -714,6 +753,30 @@ class LumaSiftWindow(QMainWindow):
         self.status_label.setText(f"Editing advice written: {md_path}")
         self._update_workflow("edit")
         self._fade_in(self.detail_text)
+
+    def _mark_selected(self, label: str) -> None:
+        selected_items = self.photo_list.selectedItems()
+        if not selected_items:
+            QMessageBox.information(self, "No selection", "Select one or more photos first.")
+            return
+        changed = 0
+        for item in selected_items:
+            record = item.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(record, dict) or not record.get("path"):
+                continue
+            record["user_label"] = label
+            self.state_db.set_user_label(
+                path=record["path"],
+                label=label,
+                run_id=self.current_run_id or None,
+                rank=int(record.get("rank", 0) or 0),
+                score=float(record.get("final_selection_score", 0) or 0),
+                category=str(record.get("category", "")),
+            )
+            changed += 1
+        self._write_current_reports()
+        self._populate_records()
+        self.status_label.setText(f"Marked {changed} photo(s) as {label}. Reports and local SQLite state updated.")
 
     def _cancel_analysis(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -760,6 +823,31 @@ class LumaSiftWindow(QMainWindow):
             self.settings_store.setValue("api_keys", self.api_key_edit.text())
         else:
             self.settings_store.remove("api_keys")
+
+    def _merge_user_labels(self) -> None:
+        labels = self.state_db.load_labels(str(record.get("path", "")) for record in self.records if record.get("path"))
+        for record in self.records:
+            path = str(record.get("path", ""))
+            normalized = str(Path(path).expanduser().resolve()) if path else ""
+            if normalized in labels:
+                record["user_label"] = labels[normalized]
+
+    def _write_current_reports(self) -> None:
+        if not self.records:
+            return
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        write_csv_report(self.output_dir / "report.csv", self.records)
+        write_json_report(
+            self.output_dir / "report.json",
+            {
+                "run_id": self.current_run_id,
+                "ai_mode": self.mode_combo.currentText() if hasattr(self, "mode_combo") else "",
+                "input_dir": self.input_edit.text() if hasattr(self, "input_edit") else "",
+                "records": self.records,
+                "user_label_source": str(self.state_db.path),
+            },
+        )
+        write_json_report(self.output_dir / "user_labels.json", {"records": self.state_db.export_labeled_records()})
 
     def _open_path(self, path: Path) -> None:
         try:
@@ -958,6 +1046,12 @@ class LumaSiftWindow(QMainWindow):
             QPushButton#primaryButton:hover { background: #1d4ed8; }
             QPushButton#secondaryButton { background: #e8eef6; color: #0f172a; }
             QPushButton#secondaryButton:hover { background: #dbe7f3; }
+            QPushButton#markKeepButton { background: #dcfce7; color: #166534; }
+            QPushButton#markKeepButton:hover { background: #bbf7d0; }
+            QPushButton#markMaybeButton { background: #fef3c7; color: #92400e; }
+            QPushButton#markMaybeButton:hover { background: #fde68a; }
+            QPushButton#markRejectButton { background: #fee2e2; color: #991b1b; }
+            QPushButton#markRejectButton:hover { background: #fecaca; }
             QPushButton:disabled { background: #cbd5e1; color: #64748b; }
             QListWidget#photoGrid {
                 background: #f8fafc;

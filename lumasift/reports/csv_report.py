@@ -21,6 +21,7 @@ CSV_FIELDS = [
     "editing_potential_score",
     "final_selection_score",
     "category",
+    "user_label",
     "recommended_style",
     "positive_reasons",
     "negative_reasons",
