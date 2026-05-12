@@ -73,7 +73,7 @@ def test_harness_writes_selected_editing_advice(tmp_path: Path) -> None:
     LumaSiftHarness(settings=settings, run_id="selected-run").run()
 
     assert (output_dir / "selected_editing_advice.json").exists()
-    assert "Rank 1" in (output_dir / "selected_editing_advice.md").read_text(encoding="utf-8")
+    assert "第 1 张" in (output_dir / "selected_editing_advice.md").read_text(encoding="utf-8")
 
 
 def test_desktop_app_module_imports() -> None:

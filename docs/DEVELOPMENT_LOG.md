@@ -106,3 +106,9 @@
 - Added `scripts/ui_smoke.py` to generate setup-collapsed, setup-expanded, and review-mode screenshots plus JSON/Markdown geometry checks under `outputs/ui_smoke/`.
 - Added `tests/test_ui_smoke.py` so the visual smoke harness is covered by automated tests.
 - Updated `docs/BACKLOG.md`, `docs/backlog.json`, `AGENTS.md`, and `scripts/backlog.py goal` so future `继续 goal` runs follow the formal loop: read goal, choose backlog task, implement, test, run UI smoke, update docs, rebuild, commit, and push.
+
+## 2026-05-12 - Chinese editing plan and review layout fix
+- Changed selected-photo editing advice to default to Chinese for Chinese users, including Markdown export, JSON payload labels, Lightroom parameter names, tone rationale, crop advice, local adjustments, and grain/sharpening guidance.
+- Kept English output available when the UI language is switched to English before generating the editing plan.
+- Replaced the right-side editing-plan preview from raw Markdown/code-block rendering with structured cards, parameter tables, and readable sections.
+- Extended `scripts/ui_smoke.py` with an editing-plan screenshot and language checks so wrong-language or compressed advice panels are caught automatically.

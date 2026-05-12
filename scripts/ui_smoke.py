@@ -71,6 +71,10 @@ def main() -> int:
     app.processEvents()
     snapshots.append(capture(window, args.output, "review_with_records", review_checks(window)))
 
+    window._generate_selected_advice()
+    app.processEvents()
+    snapshots.append(capture(window, args.output, "editing_plan", editing_plan_checks(window)))
+
     drain_background_threads(app, window, QEventLoop, QTimer)
     window.close()
     app.processEvents()
@@ -186,6 +190,19 @@ def review_checks(window: Any) -> list[dict[str, Any]]:
         check_min_size(window.detail_panel, "detail_panel_size", min_width=400, min_height=320),
         check_min_size(window.generate_advice_button, "editing_plan_button_size", min_width=120, min_height=34),
         check_value(window.photo_model.rowCount() >= 1, "records_rendered", f"row_count={window.photo_model.rowCount()}"),
+    ]
+
+
+def editing_plan_checks(window: Any) -> list[dict[str, Any]]:
+    plain_text = window.detail_text.toPlainText()
+    expected_title = "照片的修图方案" if window.language == "zh" else "Editing plan"
+    forbidden_default = "# Selected Editing Advice" if window.language == "zh" else "选中照片修图方案"
+    return [
+        check_min_size(window.detail_panel, "editing_plan_panel_size", min_width=400, min_height=320),
+        check_value(expected_title in plain_text, "editing_plan_language", f"contains={expected_title!r}"),
+        check_value(forbidden_default not in plain_text, "editing_plan_not_wrong_language", f"forbidden={forbidden_default!r}"),
+        check_value("Lightroom" in plain_text, "editing_plan_parameters_visible", "Lightroom section visible"),
+        check_file_nonempty(window.output_dir / "selected_editing_advice.md", "editing_plan_markdown_written"),
     ]
 
 

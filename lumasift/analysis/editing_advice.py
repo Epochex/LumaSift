@@ -173,14 +173,17 @@ def build_selected_editing_advice(
     ranked_records: list[dict[str, Any]],
     selected_ranks: Iterable[int | str] | int | str | None = None,
     selected_paths: Iterable[str | Path] | str | Path | None = None,
+    language: str = "zh",
 ) -> dict[str, Any]:
     """Build JSON-compatible editing advice for selected ranked report records."""
+    language = "en" if language == "en" else "zh"
     ranks = _parse_rank_selection(selected_ranks)
     paths = _parse_path_selection(selected_paths)
     selected = select_ranked_records(ranked_records, selected_ranks=ranks, selected_paths=paths)
-    advice = [_advice_for_record(record) for record in selected]
+    advice = [_advice_for_record(record, language=language) for record in selected]
     return {
         "schema": "selected_editing_advice.v1",
+        "language": language,
         "selection": {
             "ranks": sorted(ranks),
             "paths": sorted(paths),
@@ -194,11 +197,13 @@ def generate_selected_editing_advice(
     ranked_records: list[dict[str, Any]],
     selected_ranks: Iterable[int | str] | int | str | None = None,
     selected_paths: Iterable[str | Path] | str | Path | None = None,
+    language: str = "zh",
 ) -> dict[str, Any]:
     return build_selected_editing_advice(
         ranked_records,
         selected_ranks=selected_ranks,
         selected_paths=selected_paths,
+        language=language,
     )
 
 
@@ -225,12 +230,12 @@ def select_ranked_records(
     return selected
 
 
-def _advice_for_record(record: dict[str, Any]) -> dict[str, Any]:
+def _advice_for_record(record: dict[str, Any], *, language: str) -> dict[str, Any]:
     style = _recommended_style(record)
     parameters = _lightroom_parameters(record, style)
-    tone = _tone_recommendation(record, style)
+    tone = _tone_recommendation(record, style, language=language)
     score = _float(record.get("final_selection_score"))
-    direction = _editing_direction(record, style, tone["recommendation"])
+    direction = _editing_direction(record, style, tone["recommendation"], language=language)
 
     return {
         "rank": record.get("rank"),
@@ -248,12 +253,15 @@ def _advice_for_record(record: dict[str, Any]) -> dict[str, Any]:
             "technical_quality": _float(record.get("technical_quality_score")),
         },
         "recommended_style": style,
+        "recommended_style_label": _style_label(style, language),
+        "category_label": _category_label(record.get("category"), language),
         "editing_direction": direction,
         "lightroom_parameters": parameters,
-        "crop_strategy": _crop_strategy(record),
-        "local_adjustments": _local_adjustments(record, style, tone["recommendation"]),
+        "lightroom_parameter_labels": _parameter_labels(language),
+        "crop_strategy": _crop_strategy(record, language=language),
+        "local_adjustments": _local_adjustments(record, style, tone["recommendation"], language=language),
         "tone_recommendation": tone,
-        "grain_sharpness_motion_blur": _grain_sharpness_motion_blur(record, style, tone["recommendation"]),
+        "grain_sharpness_motion_blur": _grain_sharpness_motion_blur(record, style, tone["recommendation"], language=language),
     }
 
 
@@ -309,37 +317,77 @@ def _lightroom_parameters(record: dict[str, Any], style: str) -> dict[str, str]:
     return {key: parameters[key] for key in LIGHTROOM_PARAMETER_KEYS}
 
 
-def _tone_recommendation(record: dict[str, Any], style: str) -> dict[str, str]:
+def _tone_recommendation(record: dict[str, Any], style: str, *, language: str) -> dict[str, str]:
     if style in _BW_STYLES:
+        if language == "zh":
+            return {
+                "recommendation": "black_and_white",
+                "label": "黑白",
+                "rationale": "建议黑白优先，让手势、时机、明暗张力成为画面的主要支撑。",
+            }
         return {
             "recommendation": "black_and_white",
+            "label": "black and white",
             "rationale": "Use monochrome to make gesture, timing, and tonal tension carry the frame.",
         }
     if style in _COLOR_STYLES:
+        if language == "zh":
+            return {
+                "recommendation": "color",
+                "label": "彩色",
+                "rationale": "建议保留彩色，因为环境氛围、旅行语境和现场感会增强这张照片的人文阅读。",
+            }
         return {
             "recommendation": "color",
+            "label": "color",
             "rationale": "Keep color because the selected style benefits from environmental mood and travel context.",
         }
 
     visual_tension = _float(record.get("visual_tension_score"))
     human_value = _float(record.get("human_documentary_value_score"))
     if visual_tension >= 68 and human_value >= 55:
+        if language == "zh":
+            return {
+                "recommendation": "black_and_white",
+                "label": "黑白",
+                "rationale": "可先尝试黑白；这张照片更依赖人物瞬间和视觉张力，而不是色彩信息。",
+            }
         return {
             "recommendation": "black_and_white",
+            "label": "black and white",
             "rationale": "Try black and white first; the record scores favor human moment and tension over color description.",
+        }
+    if language == "zh":
+        return {
+            "recommendation": "color",
+            "label": "彩色",
+            "rationale": "使用克制的彩色处理，保留纪实语境，同时避免过度商业化修饰。",
         }
     return {
         "recommendation": "color",
+        "label": "color",
         "rationale": "Use restrained color so the documentary context stays readable without cosmetic polish.",
     }
 
 
-def _editing_direction(record: dict[str, Any], style: str, tone: str) -> str:
+def _editing_direction(record: dict[str, Any], style: str, tone: str, *, language: str) -> str:
     existing = str(record.get("best_editing_direction") or "").strip()
-    if existing and "Run qwen_vision mode" not in existing:
+    if existing and "Run qwen_vision mode" not in existing and (language != "zh" or _contains_cjk(existing)):
         return existing
 
     category = str(record.get("category") or "selected_candidate")
+    if language == "zh":
+        category_text = _category_label(category, language)
+        if tone == "black_and_white":
+            treatment = "做成有力度的黑白纪实风格"
+        elif style == "do_not_overedit":
+            treatment = "只做轻量校正"
+        else:
+            treatment = "做成克制的人文彩色风格"
+        return (
+            f"这张属于「{category_text}」。建议{treatment}：保护照片里真正有价值的瞬间和人物关系，"
+            "适度压暗边缘干扰、加强主体与环境的层次，但不要把街头/纪实质感磨得太干净。"
+        )
     if tone == "black_and_white":
         treatment = "build a firm black-and-white documentary edit"
     elif style == "do_not_overedit":
@@ -352,14 +400,22 @@ def _editing_direction(record: dict[str, Any], style: str, tone: str) -> str:
     )
 
 
-def _crop_strategy(record: dict[str, Any]) -> str:
+def _crop_strategy(record: dict[str, Any], *, language: str) -> str:
     existing = str(record.get("crop_strategy") or "").strip()
-    if existing:
+    if existing and (language != "zh" or _contains_cjk(existing)):
         return existing
 
     width = _float(record.get("width"))
     height = _float(record.get("height"))
     visual_tension = _float(record.get("visual_tension_score"))
+    if language == "zh":
+        if width and height and height > width:
+            return "先试 4:5 竖构图；让主要人物/动作区域略微偏离中心，裁掉上下无效空间。"
+        if width and height and width / height >= 1.6:
+            return "优先保留宽幅关系；如果边缘干扰明显，再试 16:9，但不要破坏人物移动方向和环境语境。"
+        if visual_tension >= 70:
+            return "尽量保留原构图，只清理边缘杂物，避免把画面关系裁散。"
+        return "先试 3:2；如果主体更清楚，再试更紧的 4:5，但不要裁掉关键环境线索。"
     if width and height and height > width:
         return "Start with a 4:5 vertical crop; keep the main human/gesture zone slightly off-center and trim empty top/bottom space."
     if width and height and width / height >= 1.6:
@@ -369,10 +425,26 @@ def _crop_strategy(record: dict[str, Any]) -> str:
     return "Try a 3:2 crop first, then a tighter 4:5 if the subject reads stronger after removing quiet edge space."
 
 
-def _local_adjustments(record: dict[str, Any], style: str, tone: str) -> list[str]:
+def _local_adjustments(record: dict[str, Any], style: str, tone: str, *, language: str) -> list[str]:
     existing = record.get("local_adjustments")
-    if isinstance(existing, list) and existing:
+    if isinstance(existing, list) and existing and (language != "zh" or any(_contains_cjk(str(item)) for item in existing)):
         return [str(item) for item in existing]
+
+    if language == "zh":
+        adjustments = [
+            "主体/手势蒙版：曝光 +0.20，阴影 +10，纹理 +5；羽化要大，避免看出修图痕迹。",
+            "边缘压暗：对抢眼边缘做曝光 -0.25 到 -0.40；不要压到脸、手势或关键动作。",
+        ]
+        if tone == "black_and_white" or style in _BW_STYLES:
+            adjustments.append("明暗分离笔刷：在主体轮廓或关键明暗边界上加清晰度 +8、去朦胧 +4。")
+        else:
+            adjustments.append("背景色彩清理：把过于跳出的背景颜色饱和度 -10，但保留肤色、标识和环境信息。")
+
+        if _metric(record, "highlight_clipping_ratio") >= 0.02:
+            adjustments.append("高光恢复蒙版：只在过曝亮部降低高光 -35、白色色阶 -10。")
+        if _metric(record, "shadow_clipping_ratio") >= 0.02:
+            adjustments.append("暗部可读性蒙版：对仍有故事信息的死黑区域提升阴影 +20、黑色色阶 +6。")
+        return adjustments
 
     adjustments = [
         "Subject/gesture mask: Exposure +0.20, Shadows +10, Texture +5; feather broadly so the lift is not visible.",
@@ -390,13 +462,25 @@ def _local_adjustments(record: dict[str, Any], style: str, tone: str) -> list[st
     return adjustments
 
 
-def _grain_sharpness_motion_blur(record: dict[str, Any], style: str, tone: str) -> dict[str, str]:
+def _grain_sharpness_motion_blur(record: dict[str, Any], style: str, tone: str, *, language: str) -> dict[str, str]:
     technical = _float(record.get("technical_quality_score"))
     decisive = _float(record.get("decisive_moment_score"))
     story = _float(record.get("storytelling_score"))
     gritty = style in {"high_contrast_bw_documentary", "low_key_noir_street", "gritty_flash_street"}
 
     grain = "Amount 18, Size 24, Roughness 48" if gritty or tone == "black_and_white" else "Amount 8, Size 22, Roughness 35"
+    if language == "zh":
+        grain = "数量 18，大小 24，粗糙度 48" if gritty or tone == "black_and_white" else "数量 8，大小 22，粗糙度 35"
+        if technical < 50 and (decisive >= 55 or story >= 55):
+            sharpness = "数量 28，半径 0.9，细节 15，蒙版 80；只锐化可读的视觉锚点。"
+            motion_blur = "如果运动模糊增强了瞬间感，就保留它；不要用过重清晰度或全局锐化追求假清楚。"
+        elif technical < 50:
+            sharpness = "数量 22，半径 1.0，细节 10，蒙版 85；避免把噪点和压缩痕迹锐化出来。"
+            motion_blur = "把模糊当成限制处理；只有主体仍然可读时才考虑更紧裁切。"
+        else:
+            sharpness = "数量 40，半径 0.8，细节 25，蒙版 70；优先对主体局部锐化，不做全局硬锐化。"
+            motion_blur = "保留自然运动感；只用小范围主体蒙版修正意外软。"
+        return {"grain": grain, "sharpness": sharpness, "motion_blur": motion_blur}
     if technical < 50 and (decisive >= 55 or story >= 55):
         sharpness = "Amount 28, Radius 0.9, Detail 15, Masking 80; sharpen only the readable anchor point."
         motion_blur = "Keep motion blur if it supports timing; do not chase crispness with heavy clarity or global sharpening."
@@ -412,6 +496,61 @@ def _grain_sharpness_motion_blur(record: dict[str, Any], style: str, tone: str) 
         "sharpness": sharpness,
         "motion_blur": motion_blur,
     }
+
+
+def _style_label(style: str, language: str) -> str:
+    if language != "zh":
+        return style.replace("_", " ")
+    return {
+        "high_contrast_bw_documentary": "高反差黑白纪实",
+        "low_key_noir_street": "低调黑色街头",
+        "cinematic_urban_color": "电影感城市彩色",
+        "muted_humanistic_color": "克制人文彩色",
+        "gritty_flash_street": "粗粝闪光街头",
+        "soft_editorial_documentary": "柔和编辑纪实",
+        "cold_metropolitan": "冷调都市",
+        "warm_memory_tone": "暖调记忆感",
+        "do_not_overedit": "克制轻修",
+    }.get(style, style.replace("_", " "))
+
+
+def _category_label(category: Any, language: str) -> str:
+    raw = str(category or "")
+    if language != "zh":
+        return raw.replace("_", " ")
+    return {
+        "portfolio_candidate": "作品候选",
+        "strong_edit_candidate": "强修图候选",
+        "story_candidate": "故事候选",
+        "technically_weak_but_interesting": "技术弱但有趣",
+        "ordinary_record": "普通记录",
+        "reject_candidate": "淘汰候选",
+        "failed": "处理失败",
+    }.get(raw, raw.replace("_", " "))
+
+
+def _parameter_labels(language: str) -> dict[str, str]:
+    if language != "zh":
+        return {key: key.replace("_", " ").title() for key in LIGHTROOM_PARAMETER_KEYS}
+    return {
+        "exposure": "曝光",
+        "contrast": "对比度",
+        "highlights": "高光",
+        "shadows": "阴影",
+        "whites": "白色色阶",
+        "blacks": "黑色色阶",
+        "texture": "纹理",
+        "clarity": "清晰度",
+        "dehaze": "去朦胧",
+        "vibrance": "自然饱和度",
+        "saturation": "饱和度",
+        "temperature": "色温",
+        "tint": "色调",
+    }
+
+
+def _contains_cjk(text: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in text)
 
 
 def _parse_rank_selection(selection: Iterable[int | str] | int | str | None) -> set[int]:

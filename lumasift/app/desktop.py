@@ -1002,10 +1002,12 @@ class LumaSiftWindow(QMainWindow):
         self.run_button = QPushButton("Analyze Folder")
         self.run_button.setObjectName("primaryButton")
         self.run_button.setMinimumHeight(48)
+        self.run_button.setMinimumWidth(104)
         self.run_button.clicked.connect(self._start_analysis)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setObjectName("secondaryButton")
         self.cancel_button.setMinimumHeight(48)
+        self.cancel_button.setMinimumWidth(74)
         self.cancel_button.clicked.connect(self._cancel_analysis)
         self.cancel_button.setEnabled(False)
         main_row.addWidget(self.run_button, 0, 3, 2, 1)
@@ -1604,7 +1606,7 @@ class LumaSiftWindow(QMainWindow):
         if not self.records:
             QMessageBox.information(self, self._t("no_records"), self._t("run_first"))
             return
-        payload = build_selected_editing_advice(self.records, selected_ranks=selected_ranks)
+        payload = build_selected_editing_advice(self.records, selected_ranks=selected_ranks, language=self.language)
         json_path = self.output_dir / "selected_editing_advice.json"
         md_path = self.output_dir / "selected_editing_advice.md"
         write_json_report(json_path, payload)
@@ -1819,7 +1821,7 @@ class LumaSiftWindow(QMainWindow):
             "</div>"
         )
 
-    def _format_advice_html(self, payload: dict[str, Any]) -> str:
+    def _format_advice_markdown_legacy_html(self, payload: dict[str, Any]) -> str:
         markdown = render_selected_editing_advice_markdown(payload)
         escaped = self._escape(markdown)
         count = int(payload.get("selected_count", 0) or 0)
@@ -1831,6 +1833,102 @@ class LumaSiftWindow(QMainWindow):
         <p class="meta">{note}</p>
         <pre>{escaped}</pre>
         </body></html>
+        """
+
+    def _format_advice_html(self, payload: dict[str, Any]) -> str:
+        items = payload.get("selected_editing_advice", []) or []
+        count = int(payload.get("selected_count", 0) or 0)
+        title = f"{count} 张照片的修图方案" if self.language == "zh" else f"Editing plan for {count} selected photos"
+        note = "已写入 selected_editing_advice.md / .json" if self.language == "zh" else "Written to selected_editing_advice.md and selected_editing_advice.json."
+        blocks = "".join(self._format_advice_item_html(item) for item in items)
+        return f"""
+        <html><head>{self._detail_html_style()}</head><body>
+        <div class="detail-shell">
+          <div class="summary-card">
+            <span class="rank">{self._escape(str(count))}</span>
+            <h2>{title}</h2>
+            <p class="meta">{note}</p>
+          </div>
+          {blocks}
+        </div>
+        </body></html>
+        """
+
+    def _format_advice_item_html(self, item: dict[str, Any]) -> str:
+        rank = self._escape(str(item.get("rank", "?")))
+        filename = self._escape(str(item.get("filename", "")))
+        score = float(item.get("final_selection_score", 0) or 0)
+        style = self._escape(str(item.get("recommended_style_label") or item.get("recommended_style", "")).replace("_", " "))
+        category = self._escape(str(item.get("category_label") or item.get("category", "")).replace("_", " "))
+        tone = item.get("tone_recommendation") if isinstance(item.get("tone_recommendation"), dict) else {}
+        tone_text = self._escape(str(tone.get("label") or tone.get("recommendation", "")).replace("_", " "))
+        tone_reason = self._escape(str(tone.get("rationale", "")))
+        labels = item.get("lightroom_parameter_labels", {})
+        params = item.get("lightroom_parameters", {}) or {}
+        parameter_order = [
+            "exposure",
+            "contrast",
+            "highlights",
+            "shadows",
+            "whites",
+            "blacks",
+            "texture",
+            "clarity",
+            "dehaze",
+            "vibrance",
+            "saturation",
+            "temperature",
+            "tint",
+        ]
+        rows = ""
+        if isinstance(params, dict):
+            for key in parameter_order:
+                label = labels.get(key, key.replace("_", " ").title()) if isinstance(labels, dict) else key
+                rows += f"<tr><td>{self._escape(str(label))}</td><td><b>{self._escape(str(params.get(key, '')))}</b></td></tr>"
+        local_adjustments = self._html_list(
+            item.get("local_adjustments", [])[:8],
+            "暂无局部调整建议" if self.language == "zh" else "No local adjustments.",
+        )
+        handling = item.get("grain_sharpness_motion_blur", {}) or {}
+        handling_rows = ""
+        if isinstance(handling, dict):
+            handling_labels = {
+                "grain": "颗粒" if self.language == "zh" else "Grain",
+                "sharpness": "锐化" if self.language == "zh" else "Sharpness",
+                "motion_blur": "运动模糊" if self.language == "zh" else "Motion blur",
+            }
+            for key, label in handling_labels.items():
+                handling_rows += f"<tr><td>{label}</td><td>{self._escape(str(handling.get(key, '')))}</td></tr>"
+        text = {
+            "rank": "第" if self.language == "zh" else "Rank",
+            "style": "风格" if self.language == "zh" else "Style",
+            "tone": "色彩方向" if self.language == "zh" else "Tone",
+            "direction": "总体方向" if self.language == "zh" else "Direction",
+            "params": "Lightroom 参数" if self.language == "zh" else "Lightroom Parameters",
+            "crop": "裁切" if self.language == "zh" else "Crop",
+            "local": "局部调整" if self.language == "zh" else "Local Adjustments",
+            "detail": "质感处理" if self.language == "zh" else "Texture Handling",
+        }
+        return f"""
+        <div class="advice-card">
+          <div class="advice-head">
+            <span class="rank">{text["rank"]} {rank}</span>
+            <span class="pill">{category}</span>
+            <span class="score small-score">{score:.1f}</span>
+            <h2>{filename}</h2>
+            <p class="meta">{text["style"]}: {style} | {text["tone"]}: {tone_text} - {tone_reason}</p>
+          </div>
+          <h3>{text["direction"]}</h3>
+          <p>{self._escape(str(item.get("editing_direction", "")))}</p>
+          <h3>{text["params"]}</h3>
+          <table class="param-table">{rows}</table>
+          <h3>{text["crop"]}</h3>
+          <p>{self._escape(str(item.get("crop_strategy", "")))}</p>
+          <h3>{text["local"]}</h3>
+          {local_adjustments}
+          <h3>{text["detail"]}</h3>
+          <table>{handling_rows}</table>
+        </div>
         """
 
     def _detail_html_style(self) -> str:
@@ -1846,8 +1944,12 @@ class LumaSiftWindow(QMainWindow):
         td { border-bottom: 1px solid #26313d; padding: 6px; vertical-align: top; color: #dbe7f3; }
         pre { white-space: pre-wrap; background: #0b0f14; border: 1px solid #26313d; border-radius: 8px; padding: 10px; color: #dbe7f3; }
         .summary-card { background: #141b23; border: 1px solid #293646; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+        .advice-card { background: #111820; border: 1px solid #293646; border-radius: 10px; padding: 12px; margin: 10px 0 14px 0; }
+        .advice-head h2 { margin-top: 5px; }
+        .pill { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 8px; background: #17324a; color: #8fd3ff; font-weight: 800; }
         .rank { color: #8fd3ff; font-weight: 800; }
         .score { float: right; color: #f8fafc; font-size: 32px; font-weight: 900; }
+        .small-score { font-size: 24px; }
         .meta { color: #93a4b8; }
         .metrics { display: table; width: 100%; margin-top: 10px; border-spacing: 6px 0; }
         .metrics div { display: table-cell; background: #0c1117; border: 1px solid #26313d; border-radius: 8px; padding: 8px; text-align: center; }
@@ -1858,6 +1960,8 @@ class LumaSiftWindow(QMainWindow):
         .score-row b { float: right; color: #f8fafc; }
         .bar { margin-top: 4px; height: 8px; background: #26313d; border-radius: 4px; }
         .bar div { height: 8px; background: #2ea8ff; border-radius: 4px; }
+        .param-table td:nth-child(1) { width: 42%; color: #9fb0c2; }
+        .param-table td:nth-child(2) { width: 58%; color: #f8fafc; }
         </style>
         """
 

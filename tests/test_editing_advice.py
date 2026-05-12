@@ -54,7 +54,7 @@ def test_build_selected_editing_advice_selects_by_rank_and_path() -> None:
 
 
 def test_deterministic_fallback_produces_concrete_editing_advice() -> None:
-    payload = build_selected_editing_advice([_record(1, "street.jpg")], selected_ranks=[1])
+    payload = build_selected_editing_advice([_record(1, "street.jpg")], selected_ranks=[1], language="en")
     advice = payload["selected_editing_advice"][0]
 
     assert advice["recommended_style"] == "high_contrast_bw_documentary"
@@ -79,7 +79,7 @@ def test_existing_qwen_style_and_parameters_are_preserved_and_filled() -> None:
         local_adjustments=["Radial mask on face: Exposure +0.25, Shadows +12."],
     )
 
-    advice = build_selected_editing_advice([record], selected_paths=[Path("C:/photos/color.jpg")])[
+    advice = build_selected_editing_advice([record], selected_paths=[Path("C:/photos/color.jpg")], language="en")[
         "selected_editing_advice"
     ][0]
 
@@ -93,7 +93,7 @@ def test_existing_qwen_style_and_parameters_are_preserved_and_filled() -> None:
 
 
 def test_markdown_report_renders_selected_advice() -> None:
-    payload = build_selected_editing_advice([_record(1, "street.jpg")], selected_ranks=[1])
+    payload = build_selected_editing_advice([_record(1, "street.jpg")], selected_ranks=[1], language="en")
 
     markdown = render_selected_editing_advice_markdown(payload)
 
@@ -104,3 +104,17 @@ def test_markdown_report_renders_selected_advice() -> None:
     assert "### Crop" in markdown
     assert "### Local Adjustments" in markdown
     assert "### Grain, Sharpness, Motion Blur" in markdown
+
+
+def test_default_markdown_report_is_chinese() -> None:
+    payload = build_selected_editing_advice([_record(1, "street.jpg")], selected_ranks=[1])
+
+    markdown = render_selected_editing_advice_markdown(payload)
+    advice = payload["selected_editing_advice"][0]
+
+    assert payload["language"] == "zh"
+    assert "# 选中照片修图方案" in markdown
+    assert "## 第 1 张：street.jpg" in markdown
+    assert "### Lightroom 参数" in markdown
+    assert "曝光" in markdown
+    assert "Amount" not in advice["grain_sharpness_motion_blur"]["grain"]
