@@ -41,6 +41,7 @@ class Settings:
     vision_max_tokens: int = 4096
     request_timeout_seconds: int = 90
     qwen_include_rejected: bool = False
+    qwen_group_winners_only: bool = True
     weights: ScoreWeights = field(default_factory=ScoreWeights)
 
     @classmethod
@@ -59,6 +60,7 @@ class Settings:
             vision_api_keys=_split_keys(os.getenv("LUMASIFT_VISION_API_KEYS")),
             vision_max_tokens=int(os.getenv("LUMASIFT_VISION_MAX_TOKENS", "4096")),
             qwen_include_rejected=_optional_bool(os.getenv("LUMASIFT_QWEN_INCLUDE_REJECTED")),
+            qwen_group_winners_only=not _optional_bool(os.getenv("LUMASIFT_QWEN_INCLUDE_GROUP_NON_WINNERS")),
         )
 
     def ensure_dirs(self) -> None:

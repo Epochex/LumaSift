@@ -129,6 +129,13 @@ def make_records(photo_dir: Path, *, count: int) -> list[dict[str, Any]]:
                 "rank": index + 1,
                 "path": str(path),
                 "filename": path.name,
+                "visual_hash": "aa55aa55aa55aa55" if index < 3 else f"{index:016x}",
+                "group_id": "g0001" if index < 3 else f"g{index + 1:04d}",
+                "group_size": 3 if index < 3 else 1,
+                "group_rank": index + 1 if index < 3 else 1,
+                "is_group_best": index == 0 or index >= 3,
+                "group_best_path": str(photo_dir / "smoke_001.jpg") if index < 3 else str(path),
+                "group_score_delta": float(index) if index < 3 else 0.0,
                 "category": categories[index % len(categories)],
                 "recommended_style": styles[index % len(styles)],
                 "user_label": "unlabeled",
@@ -185,6 +192,13 @@ def exercise_label_workflow(window: Any, selection_model_type: Any) -> list[dict
     checks.append(check_value(count_visible_label(window, "reject") >= 1, "reject_filter_after_relabel", visible_label_detail(window)))
 
     set_combo_data(window.label_filter, "all")
+    set_combo_data(window.group_filter, "best")
+    window._populate_records()
+    checks.append(check_value(all_visible_group_best(window), "group_best_filter_clean", visible_group_detail(window)))
+    set_combo_data(window.group_filter, "grouped")
+    window._populate_records()
+    checks.append(check_value(count_visible_grouped(window) >= 1, "grouped_filter_visible", visible_group_detail(window)))
+    set_combo_data(window.group_filter, "all")
     set_combo_data(window.sort_combo, "user_priority")
     window._populate_records()
     sorted_labels = [record.get("user_label") or "unlabeled" for record in getattr(window.photo_model, "records", [])[:4]]
@@ -238,6 +252,23 @@ def all_visible_labels(window: Any, allowed: set[str]) -> bool:
 def visible_label_detail(window: Any) -> str:
     labels = [(record.get("filename"), record.get("user_label") or "unlabeled") for record in getattr(window.photo_model, "records", [])[:8]]
     return f"labels={labels}"
+
+
+def all_visible_group_best(window: Any) -> bool:
+    records = getattr(window.photo_model, "records", [])
+    return bool(records) and all(int(record.get("group_size", 1) or 1) <= 1 or bool(record.get("is_group_best")) for record in records)
+
+
+def count_visible_grouped(window: Any) -> int:
+    return sum(1 for record in getattr(window.photo_model, "records", []) if int(record.get("group_size", 1) or 1) > 1)
+
+
+def visible_group_detail(window: Any) -> str:
+    groups = [
+        (record.get("filename"), record.get("group_id"), record.get("group_size"), record.get("group_rank"), record.get("is_group_best"))
+        for record in getattr(window.photo_model, "records", [])[:8]
+    ]
+    return f"groups={groups}"
 
 
 def capture(window: Any, output_dir: Path, name: str, checks: list[dict[str, Any]]) -> Snapshot:
@@ -326,6 +357,8 @@ def review_checks(window: Any) -> list[dict[str, Any]]:
         check_value(not window.open_contact_button.text(), "open_contact_icon_only", window.open_contact_button.text()),
         check_min_size(window.generate_advice_button, "editing_plan_button_size", min_width=120, min_height=36),
         check_value(window.photo_model.rowCount() >= 1, "records_rendered", f"row_count={window.photo_model.rowCount()}"),
+        check_value("G3" in window.photo_model.data(window.photo_model.index(0, 0), 0), "group_badge_visible", window.photo_model.data(window.photo_model.index(0, 0), 0)),
+        check_value(("相似组" in plain_text) or ("Group" in plain_text), "group_detail_visible", plain_text[:500]),
         check_value("Not available in local_only mode" not in plain_text, "review_no_english_local_fallback", "local fallback localized"),
         check_value("Run qwen_vision mode" not in plain_text, "review_no_english_qwen_fallback", "qwen fallback localized"),
     ]
@@ -386,7 +419,13 @@ def geometry_detail(widget: Any) -> str:
 
 
 def source_state() -> dict[str, Any]:
-    files = [ROOT / "lumasift" / "app" / "desktop.py", ROOT / "scripts" / "ui_smoke.py"]
+    files = [
+        ROOT / "lumasift" / "app" / "desktop.py",
+        ROOT / "lumasift" / "analysis" / "grouping.py",
+        ROOT / "lumasift" / "core" / "harness.py",
+        ROOT / "lumasift" / "storage" / "state_db.py",
+        ROOT / "scripts" / "ui_smoke.py",
+    ]
     return {
         "files": {
             str(path.relative_to(ROOT)): {

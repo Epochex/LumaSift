@@ -8,6 +8,7 @@ from typing import Callable
 
 from lumasift.analysis.editing_advice import build_selected_editing_advice
 from lumasift.analysis.local_story import analyze_local_story_proxy
+from lumasift.analysis.grouping import apply_similarity_groups, compute_average_color, compute_dhash
 from lumasift.analysis.qwen_story import QWEN_STORY_PROMPT, QWEN_STORY_PROMPT_VERSION, merge_qwen_story_analysis
 from lumasift.analysis.scoring import rank_records
 from lumasift.core.config import Settings
@@ -150,9 +151,11 @@ class LumaSiftHarness:
             self._progress("local", index, len(photos))
 
         ranked = self._apply_persisted_user_feedback(rank_records(records))
+        self._apply_similarity_grouping(ranked)
         if self.settings.ai_mode == "qwen_vision":
             ranked = self._apply_qwen_vision(ranked)
         ranked = self._apply_persisted_user_feedback(rank_records(ranked))
+        self._apply_similarity_grouping(ranked)
         self._persist_manifest_records(ranked)
 
         report_csv = self.settings.output_dir / "report.csv"
@@ -217,11 +220,17 @@ class LumaSiftHarness:
                 if normalized_user_label(record.get("user_label")) == "reject":
                     record["qwen_status"] = "skipped_user_reject"
                     record["qwen_skip_reason"] = "user_label_reject"
+        if self.settings.qwen_group_winners_only:
+            for record in updated:
+                if int(record.get("group_size", 1) or 1) > 1 and not bool(record.get("is_group_best")):
+                    record["qwen_status"] = "skipped_similar_group"
+                    record["qwen_skip_reason"] = "similar_group_non_winner"
         eligible = [
             record
             for record in updated
             if record.get("category") != "failed"
             and (self.settings.qwen_include_rejected or normalized_user_label(record.get("user_label")) != "reject")
+            and (not self.settings.qwen_group_winners_only or int(record.get("group_size", 1) or 1) <= 1 or bool(record.get("is_group_best")))
         ]
         candidates = eligible[: self.settings.top_n_api_analysis]
         self._event(
@@ -287,6 +296,22 @@ class LumaSiftHarness:
                 self._progress("qwen", qwen_index, len(candidates))
         return rank_records(updated)
 
+    def _apply_similarity_grouping(self, records: list[dict]) -> None:
+        for record in records:
+            if record.get("category") == "failed":
+                continue
+            if not record.get("visual_hash"):
+                preview_path = record.get("preview_path") or record.get("path")
+                if not preview_path:
+                    continue
+                try:
+                    preview = Path(str(preview_path))
+                    record["visual_hash"] = compute_dhash(preview)
+                    record["visual_color"] = compute_average_color(preview)
+                except Exception as exc:  # noqa: BLE001 - grouping should never block analysis output.
+                    record.setdefault("errors", []).append(f"visual_hash_failed: {exc}")
+        apply_similarity_groups([record for record in records if record.get("category") != "failed"])
+
     def _apply_persisted_user_feedback(self, records: list[dict]) -> list[dict]:
         labels: dict[str, str] = {}
         if self.state_db is not None:
@@ -351,6 +376,14 @@ class LumaSiftHarness:
                 category=str(record.get("category")) if record.get("category") else None,
                 technical_quality_score=float(record["technical_quality_score"]) if record.get("technical_quality_score") is not None else None,
                 qwen_cache_key=str(record.get("qwen_cache_key")) if record.get("qwen_cache_key") else None,
+                visual_hash=str(record.get("visual_hash")) if record.get("visual_hash") else None,
+                visual_color=str(record.get("visual_color")) if record.get("visual_color") else None,
+                group_id=str(record.get("group_id")) if record.get("group_id") else None,
+                group_size=int(record["group_size"]) if record.get("group_size") is not None else None,
+                group_rank=int(record["group_rank"]) if record.get("group_rank") is not None else None,
+                is_group_best=bool(record.get("is_group_best")) if record.get("is_group_best") is not None else None,
+                group_best_path=str(record.get("group_best_path")) if record.get("group_best_path") else None,
+                group_score_delta=float(record["group_score_delta"]) if record.get("group_score_delta") is not None else None,
                 scores=scores,
                 record=record,
             )

@@ -110,6 +110,26 @@ def test_harness_applies_user_feedback_without_changing_model_score(tmp_path: Pa
     assert "user_feedback_priority" in (output_dir / "report.csv").read_text(encoding="utf-8-sig").splitlines()[0]
 
 
+def test_harness_groups_similar_photos_and_marks_best(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    for name in ("a.jpg", "b.jpg"):
+        Image.new("RGB", (64, 64), color=(200, 40, 40)).save(input_dir / name)
+    Image.new("RGB", (64, 64), color=(40, 40, 200)).save(input_dir / "c.jpg")
+    db = LumaSiftStateDb(tmp_path / "state.sqlite")
+
+    settings = Settings(input_dir=input_dir, output_dir=output_dir, ai_mode="local_only")
+    LumaSiftHarness(settings=settings, run_id="group-run", state_db=db).run()
+    report = json.loads((output_dir / "report.json").read_text(encoding="utf-8"))
+
+    grouped = [record for record in report["records"] if int(record.get("group_size", 1)) > 1]
+    assert len(grouped) == 2
+    assert sum(1 for record in grouped if record["is_group_best"]) == 1
+    assert all(record["group_best_path"] for record in grouped)
+    assert db.load_manifest_record(input_dir / "a.jpg")["visual_hash"]
+
+
 def test_harness_respects_limit(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
@@ -217,6 +237,49 @@ def test_qwen_stage_skips_rejected_user_labels_by_default(tmp_path: Path) -> Non
     assert result[0]["qwen_status"] == "skipped_user_reject"
     assert result[0]["qwen_skip_reason"] == "user_label_reject"
     assert any(event["type"] == "qwen_queue_prepared" and event["total"] == 0 for event in events)
+
+
+def test_qwen_stage_skips_non_winning_group_members_by_default(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    events: list[dict] = []
+    settings = Settings(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        ai_mode="qwen_vision",
+        vision_api_keys=["test-key"],
+        top_n_api_analysis=3,
+    )
+    harness = LumaSiftHarness(settings=settings, run_id="skip-group", event_callback=events.append)
+    ranked = [
+        {
+            "filename": "best.jpg",
+            "path": str(input_dir / "best.jpg"),
+            "category": "story_candidate",
+            "final_selection_score": 90,
+            "group_id": "g0001",
+            "group_size": 2,
+            "is_group_best": True,
+        },
+        {
+            "filename": "other.jpg",
+            "path": str(input_dir / "other.jpg"),
+            "category": "story_candidate",
+            "final_selection_score": 80,
+            "group_id": "g0001",
+            "group_size": 2,
+            "is_group_best": False,
+        },
+    ]
+    (output_dir / "STOP_LUMASIFT").write_text("stop", encoding="utf-8")
+
+    result = harness._apply_qwen_vision(ranked)
+
+    by_name = {record["filename"]: record for record in result}
+    assert by_name["other.jpg"]["qwen_status"] == "skipped_similar_group"
+    assert by_name["other.jpg"]["qwen_skip_reason"] == "similar_group_non_winner"
+    assert by_name["best.jpg"]["qwen_status"] == "cancelled"
 
 
 def test_qwen_stage_writes_prompt_version_and_cache_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -91,8 +91,16 @@ def test_state_db_persists_manifest_without_overwriting_label(tmp_path: Path) ->
         category="portfolio_candidate",
         technical_quality_score=71.0,
         qwen_cache_key="qwen-key",
+        visual_hash="abcd",
+        visual_color="1,2,3",
+        group_id="g0001",
+        group_size=2,
+        group_rank=1,
+        is_group_best=True,
+        group_best_path=photo,
+        group_score_delta=0.0,
         scores={"final_selection_score": 92.5},
-        record={"path": str(photo.resolve()), "filename": photo.name, "final_selection_score": 92.5},
+        record={"path": str(photo.resolve()), "filename": photo.name, "final_selection_score": 92.5, "group_id": "g0001"},
     )
 
     manifest = db.load_manifest_record(photo)
@@ -101,6 +109,10 @@ def test_state_db_persists_manifest_without_overwriting_label(tmp_path: Path) ->
     assert manifest["last_run_id"] == "run-2"
     assert manifest["size_bytes"] == stat.st_size
     assert manifest["qwen_cache_key"] == "qwen-key"
+    assert manifest["visual_hash"] == "abcd"
+    assert manifest["visual_color"] == "1,2,3"
+    assert manifest["group_id"] == "g0001"
+    assert manifest["is_group_best"] == 1
 
     reusable = db.reusable_record_for_file(photo)
     assert reusable is not None

@@ -124,6 +124,8 @@ class LumaSiftStateDb:
                 """
                 select path, size_bytes, mtime_ns, identity_hash, preview_path, last_run_id,
                        qwen_cache_key, technical_quality_score, final_selection_score,
+                       visual_hash, visual_color, group_id, group_size, group_rank, is_group_best,
+                       group_best_path, group_score_delta,
                        scores_json, record_json, user_label, run_id, rank, score, category,
                        updated_at
                 from photos
@@ -174,12 +176,21 @@ class LumaSiftStateDb:
         category: str | None = None,
         technical_quality_score: float | None = None,
         qwen_cache_key: str | None = None,
+        visual_hash: str | None = None,
+        visual_color: str | None = None,
+        group_id: str | None = None,
+        group_size: int | None = None,
+        group_rank: int | None = None,
+        is_group_best: bool | None = None,
+        group_best_path: str | Path | None = None,
+        group_score_delta: float | None = None,
         scores: dict[str, Any] | None = None,
         record: dict[str, Any] | None = None,
     ) -> None:
         now = int(time.time())
         normalized = self._normalize_path(path)
         preview = str(Path(preview_path).expanduser().resolve()) if preview_path else None
+        group_best = str(Path(group_best_path).expanduser().resolve()) if group_best_path else None
         scores_json = json.dumps(scores or {}, ensure_ascii=False, sort_keys=True) if scores is not None else None
         record_json = json.dumps(record or {}, ensure_ascii=False, sort_keys=True) if record is not None else None
         with self._connect() as conn:
@@ -188,9 +199,10 @@ class LumaSiftStateDb:
                 insert into photos(
                     path, size_bytes, mtime_ns, identity_hash, preview_path, last_run_id, run_id,
                     rank, score, category, technical_quality_score, final_selection_score,
-                    qwen_cache_key, scores_json, record_json, updated_at
+                    qwen_cache_key, visual_hash, visual_color, group_id, group_size, group_rank, is_group_best,
+                    group_best_path, group_score_delta, scores_json, record_json, updated_at
                 )
-                values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 on conflict(path) do update set
                     size_bytes=excluded.size_bytes,
                     mtime_ns=excluded.mtime_ns,
@@ -204,6 +216,14 @@ class LumaSiftStateDb:
                     technical_quality_score=coalesce(excluded.technical_quality_score, photos.technical_quality_score),
                     final_selection_score=coalesce(excluded.final_selection_score, photos.final_selection_score),
                     qwen_cache_key=coalesce(excluded.qwen_cache_key, photos.qwen_cache_key),
+                    visual_hash=coalesce(excluded.visual_hash, photos.visual_hash),
+                    visual_color=coalesce(excluded.visual_color, photos.visual_color),
+                    group_id=coalesce(excluded.group_id, photos.group_id),
+                    group_size=coalesce(excluded.group_size, photos.group_size),
+                    group_rank=coalesce(excluded.group_rank, photos.group_rank),
+                    is_group_best=coalesce(excluded.is_group_best, photos.is_group_best),
+                    group_best_path=coalesce(excluded.group_best_path, photos.group_best_path),
+                    group_score_delta=coalesce(excluded.group_score_delta, photos.group_score_delta),
                     scores_json=coalesce(excluded.scores_json, photos.scores_json),
                     record_json=coalesce(excluded.record_json, photos.record_json),
                     updated_at=excluded.updated_at
@@ -222,6 +242,14 @@ class LumaSiftStateDb:
                     technical_quality_score,
                     score,
                     qwen_cache_key,
+                    visual_hash,
+                    visual_color,
+                    group_id,
+                    group_size,
+                    group_rank,
+                    int(is_group_best) if is_group_best is not None else None,
+                    group_best,
+                    group_score_delta,
                     scores_json,
                     record_json,
                     now,
@@ -275,6 +303,9 @@ class LumaSiftStateDb:
             conn.execute("create index if not exists idx_photos_last_run_id on photos(last_run_id)")
             conn.execute("create index if not exists idx_photos_identity_hash on photos(identity_hash)")
             conn.execute("create index if not exists idx_photos_qwen_cache_key on photos(qwen_cache_key)")
+            conn.execute("create index if not exists idx_photos_visual_hash on photos(visual_hash)")
+            conn.execute("create index if not exists idx_photos_group_id on photos(group_id)")
+            conn.execute("create index if not exists idx_photos_is_group_best on photos(is_group_best)")
 
     def _ensure_photo_manifest_columns(self, conn: sqlite3.Connection) -> None:
         existing = {row["name"] for row in conn.execute("pragma table_info(photos)").fetchall()}
@@ -285,6 +316,14 @@ class LumaSiftStateDb:
             "preview_path": "text",
             "last_run_id": "text",
             "qwen_cache_key": "text",
+            "visual_hash": "text",
+            "visual_color": "text",
+            "group_id": "text",
+            "group_size": "integer",
+            "group_rank": "integer",
+            "is_group_best": "integer",
+            "group_best_path": "text",
+            "group_score_delta": "real",
             "technical_quality_score": "real",
             "final_selection_score": "real",
             "scores_json": "text",

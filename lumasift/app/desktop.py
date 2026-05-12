@@ -94,6 +94,10 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "all_categories": "全部分类",
         "all_labels": "全部标记",
         "unlabeled": "未标记",
+        "all_groups": "全部组",
+        "group_best": "组最佳",
+        "grouped_only": "成组",
+        "singletons": "单张",
         "sort_high": "高分优先",
         "sort_low": "低分优先",
         "sort_rank": "排名",
@@ -168,6 +172,10 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "all_categories": "All categories",
         "all_labels": "All labels",
         "unlabeled": "unlabeled",
+        "all_groups": "All groups",
+        "group_best": "Group best",
+        "grouped_only": "Grouped",
+        "singletons": "Singles",
         "sort_high": "Score high to low",
         "sort_low": "Score low to high",
         "sort_rank": "Rank",
@@ -720,7 +728,11 @@ class PhotoListModel(QAbstractListModel):
             score = float(record.get("final_selection_score", 0) or 0)
             category = self._display_value(record.get("category", ""), self.category_labels)
             user_label = self._display_value(record.get("user_label", "") or "unlabeled", self.user_label_labels)
-            return f"#{record.get('rank')}  {score:.1f}  {user_label}\n{record.get('filename')}\n{category}"
+            group_badge = ""
+            group_size = int(record.get("group_size", 1) or 1)
+            if group_size > 1:
+                group_badge = f"  G{group_size}{'*' if record.get('is_group_best') else ''}"
+            return f"#{record.get('rank')}  {score:.1f}  {user_label}{group_badge}\n{record.get('filename')}\n{category}"
         if role == int(Qt.ItemDataRole.ToolTipRole):
             return str(record.get("path", ""))
         return None
@@ -901,6 +913,7 @@ class LumaSiftWindow(QMainWindow):
             return
         category = self.category_filter.currentData() or self.category_filter.currentText()
         label_value = self.label_filter.currentData() or "all"
+        group_value = self.group_filter.currentData() if hasattr(self, "group_filter") else "all"
         sort_value = self.sort_combo.currentData() or "score_desc"
         self.category_filter.blockSignals(True)
         self.category_filter.clear()
@@ -925,6 +938,19 @@ class LumaSiftWindow(QMainWindow):
         label_index = self.label_filter.findData(label_value)
         self.label_filter.setCurrentIndex(label_index if label_index >= 0 else 0)
         self.label_filter.blockSignals(False)
+
+        self.group_filter.blockSignals(True)
+        self.group_filter.clear()
+        for text_key, data in [
+            ("all_groups", "all"),
+            ("group_best", "best"),
+            ("grouped_only", "grouped"),
+            ("singletons", "singletons"),
+        ]:
+            self.group_filter.addItem(self._t(text_key), data)
+        group_index = self.group_filter.findData(group_value)
+        self.group_filter.setCurrentIndex(group_index if group_index >= 0 else 0)
+        self.group_filter.blockSignals(False)
 
         self.sort_combo.blockSignals(True)
         self.sort_combo.clear()
@@ -1395,6 +1421,9 @@ class LumaSiftWindow(QMainWindow):
         self.label_filter = QComboBox()
         self.label_filter.addItems(["All labels", "keep", "maybe", "reject", "unlabeled"])
         self.label_filter.currentTextChanged.connect(self._populate_records)
+        self.group_filter = QComboBox()
+        self.group_filter.addItems(["All groups", "Group best", "Grouped", "Singles"])
+        self.group_filter.currentTextChanged.connect(self._populate_records)
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["Score high to low", "Label priority", "Score low to high", "Rank", "Filename A-Z"])
         self.sort_combo.currentTextChanged.connect(self._populate_records)
@@ -1408,6 +1437,7 @@ class LumaSiftWindow(QMainWindow):
         layout.addWidget(self.search_edit, stretch=1)
         layout.addWidget(self.category_filter)
         layout.addWidget(self.label_filter)
+        layout.addWidget(self.group_filter)
         layout.addWidget(self.sort_combo)
         layout.addWidget(self.result_count_label)
         return frame
@@ -1782,6 +1812,7 @@ class LumaSiftWindow(QMainWindow):
         query = self.search_edit.text().strip().lower() if hasattr(self, "search_edit") else ""
         category = self.category_filter.currentData() if hasattr(self, "category_filter") else "all"
         label_filter = self.label_filter.currentData() if hasattr(self, "label_filter") else "all"
+        group_filter = self.group_filter.currentData() if hasattr(self, "group_filter") else "all"
         if category and category != "all":
             records = [record for record in records if str(record.get("category", "")) == category]
         if label_filter and label_filter != "all":
@@ -1789,6 +1820,13 @@ class LumaSiftWindow(QMainWindow):
                 records = [record for record in records if not self._normalized_user_label(record)]
             else:
                 records = [record for record in records if self._normalized_user_label(record) == label_filter]
+        if group_filter and group_filter != "all":
+            if group_filter == "best":
+                records = [record for record in records if int(record.get("group_size", 1) or 1) <= 1 or bool(record.get("is_group_best"))]
+            elif group_filter == "grouped":
+                records = [record for record in records if int(record.get("group_size", 1) or 1) > 1]
+            elif group_filter == "singletons":
+                records = [record for record in records if int(record.get("group_size", 1) or 1) <= 1]
         if query:
             records = [
                 record
@@ -2032,6 +2070,8 @@ class LumaSiftWindow(QMainWindow):
         labels = {
             "selected": "已选" if self.language == "zh" else "Selected",
             "user_label": "标记" if self.language == "zh" else "Mark",
+            "group": "相似组" if self.language == "zh" else "Group",
+            "best": "组内最佳" if self.language == "zh" else "best",
             "story": "故事" if self.language == "zh" else "Story",
             "human": "人文" if self.language == "zh" else "Human",
             "editability": "可修" if self.language == "zh" else "Edit",
@@ -2042,6 +2082,14 @@ class LumaSiftWindow(QMainWindow):
             "crop": "裁切" if self.language == "zh" else "Crop",
             "params": "参数" if self.language == "zh" else "Parameters",
         }
+        group_size = int(record.get("group_size", 1) or 1)
+        group_text = ""
+        if group_size > 1:
+            if record.get("is_group_best"):
+                best_text = labels["best"]
+            else:
+                best_text = f"{labels['best']}: {self._escape(Path(str(record.get('group_best_path', ''))).name)}"
+            group_text = f" | {labels['group']} {self._escape(str(record.get('group_rank', '-')))}/{group_size} {best_text}"
         story_score = self._first_score(record, "street_documentary_potential_score", "storytelling_score")
         human_score = self._first_score(record, "human_documentary_value_score", "decisive_moment_score", "composition_score")
         editability_score = self._first_score(record, "editability_score", "editing_potential_score")
@@ -2052,7 +2100,7 @@ class LumaSiftWindow(QMainWindow):
             <span class="rank">#{self._escape(str(record.get("rank", "-")))}</span>
             <span class="score">{score:.1f}</span>
             <h2>{filename}</h2>
-            <p class="meta">{labels["selected"]} {selected_count} | {category} | {style} | {labels["user_label"]}: {user_label}</p>
+            <p class="meta">{labels["selected"]} {selected_count} | {category} | {style} | {labels["user_label"]}: {user_label}{group_text}</p>
             <div class="metrics">
               <div><b>{story_score:.0f}</b><span>{labels["story"]}</span></div>
               <div><b>{human_score:.0f}</b><span>{labels["human"]}</span></div>

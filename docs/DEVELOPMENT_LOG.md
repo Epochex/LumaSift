@@ -189,3 +189,13 @@
 - Qwen-reviewed records now carry `qwen_prompt_version` in JSON/CSV reports, while the Qwen cache key continues to include prompt version and model identity.
 - Ranking metrics now surface prompt version and Qwen model versions for each compared report, enabling local-only vs Qwen and prompt A/B comparisons.
 - Metrics Markdown now lists false negatives: relevant keep/maybe photos outside the chosen K that look technically weak or were categorized as technically weak but interesting.
+
+## 2026-05-12 - Similar-photo grouping and group winners
+- Added conservative near-duplicate grouping using 64-bit dHash plus aspect-ratio, brightness, and average-color constraints so visibly different frames are less likely to be merged.
+- Every successful record now carries grouping metadata: `visual_hash`, `visual_color`, `group_id`, `group_size`, `group_rank`, `is_group_best`, `group_best_path`, and `group_score_delta`.
+- Persisted grouping fields in the SQLite manifest and CSV/JSON reports without changing model scores.
+- Qwen review now defaults to group winners only; non-winning group members are marked `skipped_similar_group` with `qwen_skip_reason=similar_group_non_winner`.
+- The review board shows compact group badges, adds group filters for all / group best / grouped / singles, and the right cockpit shows group position and best candidate.
+- UI smoke now covers group badges, group filters, and group detail text.
+- Verified against 200 private local RAW files: first grouping run processed 200/200 in 34.34 seconds, produced 114 groups, max group size 7, stored 200 visual hashes, and estimated 86 Qwen calls saved by skipping non-winning group members. Manifest reuse processed 200/200 in 3.49 seconds.
+- Ran a live Qwen smoke using local development keys on 8 private RAW files with Top-2 group winners: 2 Qwen requests completed, 0 failed, and grouped non-winners were skipped as expected.
