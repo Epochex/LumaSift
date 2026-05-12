@@ -1034,73 +1034,72 @@ class LumaSiftWindow(QMainWindow):
         self.mode_combo.addItem("local_only", "local_only")
         self.mode_combo.addItem("qwen_vision", "qwen_vision")
         self.mode_combo.currentTextChanged.connect(self._sync_mode_controls)
-        self.mode_combo.setFixedWidth(160)
+        self.mode_combo.setObjectName("settingInput")
+        self.mode_combo.setFixedSize(174, 36)
         self.limit_spin = QSpinBox()
         self.limit_spin.setRange(1, 100000)
         self.limit_spin.setValue(50)
         self.limit_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.limit_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.limit_spin.setFixedWidth(118)
-        self.limit_spin.setMinimumHeight(34)
+        self.limit_spin.setObjectName("settingInput")
+        self.limit_spin.setFixedSize(128, 36)
         self.top_n_spin = QSpinBox()
         self.top_n_spin.setRange(1, 500)
         self.top_n_spin.setValue(5)
         self.top_n_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.top_n_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.top_n_spin.setFixedWidth(118)
-        self.top_n_spin.setMinimumHeight(34)
+        self.top_n_spin.setObjectName("settingInput")
+        self.top_n_spin.setFixedSize(128, 36)
         self.selected_top_spin = QSpinBox()
         self.selected_top_spin.setRange(1, 100)
         self.selected_top_spin.setValue(10)
         self.selected_top_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.selected_top_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.selected_top_spin.setFixedWidth(118)
-        self.selected_top_spin.setMinimumHeight(34)
+        self.selected_top_spin.setObjectName("settingInput")
+        self.selected_top_spin.setFixedSize(128, 36)
         self.display_limit_spin = QSpinBox()
         self.display_limit_spin.setRange(20, 2000)
         self.display_limit_spin.setValue(300)
         self.display_limit_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.display_limit_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.display_limit_spin.setFixedWidth(118)
-        self.display_limit_spin.setMinimumHeight(34)
+        self.display_limit_spin.setObjectName("settingInput")
+        self.display_limit_spin.setFixedSize(128, 36)
 
         self.advanced_panel = QFrame()
         self.advanced_panel.setObjectName("advancedPanel")
+        self.advanced_panel.setFixedHeight(160)
+        self.advanced_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         advanced_layout = QVBoxLayout(self.advanced_panel)
         advanced_layout.setContentsMargins(10, 10, 10, 10)
         advanced_layout.setSpacing(10)
 
-        option_bar = QFrame()
-        option_bar.setObjectName("optionBar")
-        option_layout = QHBoxLayout(option_bar)
-        option_layout.setContentsMargins(0, 0, 0, 0)
-        option_layout.setSpacing(10)
-        for label, control in [
+        settings_grid = QGridLayout()
+        settings_grid.setContentsMargins(0, 0, 0, 0)
+        settings_grid.setHorizontalSpacing(18)
+        settings_grid.setVerticalSpacing(6)
+        for col, (label, control) in enumerate([
             ("Mode", self.mode_combo),
             ("Scan", self.limit_spin),
             ("Qwen Top", self.top_n_spin),
             ("Advice Top", self.selected_top_spin),
             ("Show", self.display_limit_spin),
-        ]:
-            mini = QFrame()
-            mini.setObjectName("miniControl")
-            mini.setMinimumWidth(132)
-            mini_layout = QVBoxLayout(mini)
-            mini_layout.setContentsMargins(10, 8, 10, 8)
-            mini_layout.setSpacing(3)
+        ]):
             mini_label = QLabel(label)
             mini_label.setObjectName("miniLabel")
             self.static_labels[f"mini_{label}"] = mini_label
-            mini_layout.addWidget(mini_label)
-            mini_layout.addWidget(control)
-            option_layout.addWidget(mini)
-        option_layout.addStretch(1)
-        advanced_layout.addWidget(option_bar)
+            mini_label.setMinimumHeight(18)
+            settings_grid.addWidget(mini_label, 0, col)
+            settings_grid.addWidget(control, 1, col)
+            settings_grid.setColumnMinimumWidth(col, 136 if label != "Mode" else 180)
+        settings_grid.setColumnStretch(5, 1)
+        advanced_layout.addLayout(settings_grid)
 
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setPlaceholderText("Optional: comma-separated Qwen keys. Leave empty to use .env.")
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_edit.setMinimumHeight(34)
         self.show_key_checkbox = QCheckBox("Show")
+        self.show_key_checkbox.setMinimumHeight(24)
         self.show_key_checkbox.toggled.connect(self._toggle_key_visibility)
         key_row = QWidget()
         key_layout = QHBoxLayout(key_row)
@@ -1108,8 +1107,10 @@ class LumaSiftWindow(QMainWindow):
         key_layout.addWidget(self.api_key_edit, stretch=1)
         key_layout.addWidget(self.show_key_checkbox)
         self.save_keys_checkbox = QCheckBox("Save API keys locally")
+        self.save_keys_checkbox.setMinimumHeight(24)
         self.cache_note = QLabel("Qwen mode uploads only Top-N compressed JPEG previews; RAW files stay local.")
         self.cache_note.setObjectName("muted")
+        self.cache_note.setMinimumHeight(20)
         api_label = QLabel("Qwen keys")
         api_label.setObjectName("fieldLabel")
         self.static_labels["qwen_keys"] = api_label
@@ -1119,7 +1120,10 @@ class LumaSiftWindow(QMainWindow):
         key_grid.addWidget(api_label, 0, 0)
         key_grid.addWidget(key_row, 0, 1)
         key_grid.addWidget(self.save_keys_checkbox, 1, 1)
-        key_grid.addWidget(self.cache_note, 1, 2)
+        key_grid.addWidget(self.cache_note, 2, 1)
+        key_grid.setRowMinimumHeight(0, 34)
+        key_grid.setRowMinimumHeight(1, 24)
+        key_grid.setRowMinimumHeight(2, 20)
         key_grid.setColumnStretch(1, 1)
         advanced_layout.addLayout(key_grid)
         self.advanced_panel.setVisible(False)
@@ -1931,8 +1935,14 @@ class LumaSiftWindow(QMainWindow):
             QSpinBox {
                 font-size: 14px;
                 font-weight: 900;
-                padding-left: 10px;
-                padding-right: 10px;
+                padding: 0px 10px;
+                min-height: 32px;
+                max-height: 32px;
+            }
+            QComboBox#settingInput, QSpinBox#settingInput {
+                min-height: 34px;
+                max-height: 34px;
+                padding: 0px 10px;
             }
             QSpinBox::up-button, QSpinBox::down-button {
                 width: 0px;

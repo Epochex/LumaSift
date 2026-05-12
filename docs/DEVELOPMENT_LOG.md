@@ -95,3 +95,8 @@
 - Added setup/re-analyze buttons in review mode so the user can recover controls without losing screening space.
 - Increased the review panel minimum width and split ratio so AI critique and action buttons remain usable during screening.
 - Improved advanced numeric controls by widening them, removing tiny spin arrows, and increasing value contrast.
+
+## 2026-05-12 - Advanced settings compression fix
+- Replaced the advanced settings mini-card row with a stable grid so mode, scan count, Qwen count, advice count, and display count no longer collapse into clipped fields.
+- Added fixed-height setting inputs and explicit height for the advanced panel so Qt cannot compress checkboxes, key fields, or helper text into unreadable rows.
+- Verified the expanded setup state and compact review mode with offscreen UI screenshots.
