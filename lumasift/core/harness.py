@@ -49,6 +49,7 @@ class LumaSiftHarness:
         settings: Settings,
         run_id: str | None = None,
         progress_callback: Callable[[str, int, int], None] | None = None,
+        event_callback: Callable[[dict], None] | None = None,
     ) -> None:
         self.settings = settings
         self.settings.ensure_dirs()
@@ -56,10 +57,16 @@ class LumaSiftHarness:
         self.run_dir = self.settings.output_dir / "runs" / self.run_id
         self.state = RunState(self.run_dir)
         self.progress_callback = progress_callback
+        self.event_callback = event_callback
 
     def _progress(self, stage: str, current: int, total: int) -> None:
         if self.progress_callback is not None:
             self.progress_callback(stage, current, total)
+
+    def _event(self, event_type: str, **payload: object) -> None:
+        event = {"type": event_type, **payload}
+        if self.event_callback is not None:
+            self.event_callback(event)
 
     def run(self) -> HarnessResult:
         self.state.append_event("run_started", mode=self.settings.ai_mode, limit=self.settings.limit)
@@ -174,15 +181,33 @@ class LumaSiftHarness:
             keyring=ApiKeyRing(self.settings.vision_api_keys),
             max_tokens=self.settings.vision_max_tokens,
             timeout_seconds=self.settings.request_timeout_seconds,
+            event_callback=lambda event: self._event("qwen_client_event", client_event=event),
         )
         preview_dir = self.settings.output_dir / "previews"
         updated = list(ranked)
         candidates = updated[: self.settings.top_n_api_analysis]
+        self._event(
+            "qwen_queue_prepared",
+            total=len(candidates),
+            model=self.settings.vision_model,
+            base_url=self.settings.vision_api_base_url,
+        )
+        for record in candidates:
+            if record.get("category") != "failed":
+                record["qwen_status"] = "queued"
         for qwen_index, record in enumerate(candidates, start=1):
             if record.get("category") == "failed":
                 continue
             try:
                 self._progress("qwen", qwen_index - 1, len(candidates))
+                record["qwen_status"] = "running"
+                self._event(
+                    "qwen_candidate_running",
+                    index=qwen_index,
+                    total=len(candidates),
+                    path=record.get("path"),
+                    filename=record.get("filename"),
+                )
                 preview_path = create_jpeg_preview(Path(record["path"]), preview_dir)
                 response = client.analyze_image(
                     preview_path,
@@ -190,10 +215,29 @@ class LumaSiftHarness:
                     prompt_version=QWEN_STORY_PROMPT_VERSION,
                 )
                 merge_qwen_story_analysis(record, response)
+                status = "cache-hit" if client.last_cache_hit else "done"
+                record["qwen_status"] = status
                 self.state.append_event("qwen_analyzed", path=record["path"])
+                self._event(
+                    "qwen_candidate_finished",
+                    index=qwen_index,
+                    total=len(candidates),
+                    path=record.get("path"),
+                    filename=record.get("filename"),
+                    status=status,
+                )
             except Exception as exc:  # noqa: BLE001 - API failures should not kill local output.
+                record["qwen_status"] = "failed"
                 record.setdefault("errors", []).append(f"qwen_vision_failed: {exc}")
                 self.state.append_event("qwen_failed", path=record.get("path"), error=str(exc))
+                self._event(
+                    "qwen_candidate_failed",
+                    index=qwen_index,
+                    total=len(candidates),
+                    path=record.get("path"),
+                    filename=record.get("filename"),
+                    error=str(exc),
+                )
             finally:
                 self._progress("qwen", qwen_index, len(candidates))
         return rank_records(updated)

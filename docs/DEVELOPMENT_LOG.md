@@ -124,3 +124,9 @@
 - Treated explicit `unlabeled` values as unlabeled in filters so generated records and persisted records behave consistently.
 - Preserved selection by photo identity across filter/sort repopulation and refreshed the review cockpit/dashboard after batch marking.
 - Extended `scripts/ui_smoke.py` with real multi-select, keep/reject relabeling, label-filter, and selection-restore checks.
+
+## 2026-05-12 - Qwen queue visibility
+- Added harness-level Qwen events for queue prepared, candidate running, candidate finished, cache hit, failure, and client retry activity.
+- Added a compact GUI queue strip showing model, queued item count, current running file, done, cache-hit, failed, and retry counts.
+- Preserved Qwen cache behavior while exposing `last_cache_hit` for product telemetry without changing cached response payloads.
+- Extended UI smoke to verify the Qwen queue strip in Chinese and English without requiring a live API key.

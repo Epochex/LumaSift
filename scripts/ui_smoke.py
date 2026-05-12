@@ -59,6 +59,15 @@ def main() -> int:
     app.processEvents()
     snapshots.append(capture(window, args.output, "setup_expanded", setup_expanded_checks(window)))
 
+    window._analysis_qwen_event({"type": "qwen_queue_prepared", "total": 5, "model": "qwen3.6-plus"})
+    window._analysis_qwen_event({"type": "qwen_candidate_running", "filename": "smoke_001.jpg"})
+    window._analysis_qwen_event({"type": "qwen_candidate_finished", "status": "cache-hit"})
+    window._analysis_qwen_event({"type": "qwen_candidate_failed"})
+    window._analysis_qwen_event({"type": "qwen_client_event", "client_event": {"type": "retrying"}})
+    app.processEvents()
+    snapshots.append(capture(window, args.output, "qwen_queue_status", qwen_queue_checks(window)))
+    window.qwen_queue_label.setVisible(False)
+
     records = make_records(args.output / "synthetic_photos", count=args.records)
     window.records = records
     window._merge_user_labels()
@@ -245,6 +254,17 @@ def setup_expanded_checks(window: Any) -> list[dict[str, Any]]:
     for name in ("mode_combo", "limit_spin", "top_n_spin", "selected_top_spin", "display_limit_spin"):
         checks.append(check_min_size(getattr(window, name), f"{name}_readable", min_width=110, min_height=32))
     return checks
+
+
+def qwen_queue_checks(window: Any) -> list[dict[str, Any]]:
+    plain_text = window.qwen_queue_label.text()
+    return [
+        check_visible(window.qwen_queue_label, "qwen_queue_visible"),
+        check_value("qwen3.6-plus" in plain_text, "qwen_queue_model_visible", plain_text),
+        check_value(("缓存" in plain_text or "cache" in plain_text), "qwen_queue_cache_visible", plain_text),
+        check_value(("失败" in plain_text or "failed" in plain_text), "qwen_queue_failed_visible", plain_text),
+        check_value(("重试" in plain_text or "retrying" in plain_text), "qwen_queue_retry_visible", plain_text),
+    ]
 
 
 def review_checks(window: Any) -> list[dict[str, Any]]:

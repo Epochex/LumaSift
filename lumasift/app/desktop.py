@@ -225,6 +225,7 @@ class AnalysisWorker(QObject):
     finished = Signal(dict)
     failed = Signal(str)
     progress = Signal(str, int, int)
+    qwen_event = Signal(dict)
 
     def __init__(self, settings: Settings, run_id: str) -> None:
         super().__init__()
@@ -238,6 +239,7 @@ class AnalysisWorker(QObject):
                 settings=self.settings,
                 run_id=self.run_id,
                 progress_callback=lambda stage, current, total: self.progress.emit(stage, current, total),
+                event_callback=lambda event: self.qwen_event.emit(event),
             ).run()
             report = json.loads(result.report_json.read_text(encoding="utf-8"))
             self.finished.emit({"summary": result.summary, "report": report, "output_dir": str(self.settings.output_dir)})
@@ -600,6 +602,7 @@ class LumaSiftWindow(QMainWindow):
         self.pending_close = False
         self.allow_close = False
         self.review_mode = False
+        self.qwen_queue_state: dict[str, Any] = {}
         self.preview_dialogs: list[LargePreviewDialog] = []
         self._build_ui()
         self._load_preferences()
@@ -1045,6 +1048,11 @@ class LumaSiftWindow(QMainWindow):
         progress_row.addWidget(self.status_label, stretch=0)
         progress_row.addWidget(self.advanced_button, stretch=0)
         layout.addLayout(progress_row)
+        self.qwen_queue_label = QLabel("")
+        self.qwen_queue_label.setObjectName("qwenQueueLabel")
+        self.qwen_queue_label.setWordWrap(True)
+        self.qwen_queue_label.setVisible(False)
+        layout.addWidget(self.qwen_queue_label)
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("local_only", "local_only")
@@ -1294,6 +1302,7 @@ class LumaSiftWindow(QMainWindow):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.status_label.setText(self._t("step_local"))
+        self._reset_qwen_queue_state(settings)
         self._set_grid_records([], self._t("running_grid"))
         self.detail_text.setHtml(self._empty_detail_html())
         self._update_workflow("local")
@@ -1306,6 +1315,7 @@ class LumaSiftWindow(QMainWindow):
         self.worker.finished.connect(self._analysis_finished)
         self.worker.failed.connect(self._analysis_failed)
         self.worker.progress.connect(self._analysis_progress)
+        self.worker.qwen_event.connect(self._analysis_qwen_event)
         self.worker.finished.connect(self.worker_thread.quit)
         self.worker.failed.connect(self.worker_thread.quit)
         self.worker_thread.finished.connect(self._analysis_thread_finished)
@@ -1366,6 +1376,85 @@ class LumaSiftWindow(QMainWindow):
             "done": "Done",
         }.get(stage, stage)
         self.status_label.setText(f"{label}: {current}/{total}")
+
+    def _reset_qwen_queue_state(self, settings: Settings) -> None:
+        enabled = settings.ai_mode == "qwen_vision"
+        self.qwen_queue_state = {
+            "enabled": enabled,
+            "model": settings.vision_model,
+            "total": settings.top_n_api_analysis if enabled else 0,
+            "queued": settings.top_n_api_analysis if enabled else 0,
+            "running": "",
+            "done": 0,
+            "cache": 0,
+            "failed": 0,
+            "retrying": 0,
+        }
+        self._render_qwen_queue_state()
+
+    def _analysis_qwen_event(self, event: dict[str, Any]) -> None:
+        event_type = str(event.get("type", ""))
+        if event_type == "qwen_queue_prepared":
+            total = int(event.get("total", 0) or 0)
+            self.qwen_queue_state.update(
+                {
+                    "enabled": True,
+                    "model": str(event.get("model", self.qwen_queue_state.get("model", "Qwen"))),
+                    "total": total,
+                    "queued": total,
+                    "running": "",
+                    "done": 0,
+                    "cache": 0,
+                    "failed": 0,
+                    "retrying": 0,
+                }
+            )
+        elif event_type == "qwen_candidate_running":
+            self.qwen_queue_state["queued"] = max(0, int(self.qwen_queue_state.get("queued", 0) or 0) - 1)
+            self.qwen_queue_state["running"] = str(event.get("filename") or Path(str(event.get("path", ""))).name)
+        elif event_type == "qwen_candidate_finished":
+            status = str(event.get("status", "done"))
+            if status == "cache-hit":
+                self.qwen_queue_state["cache"] = int(self.qwen_queue_state.get("cache", 0) or 0) + 1
+            else:
+                self.qwen_queue_state["done"] = int(self.qwen_queue_state.get("done", 0) or 0) + 1
+            self.qwen_queue_state["running"] = ""
+        elif event_type == "qwen_candidate_failed":
+            self.qwen_queue_state["failed"] = int(self.qwen_queue_state.get("failed", 0) or 0) + 1
+            self.qwen_queue_state["running"] = ""
+        elif event_type == "qwen_client_event":
+            client_event = event.get("client_event", {})
+            if isinstance(client_event, dict) and str(client_event.get("type", "")) == "retrying":
+                self.qwen_queue_state["retrying"] = int(self.qwen_queue_state.get("retrying", 0) or 0) + 1
+        self._render_qwen_queue_state()
+
+    def _render_qwen_queue_state(self) -> None:
+        if not hasattr(self, "qwen_queue_label"):
+            return
+        if not self.qwen_queue_state.get("enabled"):
+            self.qwen_queue_label.setVisible(False)
+            self.qwen_queue_label.setText("")
+            return
+        model = self.qwen_queue_state.get("model", "Qwen")
+        running = str(self.qwen_queue_state.get("running", "") or "")
+        if len(running) > 32:
+            running = f"{running[:29]}..."
+        if self.language == "zh":
+            text = (
+                f"Qwen队列 | 模型 {model} | 排队 {self.qwen_queue_state.get('queued', 0)} | "
+                f"运行 {running or '-'} | 完成 {self.qwen_queue_state.get('done', 0)} | "
+                f"缓存 {self.qwen_queue_state.get('cache', 0)} | 失败 {self.qwen_queue_state.get('failed', 0)} | "
+                f"重试 {self.qwen_queue_state.get('retrying', 0)}"
+            )
+        else:
+            text = (
+                f"Qwen queue | model {model} | queued {self.qwen_queue_state.get('queued', 0)} | "
+                f"running {running or '-'} | done {self.qwen_queue_state.get('done', 0)} | "
+                f"cache {self.qwen_queue_state.get('cache', 0)} | failed {self.qwen_queue_state.get('failed', 0)} | "
+                f"retrying {self.qwen_queue_state.get('retrying', 0)}"
+            )
+        self.qwen_queue_label.setText(text)
+        self.qwen_queue_label.setVisible(True)
 
     def _populate_records(self) -> None:
         if not hasattr(self, "photo_list"):
@@ -2129,6 +2218,15 @@ class LumaSiftWindow(QMainWindow):
             QLabel#sectionTitle { font-size: 14px; font-weight: 900; color: #f8fafc; }
             QLabel#fieldLabel { color: #c8d4e0; font-weight: 800; }
             QLabel#miniLabel { color: #9fb0c2; font-weight: 800; }
+            QLabel#qwenQueueLabel {
+                color: #dbe7f3;
+                background: #101820;
+                border: 1px solid #26384a;
+                border-left: 6px solid #ffd400;
+                border-radius: 6px;
+                padding: 8px 10px;
+                font-weight: 700;
+            }
             QFrame#hero, QFrame#controlCard, QFrame#toolbar, QFrame#reviewBar {
                 background: #111820;
                 border: 1px solid #26313d;

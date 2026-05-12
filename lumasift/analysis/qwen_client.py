@@ -37,6 +37,7 @@ class QwenVisionClient:
         initial_backoff_seconds: float = 1.0,
         max_backoff_seconds: float = 30.0,
         sleep: Callable[[float], None] = time.sleep,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -50,8 +51,15 @@ class QwenVisionClient:
         self.initial_backoff_seconds = initial_backoff_seconds
         self.max_backoff_seconds = max_backoff_seconds
         self.sleep = sleep
+        self.event_callback = event_callback
+        self.last_cache_hit = False
+
+    def _event(self, event_type: str, **payload: Any) -> None:
+        if self.event_callback is not None:
+            self.event_callback({"type": event_type, **payload})
 
     def analyze_image(self, image_path: Path, prompt: str, prompt_version: str | None = None) -> dict[str, Any]:
+        self.last_cache_hit = False
         image_identity = identify_image(image_path)
         cache = self._cache_for(image_path)
         cache_key = None
@@ -63,6 +71,8 @@ class QwenVisionClient:
             )
             cached = cache.load(cache_key)
             if cached is not None:
+                self.last_cache_hit = True
+                self._event("cache_hit", image=str(image_path), model=self.model)
                 return cached
 
         if not self.keyring.has_keys():
@@ -101,14 +111,18 @@ class QwenVisionClient:
                 if response.status_code == 400 and payload.get("response_format") and not tried_without_response_format:
                     payload.pop("response_format", None)
                     tried_without_response_format = True
+                    self._event("retrying", reason="response_format_fallback", status_code=response.status_code)
                     continue
                 if response.status_code in {401, 403} and self.keyring.rotate():
+                    self._event("retrying", reason="key_rotated", status_code=response.status_code)
                     continue
                 if response.status_code == 429 and self.keyring.rotate():
                     retry_count = 0
+                    self._event("retrying", reason="rate_limit_key_rotated", status_code=response.status_code)
                     continue
                 if response.status_code in TRANSIENT_STATUS_CODES and retry_count < self.max_retries:
                     last_error = RuntimeError(self._status_error_message(response))
+                    self._event("retrying", reason="transient_http", status_code=response.status_code, retry=retry_count + 1)
                     self._backoff(retry_count)
                     retry_count += 1
                     continue
@@ -123,11 +137,13 @@ class QwenVisionClient:
             except requests.RequestException as exc:
                 last_error = exc
                 if retry_count < self.max_retries:
+                    self._event("retrying", reason="request_exception", retry=retry_count + 1)
                     self._backoff(retry_count)
                     retry_count += 1
                     continue
                 if self.keyring.rotate():
                     retry_count = 0
+                    self._event("retrying", reason="request_exception_key_rotated")
                     continue
                 break
         raise RuntimeError(f"Qwen vision request failed after key rotation: {last_error}")

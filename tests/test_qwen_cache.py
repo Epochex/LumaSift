@@ -61,6 +61,7 @@ def test_qwen_client_uses_persistent_cache_before_requiring_key(tmp_path: Path, 
     second = cached_client.analyze_image(image_path, "prompt", prompt_version="story-v1")
 
     assert first == second
+    assert cached_client.last_cache_hit is True
     assert calls == 1
     cache_text = next(cache_dir.glob("*.json")).read_text(encoding="utf-8")
     assert "should-not-be-stored" not in cache_text
