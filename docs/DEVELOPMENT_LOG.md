@@ -173,3 +173,9 @@
 - Added a GUI `标记优先` / `Label priority` sort mode so previously kept images can be surfaced in future review sessions.
 - Qwen review now skips records labeled `reject` by default and records `skipped_user_reject`; `LUMASIFT_QWEN_INCLUDE_REJECTED=1` can opt back in.
 - Verified a 200 RAW manifest reuse run after the change: 200/200 reused in 3.79 seconds and all 200 records carried the new feedback/model fields.
+
+## 2026-05-12 - Evaluation dataset export format
+- Added `lumasift.eval_dataset.v1`, a privacy-safe metadata format for local ranking evaluation.
+- Added `scripts/export_eval_dataset.py` to export labeled SQLite rows as JSON or CSV with `photo_id`, path, user/gold label, story rank, notes, split, prompt version, run context, score, and category.
+- Documented a 100-300 photo evaluation workflow in `docs/EVALUATION_DATASET.md`.
+- Added tests for JSON/CSV dataset writing and the command-line export script.
