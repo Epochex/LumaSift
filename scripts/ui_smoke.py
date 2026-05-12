@@ -37,6 +37,7 @@ def main() -> int:
     args.output.mkdir(parents=True, exist_ok=True)
 
     from PySide6.QtCore import QEventLoop, QItemSelectionModel, QTimer, Qt
+    from PySide6.QtGui import QFontDatabase, QFontMetrics
     from PySide6.QtWidgets import QApplication
 
     from lumasift.app.desktop import LumaSiftWindow
@@ -53,7 +54,7 @@ def main() -> int:
     app.processEvents()
 
     snapshots: list[Snapshot] = []
-    snapshots.append(capture(window, args.output, "setup_collapsed", setup_collapsed_checks(window)))
+    snapshots.append(capture(window, args.output, "setup_collapsed", setup_collapsed_checks(window, QFontDatabase, QFontMetrics, args.language)))
 
     window._exit_review_mode(show_advanced=True)
     app.processEvents()
@@ -95,6 +96,7 @@ def main() -> int:
         "schema": "lumasift.ui_smoke.v1",
         "output_dir": str(args.output.resolve()),
         "window": {"width": args.width, "height": args.height, "language": args.language},
+        "source_state": source_state(),
         "snapshots": [asdict(snapshot) for snapshot in snapshots],
         "summary": {"passed": len(failures) == 0, "failure_count": len(failures), "failures": failures},
     }
@@ -234,8 +236,30 @@ def capture(window: Any, output_dir: Path, name: str, checks: list[dict[str, Any
     return Snapshot(name=name, path=str(path.resolve()), width=pixmap.width(), height=pixmap.height(), checks=checks)
 
 
-def setup_collapsed_checks(window: Any) -> list[dict[str, Any]]:
+def setup_collapsed_checks(window: Any, font_database_type: Any, font_metrics_type: Any, language: str) -> list[dict[str, Any]]:
+    font_family = str(getattr(window, "ui_font_family", "") or "")
+    font_ok = True
+    glyph_ok = True
+    glyph_detail = "not required"
+    if language == "zh":
+        families = set(font_database_type.families())
+        preferred = {
+            "Microsoft YaHei UI",
+            "Microsoft YaHei",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "SimHei",
+            "PingFang SC",
+        }
+        font_ok = font_family in preferred or bool(families.intersection(preferred))
+        metrics = font_metrics_type(window.font())
+        sample = "LumaSift 中文 选片 修图 保留 待定 淘汰 √◇×◆"
+        missing = [char for char in sample if not metrics.inFontUcs4(ord(char))]
+        glyph_ok = not missing
+        glyph_detail = f"missing={''.join(missing)} font={font_family}"
     return [
+        check_value(font_ok, "zh_font_available", f"font={font_family}"),
+        check_value(glyph_ok, "zh_glyphs_renderable", glyph_detail),
         check_visible(window.controls_frame, "controls_visible"),
         check_not_visible(window.advanced_panel, "advanced_collapsed_by_default"),
         check_min_size(window.progress, "progress_bar_height", min_height=16),
@@ -246,7 +270,7 @@ def setup_collapsed_checks(window: Any) -> list[dict[str, Any]]:
 def setup_expanded_checks(window: Any) -> list[dict[str, Any]]:
     checks = [
         check_visible(window.advanced_panel, "advanced_visible"),
-        check_min_size(window.advanced_panel, "advanced_panel_height", min_height=150),
+        check_min_size(window.advanced_panel, "advanced_panel_height", min_height=180),
         check_min_size(window.api_key_edit, "api_key_field_height", min_height=32),
         check_min_size(window.show_key_checkbox, "show_key_checkbox_height", min_height=20),
         check_min_size(window.save_keys_checkbox, "save_keys_checkbox_height", min_height=20),
@@ -260,10 +284,12 @@ def qwen_queue_checks(window: Any) -> list[dict[str, Any]]:
     plain_text = window.qwen_queue_label.text()
     return [
         check_visible(window.qwen_queue_label, "qwen_queue_visible"),
+        check_min_size(window.qwen_queue_label, "qwen_queue_compact_height", min_height=30),
         check_value("qwen3.6-plus" in plain_text, "qwen_queue_model_visible", plain_text),
-        check_value(("缓存" in plain_text or "cache" in plain_text), "qwen_queue_cache_visible", plain_text),
-        check_value(("失败" in plain_text or "failed" in plain_text), "qwen_queue_failed_visible", plain_text),
-        check_value(("重试" in plain_text or "retrying" in plain_text), "qwen_queue_retry_visible", plain_text),
+        check_value(" | " not in plain_text, "qwen_queue_not_log_sentence", plain_text),
+        check_value("⚡" in plain_text, "qwen_queue_cache_icon_visible", plain_text),
+        check_value("!" in plain_text, "qwen_queue_failed_icon_visible", plain_text),
+        check_value("↻" in plain_text, "qwen_queue_retry_icon_visible", plain_text),
     ]
 
 
@@ -275,8 +301,15 @@ def review_checks(window: Any) -> list[dict[str, Any]]:
         check_not_visible(window.workflow_frame, "workflow_hidden_in_review"),
         check_not_visible(window.controls_frame, "setup_controls_hidden_in_review"),
         check_min_size(window.photo_list, "photo_grid_size", min_width=520, min_height=320),
-        check_min_size(window.detail_panel, "detail_panel_size", min_width=540, min_height=320),
-        check_min_size(window.generate_advice_button, "editing_plan_button_size", min_width=120, min_height=34),
+        check_min_size(window.detail_panel, "detail_panel_size", min_width=620, min_height=320),
+        check_min_size(window.keep_button, "keep_icon_button_size", min_width=56, min_height=36),
+        check_min_size(window.maybe_button, "maybe_icon_button_size", min_width=56, min_height=36),
+        check_min_size(window.reject_button, "reject_icon_button_size", min_width=56, min_height=36),
+        check_value(window.keep_button.text() == "√", "keep_button_icon_only", window.keep_button.text()),
+        check_value(window.reject_button.text() == "×", "reject_button_icon_only", window.reject_button.text()),
+        check_value(not window.open_output_button.text(), "open_output_icon_only", window.open_output_button.text()),
+        check_value(not window.open_contact_button.text(), "open_contact_icon_only", window.open_contact_button.text()),
+        check_min_size(window.generate_advice_button, "editing_plan_button_size", min_width=120, min_height=36),
         check_value(window.photo_model.rowCount() >= 1, "records_rendered", f"row_count={window.photo_model.rowCount()}"),
         check_value("Not available in local_only mode" not in plain_text, "review_no_english_local_fallback", "local fallback localized"),
         check_value("Run qwen_vision mode" not in plain_text, "review_no_english_qwen_fallback", "qwen fallback localized"),
@@ -288,7 +321,7 @@ def editing_plan_checks(window: Any) -> list[dict[str, Any]]:
     expected_title = "照片的修图方案" if window.language == "zh" else "Editing plan"
     forbidden_default = "# Selected Editing Advice" if window.language == "zh" else "选中照片修图方案"
     return [
-        check_min_size(window.detail_panel, "editing_plan_panel_size", min_width=540, min_height=320),
+        check_min_size(window.detail_panel, "editing_plan_panel_size", min_width=620, min_height=320),
         check_value(expected_title in plain_text, "editing_plan_language", f"contains={expected_title!r}"),
         check_value(forbidden_default not in plain_text, "editing_plan_not_wrong_language", f"forbidden={forbidden_default!r}"),
         check_value("Lightroom" in plain_text, "editing_plan_parameters_visible", "Lightroom section visible"),
@@ -337,6 +370,20 @@ def geometry_detail(widget: Any) -> str:
     return f"visible={widget.isVisible()} geometry={geometry.x()},{geometry.y()},{geometry.width()}x{geometry.height()}"
 
 
+def source_state() -> dict[str, Any]:
+    files = [ROOT / "lumasift" / "app" / "desktop.py", ROOT / "scripts" / "ui_smoke.py"]
+    return {
+        "files": {
+            str(path.relative_to(ROOT)): {
+                "mtime": path.stat().st_mtime,
+                "size": path.stat().st_size,
+            }
+            for path in files
+            if path.exists()
+        }
+    }
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# LumaSift UI Smoke Report",
@@ -345,8 +392,14 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Failures: `{report['summary']['failure_count']}`",
         f"- Output: `{report['output_dir']}`",
         "",
-        "## Snapshots",
+        "## Source State",
     ]
+    for rel_path, state in report.get("source_state", {}).get("files", {}).items():
+        lines.append(f"- `{rel_path}`: mtime `{state['mtime']}`, size `{state['size']}`")
+    lines.extend([
+        "",
+        "## Snapshots",
+    ])
     for snapshot in report["snapshots"]:
         lines.append(f"- `{snapshot['name']}`: `{snapshot['path']}` ({snapshot['width']}x{snapshot['height']})")
     lines.append("")

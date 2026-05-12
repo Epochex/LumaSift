@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QAbstractListModel, QEasingCurve, QItemSelectionModel, QModelIndex, QObject, QPropertyAnimation, QSettings, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSplitter,
+    QStyle,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -196,6 +197,43 @@ UI_TEXT: dict[str, dict[str, str]] = {
 }
 
 
+PREFERRED_UI_FONTS = [
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    "Noto Sans CJK SC",
+    "Source Han Sans SC",
+    "SimHei",
+    "PingFang SC",
+    "Arial Unicode MS",
+    "Segoe UI",
+]
+
+WINDOWS_UI_FONT_FILES = [
+    Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "msyh.ttc",
+    Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "msyhbd.ttc",
+    Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "simhei.ttf",
+]
+
+
+def preferred_ui_font_family() -> str:
+    for font_file in WINDOWS_UI_FONT_FILES:
+        if font_file.exists():
+            QFontDatabase.addApplicationFont(str(font_file))
+    available = set(QFontDatabase.families())
+    for family in PREFERRED_UI_FONTS:
+        if family in available:
+            return family
+    return QApplication.font().family()
+
+
+def apply_application_font(app: QApplication) -> str:
+    family = preferred_ui_font_family()
+    font = QFont(family, 10)
+    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    app.setFont(font)
+    return family
+
+
 def crash_log_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA")
     root = Path(base) if base else Path.home()
@@ -342,7 +380,7 @@ class LargePreviewDialog(QDialog):
         self.image_label = QLabel("加载中..." if self.language == "zh" else "Loading...")
         self.image_label.setObjectName("previewImage")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setMinimumSize(900, 560)
+        self.image_label.setMinimumSize(640, 420)
         self.image_label.setScaledContents(False)
 
         self.scroll_area = QScrollArea()
@@ -575,8 +613,10 @@ class PhotoListModel(QAbstractListModel):
 class LumaSiftWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self.ui_font_family = apply_application_font(QApplication.instance() or QApplication([]))
+        self.setProperty("lumasift_ui_font_family", self.ui_font_family)
         self.resize(1440, 900)
-        self.setMinimumSize(1180, 760)
+        self.setMinimumSize(1220, 800)
         self.records: list[dict[str, Any]] = []
         self.output_dir = Path("./outputs/gui")
         self.settings_store = QSettings("LumaSift", "LumaSift")
@@ -691,16 +731,23 @@ class LumaSiftWindow(QMainWindow):
             self.search_edit.setPlaceholderText(self._t("search"))
             self.photo_list.setToolTip(self._t("grid_tooltip"))
             self.detail_hint_label.setText(self._t("detail_hint"))
-            self.keep_button.setText(self._t("keep"))
-            self.maybe_button.setText(self._t("maybe"))
-            self.reject_button.setText(self._t("reject"))
-            self.generate_advice_button.setText(self._t("editing_plan"))
-            self.open_output_button.setText(self._t("open_output"))
-            self.open_contact_button.setText(self._t("open_contact"))
+            self.keep_button.setText("√")
+            self.keep_button.setToolTip(self._t("keep"))
+            self.maybe_button.setText("◇")
+            self.maybe_button.setToolTip(self._t("maybe"))
+            self.reject_button.setText("×")
+            self.reject_button.setToolTip(self._t("reject"))
+            self.generate_advice_button.setText(("◆ " + self._t("editing_plan")) if self.language == "zh" else "◆ Edit")
+            self.generate_advice_button.setToolTip(self._t("editing_plan"))
+            self.open_output_button.setText("")
+            self.open_output_button.setToolTip(self._t("open_output"))
+            self.open_contact_button.setText("")
+            self.open_contact_button.setToolTip(self._t("open_contact"))
             if not self.records:
                 self.result_count_label.setText(self._t("no_results"))
                 self.status_label.setText(self._t("ready"))
                 self._show_empty_grid(self._t("empty_grid"))
+                self.detail_text.setHtml(self._empty_detail_html())
         self._reset_filter_combos()
         self._update_dashboard()
 
@@ -788,7 +835,7 @@ class LumaSiftWindow(QMainWindow):
 
         self.detail_panel = QFrame()
         self.detail_panel.setObjectName("detailPanel")
-        self.detail_panel.setMinimumWidth(540)
+        self.detail_panel.setMinimumWidth(620)
         self._apply_shadow(self.detail_panel, blur=22, y=8, alpha=24)
         detail_layout = QVBoxLayout(self.detail_panel)
         detail_layout.setContentsMargins(10, 10, 10, 10)
@@ -817,7 +864,7 @@ class LumaSiftWindow(QMainWindow):
         self.detail_text = QTextEdit()
         self.detail_text.setObjectName("detailText")
         self.detail_text.setReadOnly(True)
-        self.detail_text.setMinimumHeight(120)
+        self.detail_text.setMinimumHeight(80)
         self.detail_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.detail_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.detail_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -833,43 +880,52 @@ class LumaSiftWindow(QMainWindow):
         action_grid.setVerticalSpacing(8)
         self.keep_button = QPushButton("")
         self.keep_button.setObjectName("markKeepButton")
-        self.keep_button.setMinimumHeight(34)
+        self.keep_button.setMinimumHeight(38)
+        self.keep_button.setMinimumWidth(64)
         self.keep_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.keep_button.clicked.connect(lambda: self._mark_selected("keep"))
         action_grid.addWidget(self.keep_button, 0, 0)
         self.maybe_button = QPushButton("")
         self.maybe_button.setObjectName("markMaybeButton")
-        self.maybe_button.setMinimumHeight(34)
+        self.maybe_button.setMinimumHeight(38)
+        self.maybe_button.setMinimumWidth(64)
         self.maybe_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.maybe_button.clicked.connect(lambda: self._mark_selected("maybe"))
         action_grid.addWidget(self.maybe_button, 0, 1)
         self.reject_button = QPushButton("")
         self.reject_button.setObjectName("markRejectButton")
-        self.reject_button.setMinimumHeight(34)
+        self.reject_button.setMinimumHeight(38)
+        self.reject_button.setMinimumWidth(64)
         self.reject_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.reject_button.clicked.connect(lambda: self._mark_selected("reject"))
         action_grid.addWidget(self.reject_button, 0, 2)
         self.generate_advice_button = QPushButton("")
         self.generate_advice_button.setObjectName("primaryButton")
-        self.generate_advice_button.setMinimumHeight(34)
+        self.generate_advice_button.setMinimumHeight(38)
         self.generate_advice_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.generate_advice_button.clicked.connect(self._generate_selected_advice)
         action_grid.addWidget(self.generate_advice_button, 1, 0)
         self.open_output_button = QPushButton("")
         self.open_output_button.setObjectName("secondaryButton")
-        self.open_output_button.setMinimumHeight(34)
+        self.open_output_button.setMinimumHeight(38)
+        self.open_output_button.setMinimumWidth(52)
+        self.open_output_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
+        self.open_output_button.setIconSize(QSize(18, 18))
         self.open_output_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.open_output_button.clicked.connect(lambda: self._open_path(self.output_dir))
         action_grid.addWidget(self.open_output_button, 1, 1)
         self.open_contact_button = QPushButton("")
         self.open_contact_button.setObjectName("secondaryButton")
-        self.open_contact_button.setMinimumHeight(34)
+        self.open_contact_button.setMinimumHeight(38)
+        self.open_contact_button.setMinimumWidth(52)
+        self.open_contact_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.open_contact_button.setIconSize(QSize(18, 18))
         self.open_contact_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.open_contact_button.clicked.connect(lambda: self._open_path(self.output_dir / "contact_sheet_top50.jpg"))
         action_grid.addWidget(self.open_contact_button, 1, 2)
         detail_layout.addWidget(action_bar, stretch=0)
         splitter.addWidget(self.detail_panel)
-        splitter.setSizes([780, 660])
+        splitter.setSizes([760, 700])
         root.addWidget(splitter, stretch=1)
 
         self.setCentralWidget(central)
@@ -1050,7 +1106,9 @@ class LumaSiftWindow(QMainWindow):
         layout.addLayout(progress_row)
         self.qwen_queue_label = QLabel("")
         self.qwen_queue_label.setObjectName("qwenQueueLabel")
-        self.qwen_queue_label.setWordWrap(True)
+        self.qwen_queue_label.setTextFormat(Qt.TextFormat.RichText)
+        self.qwen_queue_label.setMinimumHeight(36)
+        self.qwen_queue_label.setWordWrap(False)
         self.qwen_queue_label.setVisible(False)
         layout.addWidget(self.qwen_queue_label)
 
@@ -1091,7 +1149,7 @@ class LumaSiftWindow(QMainWindow):
 
         self.advanced_panel = QFrame()
         self.advanced_panel.setObjectName("advancedPanel")
-        self.advanced_panel.setFixedHeight(160)
+        self.advanced_panel.setFixedHeight(188)
         self.advanced_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         advanced_layout = QVBoxLayout(self.advanced_panel)
         advanced_layout.setContentsMargins(10, 10, 10, 10)
@@ -1439,20 +1497,33 @@ class LumaSiftWindow(QMainWindow):
         running = str(self.qwen_queue_state.get("running", "") or "")
         if len(running) > 32:
             running = f"{running[:29]}..."
-        if self.language == "zh":
-            text = (
-                f"Qwen队列 | 模型 {model} | 排队 {self.qwen_queue_state.get('queued', 0)} | "
-                f"运行 {running or '-'} | 完成 {self.qwen_queue_state.get('done', 0)} | "
-                f"缓存 {self.qwen_queue_state.get('cache', 0)} | 失败 {self.qwen_queue_state.get('failed', 0)} | "
-                f"重试 {self.qwen_queue_state.get('retrying', 0)}"
-            )
-        else:
-            text = (
-                f"Qwen queue | model {model} | queued {self.qwen_queue_state.get('queued', 0)} | "
-                f"running {running or '-'} | done {self.qwen_queue_state.get('done', 0)} | "
-                f"cache {self.qwen_queue_state.get('cache', 0)} | failed {self.qwen_queue_state.get('failed', 0)} | "
-                f"retrying {self.qwen_queue_state.get('retrying', 0)}"
-            )
+        labels = {
+            "queued": "排队" if self.language == "zh" else "Queued",
+            "running": "运行" if self.language == "zh" else "Running",
+            "done": "完成" if self.language == "zh" else "Done",
+            "cache": "缓存" if self.language == "zh" else "Cache",
+            "failed": "失败" if self.language == "zh" else "Failed",
+            "retry": "重试" if self.language == "zh" else "Retry",
+        }
+        queued = self.qwen_queue_state.get("queued", 0)
+        done = self.qwen_queue_state.get("done", 0)
+        cache = self.qwen_queue_state.get("cache", 0)
+        failed = self.qwen_queue_state.get("failed", 0)
+        retrying = self.qwen_queue_state.get("retrying", 0)
+        text = (
+            "<span style='font-weight:900; color:#f8fafc;'>Qwen</span>"
+            f"&nbsp;&nbsp;<span style='color:#9fb0c2;'>{self._escape(str(model))}</span>"
+            f"&nbsp;&nbsp;&nbsp;<span title='{labels['queued']}' style='color:#9fb0c2;'>● <b>{queued}</b></span>"
+            f"&nbsp;&nbsp;<span title='{labels['running']}' style='color:#ffd400;'>▶ <b>{self._escape(running or '0')}</b></span>"
+            f"&nbsp;&nbsp;<span title='{labels['done']}' style='color:#00a6ff;'>√ <b>{done}</b></span>"
+            f"&nbsp;&nbsp;<span title='{labels['cache']}' style='color:#61d394;'>⚡ <b>{cache}</b></span>"
+            f"&nbsp;&nbsp;<span title='{labels['failed']}' style='color:#ff3b30;'>! <b>{failed}</b></span>"
+            f"&nbsp;&nbsp;<span title='{labels['retry']}' style='color:#ff9f1c;'>↻ <b>{retrying}</b></span>"
+        )
+        self.qwen_queue_label.setToolTip(
+            f"Qwen {model}: {labels['queued']} {queued}, {labels['running']} {running or '0'}, "
+            f"{labels['done']} {done}, {labels['cache']} {cache}, {labels['failed']} {failed}, {labels['retry']} {retrying}"
+        )
         self.qwen_queue_label.setText(text)
         self.qwen_queue_label.setVisible(True)
 
@@ -2171,7 +2242,7 @@ class LumaSiftWindow(QMainWindow):
     def _detail_html_style(self) -> str:
         return """
         <style>
-        body { color: #dbe7f3; font-family: Segoe UI, Microsoft YaHei; font-size: 12px; background: #090d12; margin: 0; }
+        body { color: #dbe7f3; font-family: Microsoft YaHei UI, Microsoft YaHei, Segoe UI; font-size: 12px; background: #090d12; margin: 0; }
         h2 { margin: 0 0 4px 0; font-size: 19px; color: #f8fafc; }
         h3 { margin: 12px 0 6px 0; font-size: 12px; color: #00a6ff; text-transform: uppercase; letter-spacing: 0px; border-left: 5px solid #ffd400; padding-left: 7px; }
         p { line-height: 1.45; margin: 4px 0 8px 0; color: #c8d4e0; }
@@ -2208,7 +2279,7 @@ class LumaSiftWindow(QMainWindow):
             QMainWindow, QWidget {
                 background: #090d12;
                 color: #dbe7f3;
-                font-family: Segoe UI, Microsoft YaHei;
+                font-family: Microsoft YaHei UI, Microsoft YaHei, Segoe UI;
                 font-size: 12px;
             }
             QLabel { background: transparent; }
@@ -2224,7 +2295,7 @@ class LumaSiftWindow(QMainWindow):
                 border: 1px solid #26384a;
                 border-left: 6px solid #ffd400;
                 border-radius: 6px;
-                padding: 8px 10px;
+                padding: 6px 10px;
                 font-weight: 700;
             }
             QFrame#hero, QFrame#controlCard, QFrame#toolbar, QFrame#reviewBar {
@@ -2326,6 +2397,11 @@ class LumaSiftWindow(QMainWindow):
             QPushButton#markMaybeButton:hover { background: #ffe45c; }
             QPushButton#markRejectButton { background: #ff3b30; color: #ffffff; }
             QPushButton#markRejectButton:hover { background: #ff625a; }
+            QPushButton#markKeepButton, QPushButton#markMaybeButton, QPushButton#markRejectButton {
+                font-size: 21px;
+                font-weight: 900;
+                padding: 4px 10px;
+            }
             QPushButton:disabled { background: #26313d; color: #66778a; }
             QListView#photoGrid {
                 background: #0c1117;
@@ -2410,6 +2486,7 @@ class LumaSiftWindow(QMainWindow):
 def main() -> int:
     install_crash_logging()
     app = QApplication(sys.argv)
+    apply_application_font(app)
     app.setApplicationName("LumaSift")
     window = LumaSiftWindow()
     window.show()

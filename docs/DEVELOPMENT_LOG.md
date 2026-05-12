@@ -130,3 +130,19 @@
 - Added a compact GUI queue strip showing model, queued item count, current running file, done, cache-hit, failed, and retry counts.
 - Preserved Qwen cache behavior while exposing `last_cache_hit` for product telemetry without changing cached response payloads.
 - Extended UI smoke to verify the Qwen queue strip in Chinese and English without requiring a live API key.
+
+## 2026-05-12 - Chinese glyph and graphic control gate
+- Fixed the release-blocking Chinese UI glyph issue by selecting a Chinese-capable application font and registering Windows Microsoft YaHei font files for offscreen smoke screenshots.
+- Replaced text-heavy review actions with graphic decision controls, icon-only output/contact-sheet controls, and a compact Qwen status chip strip.
+- Fixed a language-state bug where the empty review detail panel could remain in English after switching the app back to Chinese.
+- Strengthened `scripts/ui_smoke.py` so it now fails on missing Chinese glyph support, long log-style Qwen status text, compressed action buttons, and stale source-state ambiguity.
+- Updated the executable backlog so 200+ RAW GUI stability and Chinese-first friend-test rehearsal precede Qwen cancellation work.
+
+## 2026-05-12 - 200 RAW GUI release stability run
+- Ran the current desktop GUI worker in local-only mode against 200 real ARW files from a private local camera folder, writing only ignored outputs under `outputs/raw200-gui-smoke/`.
+- Result: 200 records loaded into review mode in 24.8 seconds, with the first thumbnail batch generated and no analysis failure reported.
+- Verified post-run review behavior using the 200-record report: review board restored, keep marking worked, keep filter showed persisted labels, and selected-photo editing advice was written.
+- Verified large RAW preview generation from the run output: the first ranked ARW opened as a 1616 x 1080 preview.
+- Reduced the large preview image label minimum size so Fit mode is less likely to force scrollbars on smaller windows.
+- Completed the Chinese-first friend-test workflow rehearsal gate by combining fresh Chinese smoke screenshots, the 200 RAW GUI run, review/label/advice checks, large preview verification, and output artifact checks.
+- Rebuilt the Windows app directory and Inno installer, then confirmed `dist/LumaSift/LumaSift.exe` starts from the packaged build and `dist/installer/LumaSiftSetup.exe` exists.

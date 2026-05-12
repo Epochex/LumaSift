@@ -89,16 +89,22 @@
       "priority": 0,
       "status": "todo",
       "dependencies": [
-        "LS-003"
+        "LS-003",
+        "LS-031",
+        "LS-034"
       ],
       "area": "ai-workflow",
       "source": "planning_agent",
-      "rationale": "A commercial local app must let users stop expensive/slow API work without losing local results.",
+      "rationale": "A commercial local app must let users stop expensive/slow API work without losing local results, but this should follow the current Chinese-first GUI and 200+ photo release baseline so cancellation work is integrated into a stable main workflow.",
       "acceptance": [
-        "User can cancel the Qwen stage.",
-        "Completed Qwen items remain saved.",
-        "Pending items become skipped/cancelled.",
-        "Report still contains local-only ranking plus Qwen errors/status."
+        "User can cancel only the Qwen stage without discarding completed local ranking results.",
+        "Completed Qwen items remain saved and visible in the queue/report state.",
+        "Pending Qwen items become skipped/cancelled with readable Chinese and English UI status.",
+        "In-flight network work stops safely where supported; otherwise the UI enters a cancelling state and prevents duplicate submissions.",
+        "Qwen queue strip updates cancelled/skipped state separately from failed/retrying/cache-hit/done counts.",
+        "Report still contains local-only ranking plus Qwen done/cache-hit/failed/cancelled status.",
+        "Cancellation does not corrupt Qwen cache writes or saved labels.",
+        "python scripts/ui_smoke.py covers the cancelled/downgraded visual state without requiring a live API key."
       ],
       "risk": "Network request cancellation and cache writes need conservative handling."
     },
@@ -348,25 +354,26 @@
     },
     {
       "id": "LS-031",
-      "title": "200+ RAW release stability run",
-      "priority": 0,
-      "status": "todo",
+      "title": "200+ RAW GUI release stability run",
+      "priority": -1,
+      "status": "done",
       "dependencies": [
         "LS-002",
         "LS-003",
-        "LS-030"
+        "LS-030",
+        "LS-033"
       ],
       "area": "release-qa",
       "source": "user_goal",
-      "rationale": "The v0.1 product must demonstrate stable local-first processing on a realistic RAW folder, not only synthetic images.",
+      "rationale": "The v0.1 product target is a local graphical desktop app. The release gate should validate the current Chinese-first GUI after the latest review cockpit, label, Qwen queue, and UI smoke changes.",
       "acceptance": [
-        "Copy or sample 200+ private RAW/JPG files into an ignored local test folder.",
-        "Run local mode end to end without committing private photos or outputs.",
-        "Record runtime, failures, memory-risk observations, and output artifacts.",
-        "Fix crashes, hangs, or severe UX blockers found by the run.",
-        "Document results in DEVELOPMENT_LOG without exposing private paths beyond local-only notes."
+        "Run the current desktop GUI against a 200+ real RAW/JPG folder in local-only mode without committing private photos or generated outputs.",
+        "The app remains responsive enough to review results after the run and shuts down cleanly without QThread or worker lifecycle crashes.",
+        "Review board, detail cockpit, large preview, keep/maybe/reject labels, label filters, and selected-photo editing advice remain usable after the 200+ photo run.",
+        "Record runtime, processed count, failure count, memory-risk observations, and output artifact locations in DEVELOPMENT_LOG using privacy-safe wording.",
+        "Run python scripts/ui_smoke.py after any fix made during this task and inspect the generated report/screenshots before marking done."
       ],
-      "risk": "Large RAW files can expose decode performance, thread lifecycle, and memory issues not visible in small tests."
+      "risk": "The already-passing CLI/local harness can hide GUI-specific thread, thumbnail, layout, and state-restoration failures."
     },
     {
       "id": "LS-032",
@@ -405,6 +412,48 @@
         "UI smoke checks the review/detail panel width and local fallback language."
       ],
       "risk": "Aggressive visual language can reduce readability unless it is constrained to rails, emphasis, and action hierarchy."
+    },
+    {
+      "id": "LS-034",
+      "title": "Chinese-first friend-test main workflow rehearsal",
+      "priority": -1,
+      "status": "done",
+      "dependencies": [
+        "LS-031",
+        "LS-033"
+      ],
+      "area": "product-workflow",
+      "source": "user_priority",
+      "rationale": "Friend-testable v0.1 needs the visible Chinese-first graphical workflow to feel complete before adding more Qwen behavior.",
+      "acceptance": [
+        "Starting from a fresh app launch, a Chinese-default user can choose a folder, run analysis, enter review mode, inspect a large preview, mark keep/maybe/reject, generate selected-photo editing advice, and find exported outputs without reading implementation details.",
+        "No English fallback strings appear in the Chinese default path for local-only review details, labels, categories, editing advice headings, or status messages.",
+        "The first screen and review mode use state, layout, and controls to guide action without adding long explanatory text.",
+        "Missing Qwen API key or local-only mode presents a clear non-blocking state and does not make the product look broken.",
+        "Run python scripts/ui_smoke.py and inspect setup, expanded setup, review, and editing-plan screenshots for clipping, overlap, wrong language, or unusable control compression."
+      ],
+      "risk": "A technically working app can still fail friend testing if the visible Chinese workflow feels unfinished, confusing, or inconsistent."
+    },
+    {
+      "id": "LS-035",
+      "title": "Chinese glyph and graphic control smoke gate",
+      "priority": 0,
+      "status": "done",
+      "dependencies": [
+        "LS-030",
+        "LS-033"
+      ],
+      "area": "uiux",
+      "source": "user_priority",
+      "rationale": "The previous UI smoke passed while screenshots showed unreadable Chinese glyph boxes and text-heavy state controls.",
+      "acceptance": [
+        "The desktop app explicitly selects a Chinese-capable UI font on Windows and registers Microsoft YaHei font files for offscreen smoke rendering.",
+        "Chinese UI smoke fails when required Chinese and decision glyphs cannot render.",
+        "Qwen queue state is rendered as compact graphic status chips instead of a long log-style sentence.",
+        "Review action controls use graphic decision buttons and icon-only output controls with tooltips.",
+        "UI smoke checks decision-button dimensions, icon-only controls, compact Qwen state, and source file state."
+      ],
+      "risk": "Symbol-only controls must use glyphs covered by the selected font or stable Qt standard icons."
     }
   ]
 }
