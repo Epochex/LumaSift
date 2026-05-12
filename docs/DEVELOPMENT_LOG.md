@@ -78,3 +78,8 @@
 - Reworked the review panel into a scrollable detail area plus fixed two-row action bar so bottom-right actions no longer overlap detail content on shorter windows.
 - Localized photo grid labels for Chinese default UI, including category and user mark display values.
 - Added a minimum desktop window size to avoid compressed product controls at unsupported dimensions.
+
+## 2026-05-12 - Large RAW preview
+- Added double-click large preview from the photo grid using a background worker and cached 2400px JPEG previews.
+- The large preview opens in a dark, near full-screen inspection window with Fit and 100% modes for focus/detail checks.
+- Added a non-intrusive grid tooltip instead of adding more explanatory text to the main UI.

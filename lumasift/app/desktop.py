@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QSizePolicy,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTextEdit,
@@ -101,6 +103,7 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "open_output": "打开输出",
         "open_contact": "联系表",
         "empty_grid": "选择目录后开始分析",
+        "grid_tooltip": "双击照片打开大图预览",
         "running_grid": "正在分析，结果会自动出现。",
         "empty_filtered": "没有匹配结果，调整筛选条件。",
         "done": "完成",
@@ -165,6 +168,7 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "open_output": "Open Output",
         "open_contact": "Contact Sheet",
         "empty_grid": "Choose a folder, then analyze",
+        "grid_tooltip": "Double-click a photo to open the large preview",
         "running_grid": "Analysis is running. Results will appear here.",
         "empty_filtered": "No matches. Adjust filters.",
         "done": "Done",
@@ -257,6 +261,193 @@ class ThumbnailWorker(QObject):
             except Exception:
                 self.thumbnail_ready.emit(self.generation, row, "")
         self.finished.emit()
+
+
+class LargePreviewWorker(QObject):
+    finished = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, path: Path, output_dir: Path, max_side: int = 2400) -> None:
+        super().__init__()
+        self.path = path
+        self.output_dir = output_dir
+        self.max_side = max_side
+
+    def run(self) -> None:
+        try:
+            preview_dir = self.output_dir / "large_previews"
+            preview_path = create_jpeg_preview(self.path, preview_dir, max_side=self.max_side)
+            self.finished.emit(str(preview_path))
+        except Exception as exc:  # noqa: BLE001 - preview failure should stay inside the dialog.
+            logging.exception("Large preview failed for %s", self.path)
+            self.failed.emit(str(exc))
+
+
+class LargePreviewDialog(QDialog):
+    def __init__(self, record: dict[str, Any], output_dir: Path, language: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.record = record
+        self.output_dir = output_dir
+        self.language = language if language in {"zh", "en"} else "zh"
+        self.preview_thread: QThread | None = None
+        self.preview_worker: LargePreviewWorker | None = None
+        self.original_pixmap: QPixmap | None = None
+        self.fit_to_window = True
+        self.pending_close = False
+
+        filename = str(record.get("filename") or Path(str(record.get("path", ""))).name)
+        title = f"大图预览 - {filename}" if self.language == "zh" else f"Large Preview - {filename}"
+        self.setWindowTitle(title)
+        self.setObjectName("largePreviewDialog")
+        self.resize(1280, 860)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        header = QFrame()
+        header.setObjectName("previewHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 10, 12, 10)
+        header_layout.setSpacing(8)
+        title_label = QLabel(filename)
+        title_label.setObjectName("sectionTitle")
+        self.status_label = QLabel("正在生成 RAW 预览..." if self.language == "zh" else "Generating RAW preview...")
+        self.status_label.setObjectName("muted")
+        self.fit_button = QPushButton("适应窗口" if self.language == "zh" else "Fit")
+        self.fit_button.setObjectName("secondaryButton")
+        self.fit_button.clicked.connect(self._fit)
+        self.actual_button = QPushButton("100%")
+        self.actual_button.setObjectName("secondaryButton")
+        self.actual_button.clicked.connect(self._actual_size)
+        header_layout.addWidget(title_label, stretch=1)
+        header_layout.addWidget(self.status_label)
+        header_layout.addWidget(self.fit_button)
+        header_layout.addWidget(self.actual_button)
+        layout.addWidget(header)
+
+        self.image_label = QLabel("加载中..." if self.language == "zh" else "Loading...")
+        self.image_label.setObjectName("previewImage")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setMinimumSize(900, 560)
+        self.image_label.setScaledContents(False)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("previewScrollArea")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.scroll_area.setWidget(self.image_label)
+        layout.addWidget(self.scroll_area, stretch=1)
+
+        self.setStyleSheet(
+            """
+            QDialog#largePreviewDialog { background: #0f172a; color: #e5edf7; }
+            QFrame#previewHeader {
+                background: #111827;
+                border: 1px solid #263244;
+                border-radius: 8px;
+            }
+            QLabel#sectionTitle { font-size: 14px; font-weight: 800; color: #f8fafc; }
+            QLabel#muted { color: #94a3b8; }
+            QLabel#previewImage {
+                background: #020617;
+                color: #94a3b8;
+                border: 1px solid #1e293b;
+                border-radius: 8px;
+            }
+            QScrollArea#previewScrollArea {
+                background: #020617;
+                border: none;
+            }
+            QPushButton {
+                border: none;
+                border-radius: 6px;
+                padding: 8px 12px;
+                font-weight: 800;
+            }
+            QPushButton#secondaryButton { background: #233044; color: #f8fafc; }
+            QPushButton#secondaryButton:hover { background: #334155; }
+            """
+        )
+
+    def showEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        if self.preview_thread is None and self.original_pixmap is None:
+            QTimer.singleShot(0, self._start_load)
+
+    def resizeEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if self.fit_to_window:
+            self._apply_fit()
+
+    def closeEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        if self.preview_thread is not None and self.preview_thread.isRunning():
+            event.ignore()
+            self.pending_close = True
+            self.status_label.setText("预览生成中，完成后关闭..." if self.language == "zh" else "Preview is loading. Closing after it finishes...")
+            return
+        super().closeEvent(event)
+
+    def _start_load(self) -> None:
+        path = Path(str(self.record.get("path", "")))
+        self.preview_thread = QThread()
+        self.preview_worker = LargePreviewWorker(path, self.output_dir, max_side=2400)
+        self.preview_worker.moveToThread(self.preview_thread)
+        self.preview_thread.started.connect(self.preview_worker.run)
+        self.preview_worker.finished.connect(self._load_finished)
+        self.preview_worker.failed.connect(self._load_failed)
+        self.preview_worker.finished.connect(self.preview_thread.quit)
+        self.preview_worker.failed.connect(self.preview_thread.quit)
+        self.preview_thread.finished.connect(self._thread_finished)
+        self.preview_thread.finished.connect(self.preview_thread.deleteLater)
+        self.preview_thread.start()
+
+    def _load_finished(self, preview_path: str) -> None:
+        pixmap = QPixmap(preview_path)
+        if pixmap.isNull():
+            self._load_failed("Cannot decode generated preview.")
+            return
+        self.original_pixmap = pixmap
+        size_text = f"{pixmap.width()} x {pixmap.height()}"
+        self.status_label.setText(size_text)
+        self._fit()
+
+    def _load_failed(self, message: str) -> None:
+        text = f"预览失败：{message}" if self.language == "zh" else f"Preview failed: {message}"
+        self.status_label.setText(text)
+        self.image_label.setText(text)
+
+    def _thread_finished(self) -> None:
+        self.preview_worker = None
+        self.preview_thread = None
+        if self.pending_close:
+            QTimer.singleShot(0, self.close)
+
+    def _fit(self) -> None:
+        self.fit_to_window = True
+        self._apply_fit()
+
+    def _actual_size(self) -> None:
+        if self.original_pixmap is None:
+            return
+        self.fit_to_window = False
+        self.image_label.setPixmap(self.original_pixmap)
+        self.image_label.resize(self.original_pixmap.size())
+        self.scroll_area.setWidgetResizable(False)
+
+    def _apply_fit(self) -> None:
+        if self.original_pixmap is None:
+            return
+        self.scroll_area.setWidgetResizable(True)
+        available = self.scroll_area.viewport().size() - QSize(24, 24)
+        if available.width() <= 0 or available.height() <= 0:
+            return
+        scaled = self.original_pixmap.scaled(
+            available,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.image_label.setPixmap(scaled)
 
 
 class PhotoListModel(QAbstractListModel):
@@ -398,6 +589,7 @@ class LumaSiftWindow(QMainWindow):
         self.current_run_id = ""
         self.pending_close = False
         self.allow_close = False
+        self.preview_dialogs: list[LargePreviewDialog] = []
         self._build_ui()
         self._load_preferences()
         self._apply_style()
@@ -479,6 +671,7 @@ class LumaSiftWindow(QMainWindow):
             self.run_button.setText(self._t("analyze"))
             self.cancel_button.setText(self._t("cancel"))
             self.search_edit.setPlaceholderText(self._t("search"))
+            self.photo_list.setToolTip(self._t("grid_tooltip"))
             self.detail_hint_label.setText(self._t("detail_hint"))
             self.keep_button.setText(self._t("keep"))
             self.maybe_button.setText(self._t("maybe"))
@@ -564,6 +757,7 @@ class LumaSiftWindow(QMainWindow):
         self.photo_model.set_language(self.language)
         self.photo_list.setModel(self.photo_model)
         self.photo_list.selectionModel().selectionChanged.connect(lambda *_: self._show_selected_detail())
+        self.photo_list.doubleClicked.connect(self._open_large_preview)
         self.photo_list.verticalScrollBar().valueChanged.connect(lambda *_: self._queue_visible_thumbnails())
         self._show_empty_grid("Drop into the workflow by choosing a folder, then run analysis.")
         splitter.addWidget(self.photo_list)
@@ -1147,6 +1341,31 @@ class LumaSiftWindow(QMainWindow):
         if not pixmap.isNull():
             self.loaded_thumbnail_rows.add(row)
             self.photo_model.set_icon(row, QIcon(pixmap))
+
+    def _open_large_preview(self, index: QModelIndex) -> None:
+        if not index.isValid():
+            return
+        record = index.data(Qt.ItemDataRole.UserRole)
+        if not record:
+            return
+        path = Path(str(record.get("path", "")))
+        if not path.exists():
+            QMessageBox.information(self, self._t("no_results"), str(path))
+            return
+        dialog = LargePreviewDialog(record, self.output_dir, self.language, self)
+        dialog.destroyed.connect(lambda *_: self.preview_dialogs.remove(dialog) if dialog in self.preview_dialogs else None)
+        self.preview_dialogs.append(dialog)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            geometry = screen.availableGeometry()
+            dialog.resize(int(geometry.width() * 0.92), int(geometry.height() * 0.9))
+            dialog.move(
+                geometry.x() + int((geometry.width() - dialog.width()) / 2),
+                geometry.y() + int((geometry.height() - dialog.height()) / 2),
+            )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _show_selected_detail(self) -> None:
         selected = self._selected_record_indexes()
