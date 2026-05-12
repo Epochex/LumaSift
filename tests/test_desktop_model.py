@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from PIL import Image
 
@@ -114,4 +115,39 @@ def test_local_mode_with_configured_qwen_key_shows_deep_review_hint() -> None:
     assert not window.qwen_queue_label.isHidden()
     assert "Local" in window.qwen_queue_label.toolTip()
     assert "deep-review" in window.qwen_queue_label.toolTip()
+    window.close()
+
+
+def test_top_nav_settings_button_toggles_setup_panel_like_user_click() -> None:
+    app = QApplication.instance() or QApplication([])
+    _ = app
+    window = LumaSiftWindow()
+    window.show()
+    app.processEvents()
+
+    assert window.controls_frame.isVisible()
+    QTest.mouseClick(window.settings_nav_button, Qt.MouseButton.LeftButton)
+    app.processEvents()
+
+    assert not window.controls_frame.isVisible()
+    QTest.mouseClick(window.settings_nav_button, Qt.MouseButton.LeftButton)
+    app.processEvents()
+
+    assert window.controls_frame.isVisible()
+    window.close()
+
+
+def test_review_mode_keeps_top_navigation_visible() -> None:
+    app = QApplication.instance() or QApplication([])
+    _ = app
+    window = LumaSiftWindow()
+    window.show()
+    app.processEvents()
+
+    window._enter_review_mode({"processed": 1, "failed": 0})
+    app.processEvents()
+
+    assert window.header_frame.isVisible()
+    assert not window.workflow_frame.isVisible()
+    assert not window.controls_frame.isVisible()
     window.close()

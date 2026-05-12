@@ -521,6 +521,28 @@
         "Desktop tests cover key-entry promotion and local-mode warning visibility."
       ],
       "risk": "The confirmation dialog should prevent accidental API spend while still making Qwen activation obvious."
+    },
+    {
+      "id": "LS-039",
+      "title": "Compact top navigation and Qwen key quota check",
+      "priority": 0,
+      "status": "done",
+      "dependencies": [
+        "LS-035",
+        "LS-038"
+      ],
+      "area": "uiux",
+      "source": "user_feedback",
+      "rationale": "The first screen still wasted vertical space on a hero area, setup controls crowded the review board, and Qwen failures showed only a count without key/quota diagnostics.",
+      "acceptance": [
+        "The oversized hero is replaced by a compact top navigation bar with language, history, settings, and run stats.",
+        "The workflow strip sits near the top of the app instead of below a decorative header.",
+        "The setup/run panel can be folded from the top navigation.",
+        "Qwen API keys can be checked from the GUI and return validity plus remaining quota.",
+        "Qwen queue failures expose the latest provider error through the UI instead of only showing a failed count.",
+        "UI smoke and desktop click-path tests cover the compact navigation and settings toggle."
+      ],
+      "risk": "A full Lightroom-style multi-page settings workspace is still larger than this v0.1 slice, but the current panel can now be hidden without losing the main review workflow."
     }
   ]
 }

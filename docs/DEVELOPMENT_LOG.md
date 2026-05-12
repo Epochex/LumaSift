@@ -225,3 +225,12 @@
 - Added a start-run confirmation when keys are configured but the mode is local, preventing silent local-only runs when the user expected Qwen deep visual review.
 - Added desktop regression tests for key-entry mode promotion and local-mode Qwen warning visibility.
 - Verification: `python -m pytest -q` passed with 53 tests, and `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed.
+
+## 2026-05-12 - Compact top navigation and Qwen key checking
+- Replaced the oversized first-screen hero with a compact top navigation bar that keeps language switching, history, settings, and run stats visible while letting the workflow strip sit near the top of the app.
+- Made the whole setup/run panel collapsible from the top navigation so the review board can reclaim vertical space without losing the folder/run controls.
+- Added a Qwen key check button that queries the NewCoin balance endpoint and reports valid-key count plus total, used, and remaining quota without printing or committing keys.
+- Extended Qwen queue failure state so failures keep the last provider error in the status tooltip instead of showing only a red count.
+- Added Qt click-path regression coverage for the settings toggle and kept the top navigation visible in review mode.
+- Verification: `python -m pytest -q` passed with 57 tests, `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed, and a live key check reported 2 valid keys with about ¥24.699 remaining.
+- Live Qwen smoke with 2 local RAW files and Top-1 completed with one grouped non-winner skipped and one Qwen `done`, confirming the current API chain is not globally failing.

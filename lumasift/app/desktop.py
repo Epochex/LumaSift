@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 )
 
 from lumasift.analysis.editing_advice import build_selected_editing_advice
+from lumasift.analysis.qwen_account import format_balance_summary, query_newcoin_balances
 from lumasift.analysis.user_feedback import apply_user_feedback_fields, normalized_user_label
 from lumasift.core.config import Settings
 from lumasift.core.harness import LumaSiftHarness
@@ -115,11 +116,13 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "empty_grid": "选择目录后开始分析",
         "grid_tooltip": "双击照片打开大图预览",
         "advanced_settings": "高级设置",
-        "hide_advanced": "收起设置",
+        "hide_advanced": "收起高级",
         "review_mode": "筛片模式",
         "show_setup": "展开设置",
         "new_scan": "重新分析",
         "run_history": "历史",
+        "settings": "设置",
+        "hide_settings": "收起设置",
         "load_run": "载入",
         "missing_run": "输出不可用",
         "running_grid": "正在分析，结果会自动出现。",
@@ -135,6 +138,11 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "qwen_key_local_hint": "已检测到 Qwen 密钥，但当前是本地模式；本次不会深评。切到 Qwen 或点击第 3 步深评。",
         "qwen_key_promoted": "已切换到 Qwen 深评：只上传 Top-N 压缩预览。",
         "qwen_not_run_local": "本次是本地初筛，未运行 Qwen 深评。",
+        "check_key": "检查",
+        "checking_key": "正在检查 Qwen key...",
+        "key_check_ok": "Qwen key 检查通过。",
+        "key_check_failed": "Qwen key 检查失败",
+        "qwen_failures_hint": "Qwen 深评失败：把鼠标停在这里查看原因，或先点击密钥检查。",
         "no_selection": "未选择照片",
         "select_first": "请先选择一张或多张照片。",
         "no_records": "没有结果",
@@ -198,11 +206,13 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "empty_grid": "Choose a folder, then analyze",
         "grid_tooltip": "Double-click a photo to open the large preview",
         "advanced_settings": "Advanced",
-        "hide_advanced": "Hide Settings",
+        "hide_advanced": "Hide Advanced",
         "review_mode": "Review Mode",
         "show_setup": "Show Setup",
         "new_scan": "Analyze Again",
         "run_history": "History",
+        "settings": "Settings",
+        "hide_settings": "Hide Settings",
         "load_run": "Load",
         "missing_run": "Output unavailable",
         "running_grid": "Analysis is running. Results will appear here.",
@@ -218,6 +228,11 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "qwen_key_local_hint": "Qwen key detected, but the current mode is Local. This run will not deep-review; switch to Qwen or click step 3.",
         "qwen_key_promoted": "Switched to Qwen review. Only Top-N compressed previews will be uploaded.",
         "qwen_not_run_local": "This was a local pre-score run. Qwen deep review did not run.",
+        "check_key": "Check",
+        "checking_key": "Checking Qwen key...",
+        "key_check_ok": "Qwen key check passed.",
+        "key_check_failed": "Qwen key check failed",
+        "qwen_failures_hint": "Qwen review failed. Hover here for the reason, or check the API key first.",
         "no_selection": "No selection",
         "select_first": "Select one or more photos first.",
         "no_records": "No records",
@@ -314,6 +329,23 @@ class AnalysisWorker(QObject):
             self.finished.emit({"summary": result.summary, "report": report, "output_dir": str(self.settings.output_dir)})
         except Exception as exc:  # noqa: BLE001 - GUI must show failures instead of crashing.
             logging.exception("Analysis failed")
+            self.failed.emit(str(exc))
+
+
+class QwenKeyCheckWorker(QObject):
+    finished = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, api_keys: list[str], language: str) -> None:
+        super().__init__()
+        self.api_keys = api_keys
+        self.language = language
+
+    def run(self) -> None:
+        try:
+            balances = query_newcoin_balances(self.api_keys, timeout_seconds=20)
+            self.finished.emit(format_balance_summary(balances, language=self.language))
+        except Exception as exc:  # noqa: BLE001 - GUI should surface provider failures.
             self.failed.emit(str(exc))
 
 
@@ -789,6 +821,8 @@ class LumaSiftWindow(QMainWindow):
             self.language = "zh"
         self.worker_thread: QThread | None = None
         self.worker: AnalysisWorker | None = None
+        self.key_check_thread: QThread | None = None
+        self.key_check_worker: QwenKeyCheckWorker | None = None
         self.thumbnail_thread: QThread | None = None
         self.thumbnail_worker: ThumbnailWorker | None = None
         self.visible_records: list[dict[str, Any]] = []
@@ -865,6 +899,8 @@ class LumaSiftWindow(QMainWindow):
             self.browse_output_button.setText(self._t("browse"))
         if hasattr(self, "history_button"):
             self.history_button.setText(self._t("run_history"))
+        if hasattr(self, "settings_nav_button"):
+            self._sync_setup_nav_button()
         mini_map = {
             "mini_Mode": "mode",
             "mini_Scan": "scan",
@@ -886,6 +922,7 @@ class LumaSiftWindow(QMainWindow):
             self.mode_combo.blockSignals(False)
             self._sync_mode_controls()
             self.api_key_edit.setPlaceholderText(self._t("api_placeholder"))
+            self.check_key_button.setText(self._t("check_key"))
             self.show_key_checkbox.setText(self._t("show"))
             self.save_keys_checkbox.setText(self._t("save_keys"))
             self.run_button.setText(self._t("analyze"))
@@ -978,8 +1015,8 @@ class LumaSiftWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget()
         root = QVBoxLayout(central)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
+        root.setContentsMargins(12, 8, 12, 12)
+        root.setSpacing(8)
 
         self.header_frame = self._build_header()
         self.workflow_frame = self._build_workflow()
@@ -1113,33 +1150,37 @@ class LumaSiftWindow(QMainWindow):
 
     def _build_header(self) -> QFrame:
         frame = QFrame()
-        frame.setObjectName("hero")
-        self._apply_shadow(frame, blur=24, y=8, alpha=18)
+        frame.setObjectName("topNav")
         layout = QHBoxLayout(frame)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(10)
 
-        copy = QVBoxLayout()
         title = QLabel("LumaSift")
-        title.setObjectName("title")
+        title.setObjectName("navTitle")
         self.title_label = title
         subtitle = QLabel("")
+        subtitle.setVisible(False)
         subtitle.setObjectName("subtitle")
         self.subtitle_label = subtitle
-        copy.addWidget(title)
-        copy.addWidget(subtitle)
-        layout.addLayout(copy, stretch=1)
+        layout.addWidget(title)
+
+        self.settings_nav_button = QPushButton("")
+        self.settings_nav_button.setObjectName("ghostButton")
+        self.settings_nav_button.clicked.connect(self._toggle_setup_panel)
+        layout.addWidget(self.settings_nav_button)
+
+        self.history_button = QPushButton("")
+        self.history_button.setObjectName("ghostButton")
+        self.history_button.clicked.connect(self._open_run_history)
+        layout.addWidget(self.history_button)
+
+        layout.addStretch(1)
 
         self.language_combo = QComboBox()
         self.language_combo.addItems(["中文", "English"])
-        self.language_combo.setFixedWidth(110)
+        self.language_combo.setFixedWidth(104)
         self.language_combo.currentTextChanged.connect(self._change_language)
         layout.addWidget(self.language_combo)
-
-        self.history_button = QPushButton("")
-        self.history_button.setObjectName("secondaryButton")
-        self.history_button.clicked.connect(self._open_run_history)
-        layout.addWidget(self.history_button)
 
         for key, label in [
             ("scanned", "Scanned"),
@@ -1148,13 +1189,13 @@ class LumaSiftWindow(QMainWindow):
             ("mode", "Mode"),
         ]:
             card = QFrame()
-            card.setObjectName("statCard")
+            card.setObjectName("navStat")
             card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(12, 9, 12, 9)
+            card_layout.setContentsMargins(10, 4, 10, 4)
             value = QLabel("0" if key != "mode" else "Local")
-            value.setObjectName("statValue")
+            value.setObjectName("navStatValue")
             caption = QLabel(label)
-            caption.setObjectName("statCaption")
+            caption.setObjectName("navStatCaption")
             card_layout.addWidget(value)
             card_layout.addWidget(caption)
             self.stat_labels[key] = value
@@ -1374,10 +1415,15 @@ class LumaSiftWindow(QMainWindow):
         self.show_key_checkbox = QCheckBox("Show")
         self.show_key_checkbox.setMinimumHeight(24)
         self.show_key_checkbox.toggled.connect(self._toggle_key_visibility)
+        self.check_key_button = QPushButton("")
+        self.check_key_button.setObjectName("secondaryButton")
+        self.check_key_button.setMinimumHeight(34)
+        self.check_key_button.clicked.connect(self._check_qwen_key)
         key_row = QWidget()
         key_layout = QHBoxLayout(key_row)
         key_layout.setContentsMargins(0, 0, 0, 0)
         key_layout.addWidget(self.api_key_edit, stretch=1)
+        key_layout.addWidget(self.check_key_button)
         key_layout.addWidget(self.show_key_checkbox)
         self.save_keys_checkbox = QCheckBox("Save API keys locally")
         self.save_keys_checkbox.setMinimumHeight(24)
@@ -1473,9 +1519,25 @@ class LumaSiftWindow(QMainWindow):
         self.advanced_panel.setVisible(not self.advanced_panel.isVisible())
         self.advanced_button.setText(self._t("hide_advanced") if self.advanced_panel.isVisible() else self._t("advanced_settings"))
 
+    def _toggle_setup_panel(self) -> None:
+        if self.review_mode:
+            self._exit_review_mode(show_advanced=False)
+            return
+        self.controls_frame.setVisible(not self.controls_frame.isVisible())
+        self._sync_setup_nav_button()
+
+    def _sync_setup_nav_button(self) -> None:
+        if not hasattr(self, "settings_nav_button"):
+            return
+        visible = self.controls_frame.isVisible() if hasattr(self, "controls_frame") else True
+        self.settings_nav_button.setText(self._t("hide_settings") if visible else self._t("settings"))
+
     def _focus_workflow_step(self, step: str) -> None:
         if self.review_mode:
             self._exit_review_mode(show_advanced=step in {"local", "qwen"})
+        if step in {"import", "local", "qwen"} and not self.controls_frame.isVisible():
+            self.controls_frame.setVisible(True)
+            self._sync_setup_nav_button()
         self._update_workflow(step)
         if step == "import":
             self.input_edit.setFocus()
@@ -1495,7 +1557,7 @@ class LumaSiftWindow(QMainWindow):
 
     def _enter_review_mode(self, summary: dict[str, Any] | None = None) -> None:
         self.review_mode = True
-        self.header_frame.setVisible(False)
+        self.header_frame.setVisible(True)
         self.workflow_frame.setVisible(False)
         self.controls_frame.setVisible(False)
         self.advanced_panel.setVisible(False)
@@ -1514,6 +1576,7 @@ class LumaSiftWindow(QMainWindow):
         self.review_bar.setVisible(False)
         self.advanced_panel.setVisible(show_advanced)
         self.advanced_button.setText(self._t("hide_advanced") if show_advanced else self._t("advanced_settings"))
+        self._sync_setup_nav_button()
 
     def _start_analysis(self) -> None:
         if self.review_mode:
@@ -1628,6 +1691,50 @@ class LumaSiftWindow(QMainWindow):
         self._update_workflow("import")
         QMessageBox.critical(self, "Analysis failed", message)
 
+    def _check_qwen_key(self) -> None:
+        keys = self._configured_qwen_keys()
+        if not keys:
+            QMessageBox.warning(self, self._t("missing_key_title"), self._t("missing_key_body"))
+            return
+        self.check_key_button.setEnabled(False)
+        self.status_label.setText(self._t("checking_key"))
+        self.cache_note.setText(self._t("checking_key"))
+        self.key_check_thread = QThread()
+        self.key_check_worker = QwenKeyCheckWorker(keys, self.language)
+        self.key_check_worker.moveToThread(self.key_check_thread)
+        self.key_check_thread.started.connect(self.key_check_worker.run)
+        self.key_check_worker.finished.connect(self._qwen_key_check_finished)
+        self.key_check_worker.failed.connect(self._qwen_key_check_failed)
+        self.key_check_worker.finished.connect(self.key_check_thread.quit)
+        self.key_check_worker.failed.connect(self.key_check_thread.quit)
+        self.key_check_thread.finished.connect(self._qwen_key_check_thread_finished)
+        self.key_check_thread.finished.connect(self.key_check_thread.deleteLater)
+        self.key_check_thread.start()
+
+    def _configured_qwen_keys(self) -> list[str]:
+        keys_text = self.api_key_edit.text().strip() if hasattr(self, "api_key_edit") else ""
+        if keys_text:
+            return [key.strip() for key in keys_text.split(",") if key.strip()]
+        try:
+            return Settings.from_env().vision_api_keys
+        except Exception:
+            return []
+
+    def _qwen_key_check_finished(self, summary: str) -> None:
+        self.cache_note.setText(summary)
+        self.status_label.setText(self._t("key_check_ok"))
+        self.check_key_button.setEnabled(True)
+
+    def _qwen_key_check_failed(self, message: str) -> None:
+        compact = message[:220] + ("..." if len(message) > 220 else "")
+        self.cache_note.setText(f"{self._t('key_check_failed')}: {compact}")
+        self.status_label.setText(self._t("key_check_failed"))
+        self.check_key_button.setEnabled(True)
+
+    def _qwen_key_check_thread_finished(self) -> None:
+        self.key_check_thread = None
+        self.key_check_worker = None
+
     def _analysis_progress(self, stage: str, current: int, total: int) -> None:
         self._update_workflow("qwen" if stage == "qwen" else "local")
         if total <= 0:
@@ -1655,6 +1762,7 @@ class LumaSiftWindow(QMainWindow):
             "done": 0,
             "cache": 0,
             "failed": 0,
+            "last_error": "",
             "retrying": 0,
             "cancelled": 0,
             "cancelling": False,
@@ -1675,6 +1783,7 @@ class LumaSiftWindow(QMainWindow):
                     "done": 0,
                     "cache": 0,
                     "failed": 0,
+                    "last_error": "",
                     "retrying": 0,
                     "cancelled": 0,
                     "cancelling": False,
@@ -1693,6 +1802,9 @@ class LumaSiftWindow(QMainWindow):
         elif event_type == "qwen_candidate_failed":
             self.qwen_queue_state["failed"] = int(self.qwen_queue_state.get("failed", 0) or 0) + 1
             self.qwen_queue_state["running"] = ""
+            error = str(event.get("error", "") or "")
+            if error:
+                self.qwen_queue_state["last_error"] = error[:420]
         elif event_type == "qwen_candidate_cancelled":
             self.qwen_queue_state["queued"] = max(0, int(self.qwen_queue_state.get("queued", 0) or 0) - 1)
             self.qwen_queue_state["cancelled"] = int(self.qwen_queue_state.get("cancelled", 0) or 0) + 1
@@ -1744,6 +1856,7 @@ class LumaSiftWindow(QMainWindow):
         done = self.qwen_queue_state.get("done", 0)
         cache = self.qwen_queue_state.get("cache", 0)
         failed = self.qwen_queue_state.get("failed", 0)
+        last_error = str(self.qwen_queue_state.get("last_error", "") or "")
         retrying = self.qwen_queue_state.get("retrying", 0)
         cancelled = self.qwen_queue_state.get("cancelled", 0)
         cancelling = bool(self.qwen_queue_state.get("cancelling"))
@@ -1760,10 +1873,13 @@ class LumaSiftWindow(QMainWindow):
         )
         if cancelling:
             text += "&nbsp;&nbsp;<span style='color:#a78bfa;'>...</span>"
+        if failed and last_error:
+            text += f"&nbsp;&nbsp;<span style='color:#ff9f1c;'>{self._escape(self._t('qwen_failures_hint'))}</span>"
         self.qwen_queue_label.setToolTip(
             f"Qwen {model}: {labels['queued']} {queued}, {labels['running']} {running or '0'}, "
             f"{labels['done']} {done}, {labels['cache']} {cache}, {labels['failed']} {failed}, "
             f"{labels['retry']} {retrying}, {labels['cancelled']} {cancelled}"
+            + (f"\n\n{last_error}" if last_error else "")
         )
         self.qwen_queue_label.setText(text)
         self.qwen_queue_label.setVisible(True)
@@ -2747,8 +2863,9 @@ class LumaSiftWindow(QMainWindow):
             }
             QLabel { background: transparent; }
             QLabel#title { font-size: 34px; font-weight: 900; color: #f8fafc; letter-spacing: 0px; }
+            QLabel#navTitle { font-size: 20px; font-weight: 900; color: #f8fafc; letter-spacing: 0px; padding-right: 10px; }
             QLabel#subtitle { color: #9fb0c2; font-size: 13px; }
-            QLabel#muted, QLabel#statCaption, QLabel#stepCaption { color: #93a4b8; }
+            QLabel#muted, QLabel#statCaption, QLabel#navStatCaption, QLabel#stepCaption { color: #93a4b8; }
             QLabel#sectionTitle { font-size: 14px; font-weight: 900; color: #f8fafc; }
             QLabel#fieldLabel { color: #c8d4e0; font-weight: 800; }
             QLabel#miniLabel { color: #9fb0c2; font-weight: 800; }
@@ -2761,7 +2878,7 @@ class LumaSiftWindow(QMainWindow):
                 padding: 6px 10px;
                 font-weight: 700;
             }
-            QFrame#hero, QFrame#controlCard, QFrame#toolbar, QFrame#reviewBar {
+            QFrame#hero, QFrame#topNav, QFrame#controlCard, QFrame#toolbar, QFrame#reviewBar {
                 background: #111820;
                 border: 1px solid #26313d;
                 border-radius: 8px;
@@ -2787,6 +2904,12 @@ class LumaSiftWindow(QMainWindow):
                 border-radius: 8px;
                 min-width: 92px;
             }
+            QFrame#navStat {
+                background: #0f151d;
+                border: 1px solid #26313d;
+                border-radius: 6px;
+                min-width: 74px;
+            }
             QFrame#optionBar { background: transparent; border: none; }
             QFrame#advancedPanel {
                 background: #101419;
@@ -2800,6 +2923,7 @@ class LumaSiftWindow(QMainWindow):
                 min-width: 132px;
             }
             QLabel#statValue { font-size: 20px; font-weight: 900; color: #8fd3ff; }
+            QLabel#navStatValue { font-size: 16px; font-weight: 900; color: #8fd3ff; }
             QFrame#workflow { background: transparent; }
             QFrame#stepCard {
                 background: #151b22;

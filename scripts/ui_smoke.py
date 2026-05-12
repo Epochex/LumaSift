@@ -341,7 +341,9 @@ def setup_collapsed_checks(window: Any, font_database_type: Any, font_metrics_ty
         check_value(font_ok, "zh_font_available", f"font={font_family}"),
         check_value(glyph_ok, "zh_glyphs_renderable", glyph_detail),
         check_visible(window.controls_frame, "controls_visible"),
+        check_visible(window.workflow_frame, "workflow_visible_near_top"),
         check_visible(window.history_button, "history_button_visible"),
+        check_visible(window.settings_nav_button, "settings_nav_button_visible"),
         check_not_visible(window.advanced_panel, "advanced_collapsed_by_default"),
         check_min_size(window.progress, "progress_bar_height", min_height=16),
         check_min_size(window.run_button, "analyze_button_size", min_width=92, min_height=44),
@@ -353,6 +355,7 @@ def setup_expanded_checks(window: Any) -> list[dict[str, Any]]:
         check_visible(window.advanced_panel, "advanced_visible"),
         check_min_size(window.advanced_panel, "advanced_panel_height", min_height=180),
         check_min_size(window.api_key_edit, "api_key_field_height", min_height=32),
+        check_min_size(window.check_key_button, "check_key_button_height", min_height=32),
         check_min_size(window.show_key_checkbox, "show_key_checkbox_height", min_height=20),
         check_min_size(window.save_keys_checkbox, "save_keys_checkbox_height", min_height=20),
     ]
@@ -380,7 +383,7 @@ def review_checks(window: Any) -> list[dict[str, Any]]:
     return [
         check_visible(window.review_bar, "review_bar_visible"),
         check_visible(window.review_history_button, "review_history_button_visible"),
-        check_not_visible(window.header_frame, "header_hidden_in_review"),
+        check_visible(window.header_frame, "top_nav_visible_in_review"),
         check_not_visible(window.workflow_frame, "workflow_hidden_in_review"),
         check_not_visible(window.controls_frame, "setup_controls_hidden_in_review"),
         check_min_size(window.photo_list, "photo_grid_size", min_width=520, min_height=320),
