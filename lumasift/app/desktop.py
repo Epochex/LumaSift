@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QProgressBar,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTextEdit,
@@ -265,6 +266,51 @@ class PhotoListModel(QAbstractListModel):
         self.icons: dict[int, QIcon] = {}
         self.placeholder_icon = placeholder_icon
         self.empty_message = "Drop into the workflow by choosing a folder, then run analysis."
+        self.language = "zh"
+        self.category_labels = {
+            "zh": {
+                "portfolio_candidate": "作品候选",
+                "strong_edit_candidate": "强修图候选",
+                "story_candidate": "故事候选",
+                "technically_weak_but_interesting": "技术弱但有趣",
+                "ordinary_record": "普通记录",
+                "reject_candidate": "淘汰候选",
+                "failed": "失败",
+            },
+            "en": {},
+        }
+        self.user_label_labels = {
+            "zh": {"keep": "保留", "maybe": "待定", "reject": "淘汰", "unlabeled": "未标记"},
+            "en": {},
+        }
+        self.style_labels = {
+            "zh": {
+                "high_contrast_bw": "高反差黑白",
+                "soft_documentary_color": "柔和纪实彩色",
+                "cinematic_warm": "电影暖调",
+                "cold_urban": "冷调城市",
+                "low_key_noir": "低调暗黑",
+                "natural_editorial": "自然纪实",
+                "do_not_overedit": "克制修图",
+            },
+            "en": {},
+        }
+
+    def set_language(self, language: str) -> None:
+        self.language = language if language in {"zh", "en"} else "zh"
+        if self.records:
+            top_left = self.index(0, 0)
+            bottom_right = self.index(len(self.records) - 1, 0)
+            self.dataChanged.emit(top_left, bottom_right, [int(Qt.ItemDataRole.DisplayRole)])
+
+    def _display_value(self, value: Any, mapping: dict[str, dict[str, str]]) -> str:
+        raw = str(value or "")
+        if not raw:
+            return ""
+        translated = mapping.get(self.language, {}).get(raw)
+        if translated:
+            return translated
+        return raw.replace("_", " ")
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802 - Qt API
         if parent.isValid():
@@ -288,10 +334,10 @@ class PhotoListModel(QAbstractListModel):
             return self.icons.get(row, self.placeholder_icon)
         if role == int(Qt.ItemDataRole.DisplayRole):
             score = float(record.get("final_selection_score", 0) or 0)
-            category = str(record.get("category", "")).replace("_", " ")
-            style = str(record.get("recommended_style", "")).replace("_", " ")
-            user_label = str(record.get("user_label", "") or "unlabeled")
-            return f"#{record.get('rank')} | {score:.1f} | {user_label}\n{record.get('filename')}\n{category}\n{style}"
+            category = self._display_value(record.get("category", ""), self.category_labels)
+            style = self._display_value(record.get("recommended_style", ""), self.style_labels)
+            user_label = self._display_value(record.get("user_label", "") or "unlabeled", self.user_label_labels)
+            return f"#{record.get('rank')}  {score:.1f}  {user_label}\n{record.get('filename')}\n{category}\n{style}"
         if role == int(Qt.ItemDataRole.ToolTipRole):
             return str(record.get("path", ""))
         return None
@@ -327,6 +373,7 @@ class LumaSiftWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.resize(1440, 900)
+        self.setMinimumSize(1180, 760)
         self.records: list[dict[str, Any]] = []
         self.output_dir = Path("./outputs/gui")
         self.settings_store = QSettings("LumaSift", "LumaSift")
@@ -368,6 +415,8 @@ class LumaSiftWindow(QMainWindow):
 
     def _retranslate_ui(self) -> None:
         self.setWindowTitle(self._t("app_title"))
+        if self.photo_model is not None:
+            self.photo_model.set_language(self.language)
         if hasattr(self, "language_combo"):
             self.language_combo.blockSignals(True)
             self.language_combo.setCurrentText("English" if self.language == "en" else "中文")
@@ -512,6 +561,7 @@ class LumaSiftWindow(QMainWindow):
         self.photo_list.setLayoutMode(QListView.LayoutMode.Batched)
         self.photo_list.setBatchSize(96)
         self.photo_model = PhotoListModel(self._placeholder_icon())
+        self.photo_model.set_language(self.language)
         self.photo_list.setModel(self.photo_model)
         self.photo_list.selectionModel().selectionChanged.connect(lambda *_: self._show_selected_detail())
         self.photo_list.verticalScrollBar().valueChanged.connect(lambda *_: self._queue_visible_thumbnails())
@@ -520,10 +570,11 @@ class LumaSiftWindow(QMainWindow):
 
         detail_panel = QFrame()
         detail_panel.setObjectName("detailPanel")
+        detail_panel.setMinimumWidth(360)
         self._apply_shadow(detail_panel, blur=22, y=8, alpha=24)
         detail_layout = QVBoxLayout(detail_panel)
-        detail_layout.setContentsMargins(14, 14, 14, 14)
-        detail_layout.setSpacing(10)
+        detail_layout.setContentsMargins(12, 12, 12, 12)
+        detail_layout.setSpacing(8)
         detail_title = QLabel("")
         detail_title.setObjectName("sectionTitle")
         self.static_labels["review_cockpit"] = detail_title
@@ -536,37 +587,57 @@ class LumaSiftWindow(QMainWindow):
         self.detail_text = QTextEdit()
         self.detail_text.setObjectName("detailText")
         self.detail_text.setReadOnly(True)
+        self.detail_text.setMinimumHeight(120)
+        self.detail_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.detail_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.detail_text.setHtml(self._empty_detail_html())
-        detail_layout.addWidget(self.detail_text)
+        detail_layout.addWidget(self.detail_text, stretch=1)
 
-        advice_buttons = QHBoxLayout()
+        action_bar = QFrame()
+        action_bar.setObjectName("actionBar")
+        action_grid = QGridLayout(action_bar)
+        action_grid.setContentsMargins(8, 8, 8, 8)
+        action_grid.setHorizontalSpacing(8)
+        action_grid.setVerticalSpacing(8)
         self.keep_button = QPushButton("")
         self.keep_button.setObjectName("markKeepButton")
+        self.keep_button.setMinimumHeight(34)
+        self.keep_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.keep_button.clicked.connect(lambda: self._mark_selected("keep"))
-        advice_buttons.addWidget(self.keep_button)
+        action_grid.addWidget(self.keep_button, 0, 0)
         self.maybe_button = QPushButton("")
         self.maybe_button.setObjectName("markMaybeButton")
+        self.maybe_button.setMinimumHeight(34)
+        self.maybe_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.maybe_button.clicked.connect(lambda: self._mark_selected("maybe"))
-        advice_buttons.addWidget(self.maybe_button)
+        action_grid.addWidget(self.maybe_button, 0, 1)
         self.reject_button = QPushButton("")
         self.reject_button.setObjectName("markRejectButton")
+        self.reject_button.setMinimumHeight(34)
+        self.reject_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.reject_button.clicked.connect(lambda: self._mark_selected("reject"))
-        advice_buttons.addWidget(self.reject_button)
+        action_grid.addWidget(self.reject_button, 0, 2)
         self.generate_advice_button = QPushButton("")
         self.generate_advice_button.setObjectName("primaryButton")
+        self.generate_advice_button.setMinimumHeight(34)
+        self.generate_advice_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.generate_advice_button.clicked.connect(self._generate_selected_advice)
-        advice_buttons.addWidget(self.generate_advice_button)
+        action_grid.addWidget(self.generate_advice_button, 1, 0)
         self.open_output_button = QPushButton("")
         self.open_output_button.setObjectName("secondaryButton")
+        self.open_output_button.setMinimumHeight(34)
+        self.open_output_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.open_output_button.clicked.connect(lambda: self._open_path(self.output_dir))
-        advice_buttons.addWidget(self.open_output_button)
+        action_grid.addWidget(self.open_output_button, 1, 1)
         self.open_contact_button = QPushButton("")
         self.open_contact_button.setObjectName("secondaryButton")
+        self.open_contact_button.setMinimumHeight(34)
+        self.open_contact_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.open_contact_button.clicked.connect(lambda: self._open_path(self.output_dir / "contact_sheet_top50.jpg"))
-        advice_buttons.addWidget(self.open_contact_button)
-        detail_layout.addLayout(advice_buttons)
+        action_grid.addWidget(self.open_contact_button, 1, 2)
+        detail_layout.addWidget(action_bar, stretch=0)
         splitter.addWidget(detail_panel)
-        splitter.setSizes([930, 430])
+        splitter.setSizes([980, 420])
         root.addWidget(splitter, stretch=1)
 
         self.setCentralWidget(central)
@@ -1430,6 +1501,11 @@ class LumaSiftWindow(QMainWindow):
             QLabel#miniLabel { color: #64748b; font-weight: 700; }
             QFrame#hero, QFrame#controlCard, QFrame#toolbar, QFrame#detailPanel {
                 background: #ffffff;
+                border: 1px solid #d8e0ea;
+                border-radius: 8px;
+            }
+            QFrame#actionBar {
+                background: #f8fafc;
                 border: 1px solid #d8e0ea;
                 border-radius: 8px;
             }

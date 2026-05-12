@@ -28,5 +28,7 @@ def test_photo_list_model_handles_large_record_sets() -> None:
 
     assert model.rowCount() == 2000
     first = model.index(0, 0)
+    assert "保留" in model.data(first, int(Qt.ItemDataRole.DisplayRole))
+    model.set_language("en")
     assert "keep" in model.data(first, int(Qt.ItemDataRole.DisplayRole))
     assert model.data(first, int(Qt.ItemDataRole.UserRole))["filename"] == "0.jpg"

@@ -73,3 +73,8 @@
   - default UI is Chinese with an English switch in the header;
   - major buttons, labels, filters, messages, and detail panels are localized;
   - long explanatory UI text was shortened into workflow labels and state cues.
+
+## 2026-05-12 - Detail panel UI pass
+- Reworked the review panel into a scrollable detail area plus fixed two-row action bar so bottom-right actions no longer overlap detail content on shorter windows.
+- Localized photo grid labels for Chinese default UI, including category and user mark display values.
+- Added a minimum desktop window size to avoid compressed product controls at unsupported dimensions.
