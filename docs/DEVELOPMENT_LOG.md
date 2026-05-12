@@ -100,3 +100,9 @@
 - Replaced the advanced settings mini-card row with a stable grid so mode, scan count, Qwen count, advice count, and display count no longer collapse into clipped fields.
 - Added fixed-height setting inputs and explicit height for the advanced panel so Qt cannot compress checkboxes, key fields, or helper text into unreadable rows.
 - Verified the expanded setup state and compact review mode with offscreen UI screenshots.
+
+## 2026-05-12 - Product goal and UI smoke harness
+- Added `GOAL.md` as the durable v0.1 product target: local-first graphical release candidate, stable 200+ RAW workflow, Qwen Top-N review, selection labels, editing advice, exports, installer, and privacy-first behavior.
+- Added `scripts/ui_smoke.py` to generate setup-collapsed, setup-expanded, and review-mode screenshots plus JSON/Markdown geometry checks under `outputs/ui_smoke/`.
+- Added `tests/test_ui_smoke.py` so the visual smoke harness is covered by automated tests.
+- Updated `docs/BACKLOG.md`, `docs/backlog.json`, `AGENTS.md`, and `scripts/backlog.py goal` so future `继续 goal` runs follow the formal loop: read goal, choose backlog task, implement, test, run UI smoke, update docs, rebuild, commit, and push.

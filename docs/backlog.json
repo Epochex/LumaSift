@@ -4,7 +4,8 @@
   "policy": {
     "selection": "Pick the lowest priority ready item, then prefer product value and smallest safe implementation slice.",
     "agent_rule": "Agent findings must be converted into backlog items before execution.",
-    "execution_loop": "plan agents -> update backlog -> scripts/backlog.py next -> implement one task -> test -> mark done -> commit -> push"
+    "execution_loop": "read GOAL.md -> read docs/backlog.json -> scripts/backlog.py goal -> implement one highest-priority unblocked task -> test -> run scripts/ui_smoke.py for UI changes -> update backlog and DEVELOPMENT_LOG -> rebuild exe/installer for product changes -> commit -> push",
+    "release_goal": "LumaSift v0.1 is a local-first graphical AI photo curation product ready for friend testing and public demonstration, not a CLI demo."
   },
   "items": [
     {
@@ -323,6 +324,68 @@
         "Report can be viewed from the GUI and exported."
       ],
       "risk": "Report quality depends on Qwen reliability and structured output quality."
+    },
+    {
+      "id": "LS-030",
+      "title": "Formalize v0.1 GOAL and UI smoke gate",
+      "priority": 0,
+      "status": "done",
+      "dependencies": [
+        "LS-000"
+      ],
+      "area": "release-process",
+      "source": "user_goal",
+      "rationale": "The product needs a durable release goal and a mandatory automated UI smoke loop so UI regressions are caught before the user has to screenshot them.",
+      "acceptance": [
+        "GOAL.md defines LumaSift v0.1 as a release-oriented local-first graphical product.",
+        "docs/BACKLOG.md defines the 继续 goal execution loop.",
+        "docs/backlog.json records the v0.1 product policy.",
+        "scripts/ui_smoke.py generates setup and review screenshots.",
+        "scripts/ui_smoke.py writes JSON and Markdown reports and exits nonzero on layout failures.",
+        "Tests cover the UI smoke script."
+      ],
+      "risk": "If the goal remains only conversational, future iterations can regress into demo work or miss visual defects."
+    },
+    {
+      "id": "LS-031",
+      "title": "200+ RAW release stability run",
+      "priority": 0,
+      "status": "todo",
+      "dependencies": [
+        "LS-002",
+        "LS-003",
+        "LS-030"
+      ],
+      "area": "release-qa",
+      "source": "user_goal",
+      "rationale": "The v0.1 product must demonstrate stable local-first processing on a realistic RAW folder, not only synthetic images.",
+      "acceptance": [
+        "Copy or sample 200+ private RAW/JPG files into an ignored local test folder.",
+        "Run local mode end to end without committing private photos or outputs.",
+        "Record runtime, failures, memory-risk observations, and output artifacts.",
+        "Fix crashes, hangs, or severe UX blockers found by the run.",
+        "Document results in DEVELOPMENT_LOG without exposing private paths beyond local-only notes."
+      ],
+      "risk": "Large RAW files can expose decode performance, thread lifecycle, and memory issues not visible in small tests."
+    },
+    {
+      "id": "LS-032",
+      "title": "Release-readiness checklist and friend-test flow",
+      "priority": 1,
+      "status": "todo",
+      "dependencies": [
+        "LS-030",
+        "LS-031"
+      ],
+      "area": "distribution",
+      "source": "user_goal",
+      "rationale": "A friend-testable product needs a clear installation and first-run flow, not just a generated installer.",
+      "acceptance": [
+        "Document installer path, first-run workflow, Qwen key setup, privacy behavior, and expected outputs.",
+        "Add a friend-test checklist covering install, import, local analysis, Qwen Top-N, labels, editing plan, and output opening.",
+        "Record known limitations and safe recovery steps."
+      ],
+      "risk": "Users can fail the product through unclear onboarding even when the core code works."
     }
   ]
 }

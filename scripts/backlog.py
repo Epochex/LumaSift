@@ -17,6 +17,7 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("next", help="Show the next ready backlog item.")
+    subparsers.add_parser("goal", help="Show product goal path and the next ready item.")
     subparsers.add_parser("list", help="List backlog items.")
 
     status_parser = subparsers.add_parser("set-status", help="Set backlog item status.")
@@ -27,6 +28,18 @@ def main() -> int:
     backlog = load_backlog()
 
     if args.command == "next":
+        item = next_ready_item(backlog)
+        if item is None:
+            print("No ready backlog item.")
+            return 1
+        print(format_item(item))
+        return 0
+
+    if args.command == "goal":
+        goal_path = ROOT / "GOAL.md"
+        print(f"GOAL: {goal_path}")
+        print(f"BACKLOG: {BACKLOG_PATH}")
+        print()
         item = next_ready_item(backlog)
         if item is None:
             print("No ready backlog item.")

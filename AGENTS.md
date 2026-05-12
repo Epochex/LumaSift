@@ -16,7 +16,14 @@ Prioritize functional completeness and development speed over unnecessary proces
 
 - Run tests with `pytest` when tests are present.
 - After changing the GUI, verify `lumasift.app.desktop` imports and a `LumaSiftWindow` can be constructed.
+- After every UI change, run `python scripts/ui_smoke.py`, inspect the generated report/screenshots, and fix failures before finishing.
 - Run formatters or linters only when they are already configured in the repository.
+
+## Goal Loop
+
+- `GOAL.md` defines the v0.1 product target.
+- `docs/backlog.json` is the executable source of truth.
+- When the user says `继续 goal`, read `GOAL.md`, read `docs/backlog.json`, choose the highest-priority unblocked unfinished task, implement it, run tests and UI smoke, update docs/backlog, rebuild the Windows app if product/UI changed, commit, and push.
 
 ## Data Handling
 
