@@ -104,6 +104,8 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "open_contact": "联系表",
         "empty_grid": "选择目录后开始分析",
         "grid_tooltip": "双击照片打开大图预览",
+        "advanced_settings": "高级设置",
+        "hide_advanced": "收起设置",
         "running_grid": "正在分析，结果会自动出现。",
         "empty_filtered": "没有匹配结果，调整筛选条件。",
         "done": "完成",
@@ -169,6 +171,8 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "open_contact": "Contact Sheet",
         "empty_grid": "Choose a folder, then analyze",
         "grid_tooltip": "Double-click a photo to open the large preview",
+        "advanced_settings": "Advanced",
+        "hide_advanced": "Hide Settings",
         "running_grid": "Analysis is running. Results will appear here.",
         "empty_filtered": "No matches. Adjust filters.",
         "done": "Done",
@@ -526,9 +530,8 @@ class PhotoListModel(QAbstractListModel):
         if role == int(Qt.ItemDataRole.DisplayRole):
             score = float(record.get("final_selection_score", 0) or 0)
             category = self._display_value(record.get("category", ""), self.category_labels)
-            style = self._display_value(record.get("recommended_style", ""), self.style_labels)
             user_label = self._display_value(record.get("user_label", "") or "unlabeled", self.user_label_labels)
-            return f"#{record.get('rank')}  {score:.1f}  {user_label}\n{record.get('filename')}\n{category}\n{style}"
+            return f"#{record.get('rank')}  {score:.1f}  {user_label}\n{record.get('filename')}\n{category}"
         if role == int(Qt.ItemDataRole.ToolTipRole):
             return str(record.get("path", ""))
         return None
@@ -670,6 +673,7 @@ class LumaSiftWindow(QMainWindow):
             self.cache_note.setText(self._t("cache_note"))
             self.run_button.setText(self._t("analyze"))
             self.cancel_button.setText(self._t("cancel"))
+            self.advanced_button.setText(self._t("hide_advanced") if self.advanced_panel.isVisible() else self._t("advanced_settings"))
             self.search_edit.setPlaceholderText(self._t("search"))
             self.photo_list.setToolTip(self._t("grid_tooltip"))
             self.detail_hint_label.setText(self._t("detail_hint"))
@@ -897,6 +901,8 @@ class LumaSiftWindow(QMainWindow):
             step = QFrame()
             step.setObjectName("stepCard")
             step.setProperty("state", "idle")
+            step.setCursor(Qt.CursorShape.PointingHandCursor)
+            step.mousePressEvent = lambda event, step_key=key: self._focus_workflow_step(step_key)  # type: ignore[method-assign]
             step_layout = QVBoxLayout(step)
             step_layout.setContentsMargins(14, 11, 14, 11)
             step_layout.setSpacing(4)
@@ -916,10 +922,13 @@ class LumaSiftWindow(QMainWindow):
         group = QFrame()
         group.setObjectName("controlCard")
         self._apply_shadow(group, blur=24, y=8, alpha=20)
-        layout = QGridLayout(group)
+        layout = QVBoxLayout(group)
         layout.setContentsMargins(14, 14, 14, 14)
-        layout.setHorizontalSpacing(10)
-        layout.setVerticalSpacing(9)
+        layout.setSpacing(10)
+
+        main_row = QGridLayout()
+        main_row.setHorizontalSpacing(10)
+        main_row.setVerticalSpacing(8)
 
         self.input_edit = QLineEdit("D:/DCIM")
         self.input_edit.setObjectName("pathEdit")
@@ -930,9 +939,9 @@ class LumaSiftWindow(QMainWindow):
         source_label = QLabel("Photo folder")
         source_label.setObjectName("fieldLabel")
         self.static_labels["photo_folder"] = source_label
-        layout.addWidget(source_label, 0, 0)
-        layout.addWidget(self.input_edit, 0, 1)
-        layout.addWidget(browse_input, 0, 2)
+        main_row.addWidget(source_label, 0, 0)
+        main_row.addWidget(self.input_edit, 0, 1)
+        main_row.addWidget(browse_input, 0, 2)
 
         self.output_edit = QLineEdit(str(self.output_dir))
         self.output_edit.setObjectName("pathEdit")
@@ -943,9 +952,40 @@ class LumaSiftWindow(QMainWindow):
         output_label = QLabel("Output folder")
         output_label.setObjectName("fieldLabel")
         self.static_labels["output_folder"] = output_label
-        layout.addWidget(output_label, 1, 0)
-        layout.addWidget(self.output_edit, 1, 1)
-        layout.addWidget(browse_output, 1, 2)
+        main_row.addWidget(output_label, 1, 0)
+        main_row.addWidget(self.output_edit, 1, 1)
+        main_row.addWidget(browse_output, 1, 2)
+
+        self.run_button = QPushButton("Analyze Folder")
+        self.run_button.setObjectName("primaryButton")
+        self.run_button.setMinimumHeight(48)
+        self.run_button.clicked.connect(self._start_analysis)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setObjectName("secondaryButton")
+        self.cancel_button.setMinimumHeight(48)
+        self.cancel_button.clicked.connect(self._cancel_analysis)
+        self.cancel_button.setEnabled(False)
+        main_row.addWidget(self.run_button, 0, 3, 2, 1)
+        main_row.addWidget(self.cancel_button, 0, 4, 2, 1)
+        main_row.setColumnStretch(1, 1)
+        layout.addLayout(main_row)
+
+        progress_row = QHBoxLayout()
+        progress_row.setContentsMargins(0, 0, 0, 0)
+        progress_row.setSpacing(10)
+        self.progress = QProgressBar()
+        self.progress.setObjectName("runProgress")
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.status_label = QLabel("Ready")
+        self.status_label.setObjectName("muted")
+        self.advanced_button = QPushButton("")
+        self.advanced_button.setObjectName("ghostButton")
+        self.advanced_button.clicked.connect(self._toggle_advanced_panel)
+        progress_row.addWidget(self.progress, stretch=1)
+        progress_row.addWidget(self.status_label, stretch=0)
+        progress_row.addWidget(self.advanced_button, stretch=0)
+        layout.addLayout(progress_row)
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("local_only", "local_only")
@@ -968,6 +1008,12 @@ class LumaSiftWindow(QMainWindow):
         self.display_limit_spin.setRange(20, 2000)
         self.display_limit_spin.setValue(300)
         self.display_limit_spin.setFixedWidth(96)
+
+        self.advanced_panel = QFrame()
+        self.advanced_panel.setObjectName("advancedPanel")
+        advanced_layout = QVBoxLayout(self.advanced_panel)
+        advanced_layout.setContentsMargins(10, 10, 10, 10)
+        advanced_layout.setSpacing(10)
 
         option_bar = QFrame()
         option_bar.setObjectName("optionBar")
@@ -993,7 +1039,7 @@ class LumaSiftWindow(QMainWindow):
             mini_layout.addWidget(control)
             option_layout.addWidget(mini)
         option_layout.addStretch(1)
-        layout.addWidget(option_bar, 2, 0, 1, 3)
+        advanced_layout.addWidget(option_bar)
 
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setPlaceholderText("Optional: comma-separated Qwen keys. Leave empty to use .env.")
@@ -1011,28 +1057,17 @@ class LumaSiftWindow(QMainWindow):
         api_label = QLabel("Qwen keys")
         api_label.setObjectName("fieldLabel")
         self.static_labels["qwen_keys"] = api_label
-        layout.addWidget(api_label, 3, 0)
-        layout.addWidget(key_row, 3, 1, 1, 2)
-        layout.addWidget(self.save_keys_checkbox, 4, 1)
-        layout.addWidget(self.cache_note, 4, 2)
-
-        self.run_button = QPushButton("Analyze Folder")
-        self.run_button.setObjectName("primaryButton")
-        self.run_button.clicked.connect(self._start_analysis)
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setObjectName("secondaryButton")
-        self.cancel_button.clicked.connect(self._cancel_analysis)
-        self.cancel_button.setEnabled(False)
-        self.progress = QProgressBar()
-        self.progress.setObjectName("runProgress")
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.status_label = QLabel("Ready")
-        self.status_label.setObjectName("muted")
-        layout.addWidget(self.run_button, 5, 0)
-        layout.addWidget(self.cancel_button, 5, 1)
-        layout.addWidget(self.progress, 5, 2)
-        layout.addWidget(self.status_label, 6, 0, 1, 3)
+        key_grid = QGridLayout()
+        key_grid.setHorizontalSpacing(10)
+        key_grid.setVerticalSpacing(6)
+        key_grid.addWidget(api_label, 0, 0)
+        key_grid.addWidget(key_row, 0, 1)
+        key_grid.addWidget(self.save_keys_checkbox, 1, 1)
+        key_grid.addWidget(self.cache_note, 1, 2)
+        key_grid.setColumnStretch(1, 1)
+        advanced_layout.addLayout(key_grid)
+        self.advanced_panel.setVisible(False)
+        layout.addWidget(self.advanced_panel)
         return group
 
     def _build_result_toolbar(self) -> QFrame:
@@ -1093,6 +1128,28 @@ class LumaSiftWindow(QMainWindow):
             self.output_edit.setText(folder)
             self.output_dir = Path(folder)
             self._save_preferences()
+
+    def _toggle_advanced_panel(self) -> None:
+        self.advanced_panel.setVisible(not self.advanced_panel.isVisible())
+        self.advanced_button.setText(self._t("hide_advanced") if self.advanced_panel.isVisible() else self._t("advanced_settings"))
+
+    def _focus_workflow_step(self, step: str) -> None:
+        self._update_workflow(step)
+        if step == "import":
+            self.input_edit.setFocus()
+        elif step == "local":
+            self.limit_spin.setFocus()
+            if not self.advanced_panel.isVisible():
+                self._toggle_advanced_panel()
+        elif step == "qwen":
+            mode_index = self.mode_combo.findData("qwen_vision")
+            if mode_index >= 0:
+                self.mode_combo.setCurrentIndex(mode_index)
+            if not self.advanced_panel.isVisible():
+                self._toggle_advanced_panel()
+            self.api_key_edit.setFocus()
+        elif step == "edit":
+            self.generate_advice_button.setFocus()
 
     def _start_analysis(self) -> None:
         input_dir = Path(self.input_edit.text()).expanduser()
@@ -1387,8 +1444,8 @@ class LumaSiftWindow(QMainWindow):
         story = self._escape(str(record.get("story_interpretation", "") or "Qwen review has not been run yet."))
         direction = self._escape(str(record.get("best_editing_direction", "") or "Use the selected-photo editing plan for detailed parameters."))
         crop = self._escape(str(record.get("crop_strategy", "") or "No crop instruction recorded."))
-        positives = self._html_list(record.get("positive_reasons", [])[:5], "pending vision review")
-        negatives = self._html_list(record.get("negative_reasons", [])[:5], "none recorded")
+        positives = self._html_list(record.get("positive_reasons", [])[:4], "pending vision review")
+        negatives = self._html_list(record.get("negative_reasons", [])[:4], "none recorded")
         params = record.get("specific_edit_parameters", {}) or {}
         params_rows = "".join(
             f"<tr><td>{self._escape(str(key)).replace('_', ' ')}</td><td>{self._escape(str(value))}</td></tr>"
@@ -1398,31 +1455,35 @@ class LumaSiftWindow(QMainWindow):
             params_rows = f"<tr><td>{'参数' if self.language == 'zh' else 'Parameters'}</td><td>{'点击修图方案生成' if self.language == 'zh' else 'Generate an editing plan.'}</td></tr>"
         labels = {
             "selected": "已选" if self.language == "zh" else "Selected",
-            "user_label": "标记" if self.language == "zh" else "user label",
-            "final": "总分" if self.language == "zh" else "Final selection",
-            "story": "故事/纪实" if self.language == "zh" else "Story / documentary",
+            "user_label": "标记" if self.language == "zh" else "Mark",
+            "final": "总分" if self.language == "zh" else "Final",
+            "story": "故事" if self.language == "zh" else "Story",
             "composition": "构图" if self.language == "zh" else "Composition",
-            "editability": "可修度" if self.language == "zh" else "Editability",
-            "story_read": "画面判断" if self.language == "zh" else "Story read",
-            "why": "保留理由" if self.language == "zh" else "Why it can work",
-            "risks": "风险" if self.language == "zh" else "Risks to control",
-            "direction": "修图方向" if self.language == "zh" else "Editing direction",
+            "editability": "可修" if self.language == "zh" else "Edit",
+            "story_read": "判断" if self.language == "zh" else "Read",
+            "why": "亮点" if self.language == "zh" else "Signals",
+            "risks": "风险" if self.language == "zh" else "Risks",
+            "direction": "方向" if self.language == "zh" else "Direction",
             "crop": "裁切" if self.language == "zh" else "Crop",
-            "params": "参数" if self.language == "zh" else "Concrete parameters",
+            "params": "参数" if self.language == "zh" else "Parameters",
         }
+        story_score = float(record.get("street_documentary_potential_score", 0) or 0)
+        composition_score = float(record.get("composition_score", 0) or 0)
+        editability_score = float(record.get("editability_score", 0) or 0)
         return f"""
         <html><head>{self._detail_html_style()}</head><body>
         <div class="detail-shell">
-          <div class="hero-line">
-            <span class="rank">Rank #{self._escape(str(record.get("rank", "-")))}</span>
+          <div class="summary-card">
+            <span class="rank">#{self._escape(str(record.get("rank", "-")))}</span>
             <span class="score">{score:.1f}</span>
+            <h2>{filename}</h2>
+            <p class="meta">{labels["selected"]} {selected_count} | {category} | {style} | {labels["user_label"]}: {user_label}</p>
+            <div class="metrics">
+              <div><b>{story_score:.0f}</b><span>{labels["story"]}</span></div>
+              <div><b>{composition_score:.0f}</b><span>{labels["composition"]}</span></div>
+              <div><b>{editability_score:.0f}</b><span>{labels["editability"]}</span></div>
+            </div>
           </div>
-          <h2>{filename}</h2>
-          <p class="meta">{labels["selected"]} {selected_count} | {category} | {style} | {labels["user_label"]}: {user_label}</p>
-          {self._score_bar(labels["final"], score)}
-          {self._score_bar(labels["story"], record.get("street_documentary_potential_score", 0))}
-          {self._score_bar(labels["composition"], record.get("composition_score", 0))}
-          {self._score_bar(labels["editability"], record.get("editability_score", 0))}
           <h3>{labels["story_read"]}</h3>
           <p>{story}</p>
           <h3>{labels["why"]}</h3>
@@ -1681,24 +1742,28 @@ class LumaSiftWindow(QMainWindow):
     def _detail_html_style(self) -> str:
         return """
         <style>
-        body { color: #162033; font-family: Segoe UI, Microsoft YaHei; font-size: 12px; }
-        h2 { margin: 0 0 4px 0; font-size: 20px; color: #0f172a; }
-        h3 { margin: 16px 0 6px 0; font-size: 13px; color: #0f172a; }
-        p { line-height: 1.45; margin: 4px 0 8px 0; color: #334155; }
+        body { color: #dbe7f3; font-family: Segoe UI, Microsoft YaHei; font-size: 12px; background: #101419; }
+        h2 { margin: 0 0 4px 0; font-size: 20px; color: #f8fafc; }
+        h3 { margin: 14px 0 6px 0; font-size: 12px; color: #8fd3ff; text-transform: uppercase; letter-spacing: 0px; }
+        p { line-height: 1.45; margin: 4px 0 8px 0; color: #c8d4e0; }
         ul { margin: 4px 0 8px 18px; padding: 0; }
         li { margin-bottom: 5px; }
         table { border-collapse: collapse; width: 100%; margin-top: 8px; }
-        td { border-bottom: 1px solid #e2e8f0; padding: 6px; vertical-align: top; }
-        pre { white-space: pre-wrap; background: #f8fafc; border: 1px solid #d8e0ea; border-radius: 8px; padding: 10px; }
-        .hero-line { margin-bottom: 8px; }
-        .rank { color: #2563eb; font-weight: 800; }
-        .score { float: right; color: #0f172a; font-size: 28px; font-weight: 900; }
-        .meta { color: #64748b; }
+        td { border-bottom: 1px solid #26313d; padding: 6px; vertical-align: top; color: #dbe7f3; }
+        pre { white-space: pre-wrap; background: #0b0f14; border: 1px solid #26313d; border-radius: 8px; padding: 10px; color: #dbe7f3; }
+        .summary-card { background: #141b23; border: 1px solid #293646; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+        .rank { color: #8fd3ff; font-weight: 800; }
+        .score { float: right; color: #f8fafc; font-size: 32px; font-weight: 900; }
+        .meta { color: #93a4b8; }
+        .metrics { display: table; width: 100%; margin-top: 10px; border-spacing: 6px 0; }
+        .metrics div { display: table-cell; background: #0c1117; border: 1px solid #26313d; border-radius: 8px; padding: 8px; text-align: center; }
+        .metrics b { display: block; color: #f5b84b; font-size: 18px; }
+        .metrics span { color: #9fb0c2; font-size: 11px; }
         .score-row { margin: 8px 0 10px 0; }
-        .score-row span { font-weight: 700; color: #334155; }
-        .score-row b { float: right; color: #0f172a; }
-        .bar { margin-top: 4px; height: 8px; background: #e2e8f0; border-radius: 4px; }
-        .bar div { height: 8px; background: #2563eb; border-radius: 4px; }
+        .score-row span { font-weight: 700; color: #c8d4e0; }
+        .score-row b { float: right; color: #f8fafc; }
+        .bar { margin-top: 4px; height: 8px; background: #26313d; border-radius: 4px; }
+        .bar div { height: 8px; background: #2ea8ff; border-radius: 4px; }
         </style>
         """
 
@@ -1706,65 +1771,71 @@ class LumaSiftWindow(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow, QWidget {
-                background: #eef2f6;
-                color: #17202a;
+                background: #101419;
+                color: #dbe7f3;
                 font-family: Segoe UI, Microsoft YaHei;
                 font-size: 12px;
             }
             QLabel { background: transparent; }
-            QLabel#title { font-size: 34px; font-weight: 800; color: #0f172a; letter-spacing: 0px; }
-            QLabel#subtitle { color: #425466; font-size: 13px; }
-            QLabel#muted, QLabel#statCaption, QLabel#stepCaption { color: #64748b; }
-            QLabel#sectionTitle { font-size: 14px; font-weight: 800; color: #0f172a; }
-            QLabel#fieldLabel { color: #334155; font-weight: 700; }
-            QLabel#miniLabel { color: #64748b; font-weight: 700; }
+            QLabel#title { font-size: 34px; font-weight: 900; color: #f8fafc; letter-spacing: 0px; }
+            QLabel#subtitle { color: #9fb0c2; font-size: 13px; }
+            QLabel#muted, QLabel#statCaption, QLabel#stepCaption { color: #93a4b8; }
+            QLabel#sectionTitle { font-size: 14px; font-weight: 900; color: #f8fafc; }
+            QLabel#fieldLabel { color: #c8d4e0; font-weight: 800; }
+            QLabel#miniLabel { color: #9fb0c2; font-weight: 800; }
             QFrame#hero, QFrame#controlCard, QFrame#toolbar, QFrame#detailPanel {
-                background: #ffffff;
-                border: 1px solid #d8e0ea;
+                background: #151b22;
+                border: 1px solid #26313d;
                 border-radius: 8px;
             }
             QFrame#actionBar {
-                background: #f8fafc;
-                border: 1px solid #d8e0ea;
+                background: #101419;
+                border: 1px solid #26313d;
                 border-radius: 8px;
             }
             QFrame#statCard {
-                background: #f6f9fc;
-                border: 1px solid #dce5ef;
+                background: #101820;
+                border: 1px solid #293646;
                 border-radius: 8px;
                 min-width: 92px;
             }
             QFrame#optionBar { background: transparent; border: none; }
-            QFrame#miniControl {
-                background: #f8fafc;
-                border: 1px solid #dbe5ee;
+            QFrame#advancedPanel {
+                background: #101419;
+                border: 1px solid #26313d;
                 border-radius: 8px;
             }
-            QLabel#statValue { font-size: 20px; font-weight: 800; color: #0b5cab; }
+            QFrame#miniControl {
+                background: #151b22;
+                border: 1px solid #293646;
+                border-radius: 8px;
+            }
+            QLabel#statValue { font-size: 20px; font-weight: 900; color: #8fd3ff; }
             QFrame#workflow { background: transparent; }
             QFrame#stepCard {
-                background: #ffffff;
-                border: 1px solid #d8e0ea;
+                background: #151b22;
+                border: 1px solid #26313d;
                 border-radius: 8px;
             }
             QFrame#stepCard[state="active"] {
-                background: #eff6ff;
-                border: 2px solid #2563eb;
+                background: #172232;
+                border: 2px solid #2ea8ff;
             }
             QFrame#stepCard[state="done"] {
-                background: #ecfdf5;
-                border: 1px solid #34d399;
+                background: #14231e;
+                border: 1px solid #35c486;
             }
-            QLabel#stepTitle { font-weight: 800; color: #0f172a; }
+            QLabel#stepTitle { font-weight: 900; color: #f8fafc; }
             QLineEdit, QSpinBox, QComboBox, QTextEdit, QListView {
-                background: #ffffff;
-                border: 1px solid #cbd5e1;
+                background: #0c1117;
+                border: 1px solid #2a3645;
                 border-radius: 6px;
                 padding: 7px;
-                selection-background-color: #bfdbfe;
+                color: #dbe7f3;
+                selection-background-color: #245d82;
             }
             QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QTextEdit:focus {
-                border: 2px solid #2563eb;
+                border: 2px solid #2ea8ff;
             }
             QPushButton {
                 border: none;
@@ -1772,60 +1843,64 @@ class LumaSiftWindow(QMainWindow):
                 padding: 9px 13px;
                 font-weight: 800;
             }
-            QPushButton#primaryButton { background: #2563eb; color: #ffffff; }
-            QPushButton#primaryButton:hover { background: #1d4ed8; }
-            QPushButton#secondaryButton { background: #e8eef6; color: #0f172a; }
-            QPushButton#secondaryButton:hover { background: #dbe7f3; }
-            QPushButton#markKeepButton { background: #dcfce7; color: #166534; }
-            QPushButton#markKeepButton:hover { background: #bbf7d0; }
-            QPushButton#markMaybeButton { background: #fef3c7; color: #92400e; }
-            QPushButton#markMaybeButton:hover { background: #fde68a; }
-            QPushButton#markRejectButton { background: #fee2e2; color: #991b1b; }
-            QPushButton#markRejectButton:hover { background: #fecaca; }
-            QPushButton:disabled { background: #cbd5e1; color: #64748b; }
+            QPushButton#primaryButton { background: #2ea8ff; color: #061019; }
+            QPushButton#primaryButton:hover { background: #62c2ff; }
+            QPushButton#secondaryButton { background: #233044; color: #f8fafc; }
+            QPushButton#secondaryButton:hover { background: #334155; }
+            QPushButton#ghostButton { background: transparent; color: #8fd3ff; border: 1px solid #2a3645; }
+            QPushButton#ghostButton:hover { background: #172232; }
+            QPushButton#markKeepButton { background: #143b2b; color: #86efac; }
+            QPushButton#markKeepButton:hover { background: #1f5b41; }
+            QPushButton#markMaybeButton { background: #46330f; color: #f5d57a; }
+            QPushButton#markMaybeButton:hover { background: #624716; }
+            QPushButton#markRejectButton { background: #4a1c22; color: #fca5a5; }
+            QPushButton#markRejectButton:hover { background: #65252e; }
+            QPushButton:disabled { background: #26313d; color: #66778a; }
             QListView#photoGrid {
-                background: #f8fafc;
-                border: 1px solid #d8e0ea;
+                background: #0c1117;
+                border: 1px solid #26313d;
                 border-radius: 8px;
                 padding: 10px;
             }
             QListView#photoGrid::item {
-                background: #ffffff;
-                border: 1px solid #d9e2ec;
+                background: #151b22;
+                border: 1px solid #293646;
                 border-radius: 8px;
                 padding: 8px;
-                color: #1e293b;
+                color: #dbe7f3;
             }
             QListView#photoGrid::item:hover {
-                border: 1px solid #60a5fa;
-                background: #f8fbff;
+                border: 1px solid #8fd3ff;
+                background: #172232;
             }
             QListView#photoGrid::item:selected {
-                border: 2px solid #2563eb;
-                background: #eff6ff;
+                border: 2px solid #2ea8ff;
+                background: #172232;
             }
             QLabel#resultCount {
-                background: #eef2ff;
-                color: #1e40af;
+                background: #172232;
+                color: #8fd3ff;
                 border-radius: 6px;
                 padding: 6px 10px;
                 font-weight: 800;
             }
             QTextEdit#detailText {
-                background: #fbfdff;
-                border: 1px solid #d8e0ea;
+                background: #101419;
+                border: 1px solid #26313d;
                 border-radius: 8px;
                 padding: 10px;
+                color: #dbe7f3;
             }
             QProgressBar {
-                border: 1px solid #cbd5e1;
+                border: 1px solid #2a3645;
                 border-radius: 6px;
                 text-align: center;
-                background: #f8fafc;
+                background: #0c1117;
+                color: #dbe7f3;
                 height: 18px;
                 font-weight: 700;
             }
-            QProgressBar::chunk { background: #2563eb; border-radius: 5px; }
+            QProgressBar::chunk { background: #2ea8ff; border-radius: 5px; }
             """
         )
 

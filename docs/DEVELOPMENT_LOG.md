@@ -83,3 +83,9 @@
 - Added double-click large preview from the photo grid using a background worker and cached 2400px JPEG previews.
 - The large preview opens in a dark, near full-screen inspection window with Fit and 100% modes for focus/detail checks.
 - Added a non-intrusive grid tooltip instead of adding more explanatory text to the main UI.
+
+## 2026-05-12 - Dark workbench UI pass
+- Shifted the desktop UI toward a photo-review dark workbench: image grid first, contrast-focused panels, and stronger active workflow states.
+- Moved mode, scan limits, Qwen top-N, display count, and API key controls into a collapsed Advanced panel so the default path is folder -> analyze -> review.
+- Made workflow steps clickable; each step focuses the relevant control instead of relying on explanatory text.
+- Compressed photo cards and added a visual summary block in the review panel before detailed reasons and editing parameters.
