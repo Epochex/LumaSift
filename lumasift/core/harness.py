@@ -9,7 +9,12 @@ from typing import Callable
 from lumasift.analysis.editing_advice import build_selected_editing_advice
 from lumasift.analysis.local_story import analyze_local_story_proxy
 from lumasift.analysis.grouping import apply_similarity_groups, compute_average_color, compute_dhash, compute_scene_signature
-from lumasift.analysis.qwen_story import QWEN_STORY_PROMPT_VERSION, build_qwen_story_prompt, merge_qwen_story_analysis
+from lumasift.analysis.qwen_story import (
+    QWEN_STORY_PROMPT_VERSION,
+    build_qwen_story_prompt,
+    merge_qwen_story_analysis,
+    parse_qwen_story_response,
+)
 from lumasift.analysis.scoring import rank_records
 from lumasift.core.config import Settings
 from lumasift.core.keyring import ApiKeyRing
@@ -212,6 +217,7 @@ class LumaSiftHarness:
             max_tokens=self.settings.vision_max_tokens,
             timeout_seconds=self.settings.request_timeout_seconds,
             event_callback=lambda event: self._event("qwen_client_event", client_event=event),
+            response_validator=lambda response: parse_qwen_story_response(response),
         )
         preview_dir = self.settings.output_dir / "previews"
         updated = list(ranked)

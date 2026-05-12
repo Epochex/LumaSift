@@ -7,8 +7,14 @@ import requests
 
 from lumasift.analysis import qwen_client
 from lumasift.analysis.qwen_client import QwenVisionClient
-from lumasift.analysis.qwen_story import build_qwen_story_prompt, extract_qwen_response_text, merge_qwen_story_analysis
+from lumasift.analysis.qwen_story import (
+    build_qwen_story_prompt,
+    extract_qwen_response_text,
+    merge_qwen_story_analysis,
+    parse_qwen_story_response,
+)
 from lumasift.core.keyring import ApiKeyRing
+from lumasift.storage.qwen_cache import QwenResponseCache, identify_image
 
 
 class FakeResponse:
@@ -97,6 +103,54 @@ def test_qwen_client_retries_transient_status_with_backoff(tmp_path: Path, monke
     assert response["model"] == "qwen-test"
     assert sleeps == [0.25]
     assert responses == []
+
+
+def test_qwen_client_retries_malformed_json_and_skips_bad_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    image_path = tmp_path / "image.jpg"
+    image_path.write_bytes(b"malformed response image bytes")
+    cache_dir = tmp_path / "cache"
+    cache = QwenResponseCache(cache_dir)
+    image_identity = identify_image(image_path)
+    key = cache.make_key(image_identity, "qwen-test", "story-v1")
+    cache.store(
+        key,
+        image_identity,
+        {"model": "qwen-test", "choices": [{"message": {"content": '{"final_selection_score": 91'}}]},
+    )
+    responses = [
+        FakeResponse(
+            200,
+            payload={"model": "qwen-test", "choices": [{"message": {"content": '{"final_selection_score": 92'}}]},
+        ),
+        FakeResponse(
+            200,
+            payload={"model": "qwen-test", "choices": [{"message": {"content": '{"final_selection_score": 93}'}}]},
+        ),
+    ]
+    events: list[dict] = []
+
+    def fake_post(*args: object, **kwargs: object) -> FakeResponse:
+        return responses.pop(0)
+
+    monkeypatch.setattr(qwen_client.requests, "post", fake_post)
+    monkeypatch.setattr(qwen_client.random, "uniform", lambda start, stop: 0.0)
+    client = QwenVisionClient(
+        base_url="https://example.test/v1",
+        model="qwen-test",
+        keyring=ApiKeyRing(["live-key"]),
+        cache_dir=cache_dir,
+        initial_backoff_seconds=0.1,
+        sleep=lambda _: None,
+        event_callback=events.append,
+        response_validator=lambda response: parse_qwen_story_response(response),
+    )
+
+    response = client.analyze_image(image_path, "prompt", prompt_version="story-v1")
+
+    assert parse_qwen_story_response(response)["final_selection_score"] == 93
+    assert len(responses) == 0
+    assert any(event["type"] == "cache_invalid" for event in events)
+    assert any(event["type"] == "retrying" and event["reason"] == "malformed_json" for event in events)
 
 
 def test_extract_qwen_response_text_handles_multimodal_content() -> None:
@@ -192,3 +246,31 @@ def test_merge_qwen_story_analysis_preserves_evidence_fields() -> None:
     assert record["analysis_quality"] in {"concrete", "weak"}
     assert record["avoid_overediting"] == "不要抹掉街道颗粒和招牌信息"
     assert record["positive_reasons"] == ["具体动作和环境关系同时成立"]
+
+
+def test_merge_qwen_story_analysis_repairs_common_llm_json_formatting() -> None:
+    record: dict[str, object] = {}
+    response = {
+        "model": "qwen-test",
+        "choices": [
+            {
+                "message": {
+                    "content": """
+                    ```json
+                    {
+                      "final_selection_score": 88
+                      "category": "strong_edit_candidate",
+                      "visible_evidence": ["左侧行人与背景招牌同框"],
+                    }
+                    ```
+                    """
+                }
+            }
+        ],
+    }
+
+    merge_qwen_story_analysis(record, response)
+
+    assert record["final_selection_score"] == 88
+    assert record["category"] == "strong_edit_candidate"
+    assert record["visible_evidence"] == ["左侧行人与背景招牌同框"]
