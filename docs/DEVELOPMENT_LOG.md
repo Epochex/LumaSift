@@ -54,3 +54,13 @@
   - per-photo keep/maybe/reject labels;
   - label filter in the review board;
   - labels are merged into future runs and written back to CSV/JSON reports.
+- Added a durable planning-to-execution loop:
+  - `docs/backlog.json` is the canonical executable backlog;
+  - `docs/BACKLOG.md` defines how planning/review agents become engineering work;
+  - `scripts/backlog.py next` selects the next ready task from dependencies and priority;
+  - agent findings now have to be converted into backlog items before implementation.
+- Completed the first virtualized review-grid slice:
+  - replaced `QListWidget` with `QListView` plus `QAbstractListModel`;
+  - thumbnail work is queued from the visible viewport instead of the whole result set;
+  - stale thumbnail writes are guarded by a generation id;
+  - verified 2000 synthetic records can be loaded into the model.

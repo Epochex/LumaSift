@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEasingCurve, QObject, QPropertyAnimation, QSettings, QSize, Qt, QThread, Signal
+from PySide6.QtCore import QAbstractListModel, QEasingCurve, QModelIndex, QObject, QPropertyAnimation, QSettings, QSize, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -24,8 +24,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
+    QListView,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -74,14 +73,14 @@ class AnalysisWorker(QObject):
 
 
 class ThumbnailWorker(QObject):
-    thumbnail_ready = Signal(int, str)
+    thumbnail_ready = Signal(int, int, str)
     finished = Signal()
 
-    def __init__(self, records: list[dict[str, Any]], output_dir: Path, max_side: int = 360) -> None:
+    def __init__(self, jobs: list[tuple[int, dict[str, Any]]], output_dir: Path, generation: int, max_side: int = 360) -> None:
         super().__init__()
-        self.records = records
+        self.jobs = jobs
         self.output_dir = output_dir
-        self.current_run_id = f"gui-{time.strftime('%Y%m%d-%H%M%S')}"
+        self.generation = generation
         self.max_side = max_side
         self.cancelled = False
 
@@ -90,15 +89,80 @@ class ThumbnailWorker(QObject):
 
     def run(self) -> None:
         preview_dir = self.output_dir / "gui_previews"
-        for index, record in enumerate(self.records):
+        for row, record in self.jobs:
             if self.cancelled:
                 break
             try:
                 preview_path = create_jpeg_preview(Path(record["path"]), preview_dir, max_side=self.max_side)
-                self.thumbnail_ready.emit(index, str(preview_path))
+                self.thumbnail_ready.emit(self.generation, row, str(preview_path))
             except Exception:
-                self.thumbnail_ready.emit(index, "")
+                self.thumbnail_ready.emit(self.generation, row, "")
         self.finished.emit()
+
+
+class PhotoListModel(QAbstractListModel):
+    def __init__(self, placeholder_icon: QIcon) -> None:
+        super().__init__()
+        self.records: list[dict[str, Any]] = []
+        self.icons: dict[int, QIcon] = {}
+        self.placeholder_icon = placeholder_icon
+        self.empty_message = "Drop into the workflow by choosing a folder, then run analysis."
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802 - Qt API
+        if parent.isValid():
+            return 0
+        return len(self.records) if self.records else 1
+
+    def data(self, index: QModelIndex, role: int = int(Qt.ItemDataRole.DisplayRole)) -> Any:
+        if not index.isValid():
+            return None
+        row = index.row()
+        if not self.records:
+            if role == int(Qt.ItemDataRole.DisplayRole):
+                return self.empty_message
+            return None
+        if row < 0 or row >= len(self.records):
+            return None
+        record = self.records[row]
+        if role == int(Qt.ItemDataRole.UserRole):
+            return record
+        if role == int(Qt.ItemDataRole.DecorationRole):
+            return self.icons.get(row, self.placeholder_icon)
+        if role == int(Qt.ItemDataRole.DisplayRole):
+            score = float(record.get("final_selection_score", 0) or 0)
+            category = str(record.get("category", "")).replace("_", " ")
+            style = str(record.get("recommended_style", "")).replace("_", " ")
+            user_label = str(record.get("user_label", "") or "unlabeled")
+            return f"#{record.get('rank')} | {score:.1f} | {user_label}\n{record.get('filename')}\n{category}\n{style}"
+        if role == int(Qt.ItemDataRole.ToolTipRole):
+            return str(record.get("path", ""))
+        return None
+
+    def flags(self, index: QModelIndex) -> Qt.ItemFlag:
+        if not index.isValid() or not self.records:
+            return Qt.ItemFlag.NoItemFlags
+        return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+
+    def set_records(self, records: list[dict[str, Any]], empty_message: str | None = None) -> None:
+        self.beginResetModel()
+        self.records = records
+        self.icons.clear()
+        if empty_message:
+            self.empty_message = empty_message
+        self.endResetModel()
+
+    def set_icon(self, row: int, icon: QIcon) -> None:
+        if row < 0 or row >= len(self.records):
+            return
+        self.icons[row] = icon
+        index = self.index(row, 0)
+        self.dataChanged.emit(index, index, [int(Qt.ItemDataRole.DecorationRole)])
+
+    def refresh_row(self, row: int) -> None:
+        if row < 0 or row >= len(self.records):
+            return
+        index = self.index(row, 0)
+        self.dataChanged.emit(index, index, [int(Qt.ItemDataRole.DisplayRole), int(Qt.ItemDataRole.UserRole)])
 
 
 class LumaSiftWindow(QMainWindow):
@@ -114,6 +178,10 @@ class LumaSiftWindow(QMainWindow):
         self.thumbnail_thread: QThread | None = None
         self.thumbnail_worker: ThumbnailWorker | None = None
         self.visible_records: list[dict[str, Any]] = []
+        self.photo_model: PhotoListModel | None = None
+        self.thumbnail_generation = 0
+        self.loaded_thumbnail_rows: set[int] = set()
+        self.pending_thumbnail_rows: set[int] = set()
         self.workflow_steps: dict[str, QFrame] = {}
         self.stat_labels: dict[str, QLabel] = {}
         self._animations: list[QPropertyAnimation] = []
@@ -138,15 +206,21 @@ class LumaSiftWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("mainSplitter")
-        self.photo_list = QListWidget()
+        self.photo_list = QListView()
         self.photo_list.setObjectName("photoGrid")
-        self.photo_list.setViewMode(QListWidget.ViewMode.IconMode)
-        self.photo_list.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.photo_list.setMovement(QListWidget.Movement.Static)
+        self.photo_list.setViewMode(QListView.ViewMode.IconMode)
+        self.photo_list.setResizeMode(QListView.ResizeMode.Adjust)
+        self.photo_list.setMovement(QListView.Movement.Static)
         self.photo_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.photo_list.setIconSize(QSize(210, 148))
         self.photo_list.setSpacing(12)
-        self.photo_list.itemSelectionChanged.connect(self._show_selected_detail)
+        self.photo_list.setUniformItemSizes(True)
+        self.photo_list.setLayoutMode(QListView.LayoutMode.Batched)
+        self.photo_list.setBatchSize(96)
+        self.photo_model = PhotoListModel(self._placeholder_icon())
+        self.photo_list.setModel(self.photo_model)
+        self.photo_list.selectionModel().selectionChanged.connect(lambda *_: self._show_selected_detail())
+        self.photo_list.verticalScrollBar().valueChanged.connect(lambda *_: self._queue_visible_thumbnails())
         self._show_empty_grid("Drop into the workflow by choosing a folder, then run analysis.")
         splitter.addWidget(self.photo_list)
 
@@ -449,6 +523,7 @@ class LumaSiftWindow(QMainWindow):
             return
 
         self.output_dir = output_dir
+        self.current_run_id = f"gui-{time.strftime('%Y%m%d-%H%M%S')}"
         settings = Settings.from_env()
         settings.input_dir = input_dir
         settings.output_dir = output_dir
@@ -476,7 +551,7 @@ class LumaSiftWindow(QMainWindow):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.status_label.setText("Analyzing...")
-        self.photo_list.clear()
+        self._set_grid_records([], "Analysis is running. Results will appear here.")
         self.detail_text.setHtml(self._empty_detail_html())
         self._update_workflow("local")
         self._update_dashboard()
@@ -546,7 +621,9 @@ class LumaSiftWindow(QMainWindow):
         if not hasattr(self, "photo_list"):
             return
         self._stop_thumbnail_worker()
-        self.photo_list.clear()
+        self.thumbnail_generation += 1
+        self.loaded_thumbnail_rows.clear()
+        self.pending_thumbnail_rows.clear()
         self.visible_records = self._filtered_records()[: self.display_limit_spin.value()]
         if not self.visible_records:
             self.result_count_label.setText(f"Showing 0/{len(self.records)}")
@@ -554,31 +631,18 @@ class LumaSiftWindow(QMainWindow):
             self._update_dashboard()
             self._show_empty_grid("No results yet. Run analysis or loosen the current filter.")
             return
-        placeholder = self._placeholder_icon()
-        for record in self.visible_records:
-            item = QListWidgetItem()
-            item.setData(Qt.ItemDataRole.UserRole, record)
-            score = float(record.get("final_selection_score", 0) or 0)
-            category = str(record.get("category", "")).replace("_", " ")
-            style = str(record.get("recommended_style", "")).replace("_", " ")
-            user_label = str(record.get("user_label", "") or "unlabeled")
-            title = f"#{record.get('rank')} | {score:.1f} | {user_label}\n{record.get('filename')}\n{category}\n{style}"
-            item.setText(title)
-            item.setToolTip(str(record.get("path", "")))
-            item.setIcon(placeholder)
-            item.setSizeHint(QSize(244, 252))
-            self.photo_list.addItem(item)
+        self._set_grid_records(self.visible_records)
         self.result_count_label.setText(f"Showing {len(self.visible_records)}/{len(self.records)}")
         self.status_label.setText(f"Loaded {len(self.visible_records)}/{len(self.records)} ranked photos")
         self._update_dashboard()
-        self._start_thumbnail_worker()
+        self._queue_visible_thumbnails()
 
     def _show_empty_grid(self, message: str) -> None:
-        self.photo_list.clear()
-        item = QListWidgetItem(message)
-        item.setFlags(Qt.ItemFlag.NoItemFlags)
-        item.setSizeHint(QSize(520, 150))
-        self.photo_list.addItem(item)
+        self._set_grid_records([], message)
+
+    def _set_grid_records(self, records: list[dict[str, Any]], empty_message: str | None = None) -> None:
+        if self.photo_model is not None:
+            self.photo_model.set_records(records, empty_message)
 
     def _filtered_records(self) -> list[dict[str, Any]]:
         records = list(self.records)
@@ -630,32 +694,55 @@ class LumaSiftWindow(QMainWindow):
             self.category_filter.setCurrentText(current)
         self.category_filter.blockSignals(False)
 
-    def _record_icon(self, record: dict[str, Any]) -> QIcon:
-        try:
-            preview_path = create_jpeg_preview(Path(record["path"]), self.output_dir / "gui_previews", max_side=360)
-            pixmap = QPixmap(str(preview_path))
-            return QIcon(pixmap)
-        except Exception:
-            pixmap = QPixmap(180, 130)
-            pixmap.fill(Qt.GlobalColor.lightGray)
-            return QIcon(pixmap)
-
     def _placeholder_icon(self) -> QIcon:
         pixmap = QPixmap(210, 148)
         pixmap.fill(QColor("#e8edf3"))
         return QIcon(pixmap)
 
     def _start_thumbnail_worker(self) -> None:
-        if not self.visible_records:
+        if not self.visible_records or self.thumbnail_thread is not None:
+            return
+        rows = sorted(self.pending_thumbnail_rows)[:96]
+        if not rows:
+            return
+        for row in rows:
+            self.pending_thumbnail_rows.discard(row)
+        jobs = [(row, self.visible_records[row]) for row in rows if 0 <= row < len(self.visible_records)]
+        if not jobs:
             return
         self.thumbnail_thread = QThread()
-        self.thumbnail_worker = ThumbnailWorker(self.visible_records, self.output_dir, max_side=360)
+        self.thumbnail_worker = ThumbnailWorker(jobs, self.output_dir, self.thumbnail_generation, max_side=360)
         self.thumbnail_worker.moveToThread(self.thumbnail_thread)
         self.thumbnail_thread.started.connect(self.thumbnail_worker.run)
         self.thumbnail_worker.thumbnail_ready.connect(self._thumbnail_ready)
         self.thumbnail_worker.finished.connect(self.thumbnail_thread.quit)
+        self.thumbnail_worker.finished.connect(self._thumbnail_batch_finished)
         self.thumbnail_thread.finished.connect(self.thumbnail_thread.deleteLater)
         self.thumbnail_thread.start()
+
+    def _queue_visible_thumbnails(self) -> None:
+        if not self.visible_records or self.photo_model is None:
+            return
+        viewport = self.photo_list.viewport().rect().adjusted(-260, -260, 260, 520)
+        rows: list[int] = []
+        row_count = self.photo_model.rowCount()
+        for row in range(row_count):
+            index = self.photo_model.index(row, 0)
+            rect = self.photo_list.visualRect(index)
+            if rect.isValid() and rect.intersects(viewport):
+                rows.append(row)
+        if not rows:
+            rows = list(range(min(36, len(self.visible_records))))
+        for row in rows[:120]:
+            if row not in self.loaded_thumbnail_rows:
+                self.pending_thumbnail_rows.add(row)
+        self._start_thumbnail_worker()
+
+    def _thumbnail_batch_finished(self) -> None:
+        self.thumbnail_worker = None
+        self.thumbnail_thread = None
+        if self.pending_thumbnail_rows:
+            self._start_thumbnail_worker()
 
     def _stop_thumbnail_worker(self) -> None:
         if self.thumbnail_worker is not None:
@@ -666,18 +753,18 @@ class LumaSiftWindow(QMainWindow):
         self.thumbnail_worker = None
         self.thumbnail_thread = None
 
-    def _thumbnail_ready(self, index: int, preview_path: str) -> None:
-        if not preview_path or index >= self.photo_list.count():
+    def _thumbnail_ready(self, generation: int, row: int, preview_path: str) -> None:
+        if generation != self.thumbnail_generation or not preview_path or self.photo_model is None:
             return
-        item = self.photo_list.item(index)
-        if item is None:
+        if row < 0 or row >= len(self.visible_records):
             return
         pixmap = QPixmap(preview_path)
         if not pixmap.isNull():
-            item.setIcon(QIcon(pixmap))
+            self.loaded_thumbnail_rows.add(row)
+            self.photo_model.set_icon(row, QIcon(pixmap))
 
     def _show_selected_detail(self) -> None:
-        selected = self.photo_list.selectedItems()
+        selected = self._selected_record_indexes()
         if not selected:
             self.detail_text.setHtml(self._empty_detail_html())
             self._update_dashboard()
@@ -735,9 +822,9 @@ class LumaSiftWindow(QMainWindow):
         """
 
     def _generate_selected_advice(self) -> None:
-        selected_items = self.photo_list.selectedItems()
-        if selected_items:
-            selected_ranks = [item.data(Qt.ItemDataRole.UserRole).get("rank") for item in selected_items]
+        selected_indexes = self._selected_record_indexes()
+        if selected_indexes:
+            selected_ranks = [index.data(Qt.ItemDataRole.UserRole).get("rank") for index in selected_indexes]
         else:
             selected_ranks = list(range(1, min(self.selected_top_spin.value(), len(self.records)) + 1))
 
@@ -755,13 +842,14 @@ class LumaSiftWindow(QMainWindow):
         self._fade_in(self.detail_text)
 
     def _mark_selected(self, label: str) -> None:
-        selected_items = self.photo_list.selectedItems()
-        if not selected_items:
+        selected_indexes = self._selected_record_indexes()
+        if not selected_indexes:
             QMessageBox.information(self, "No selection", "Select one or more photos first.")
             return
         changed = 0
-        for item in selected_items:
-            record = item.data(Qt.ItemDataRole.UserRole)
+        changed_rows: list[int] = []
+        for index in selected_indexes:
+            record = index.data(Qt.ItemDataRole.UserRole)
             if not isinstance(record, dict) or not record.get("path"):
                 continue
             record["user_label"] = label
@@ -774,8 +862,11 @@ class LumaSiftWindow(QMainWindow):
                 category=str(record.get("category", "")),
             )
             changed += 1
+            changed_rows.append(index.row())
         self._write_current_reports()
-        self._populate_records()
+        if self.photo_model is not None:
+            for row in changed_rows:
+                self.photo_model.refresh_row(row)
         self.status_label.setText(f"Marked {changed} photo(s) as {label}. Reports and local SQLite state updated.")
 
     def _cancel_analysis(self) -> None:
@@ -849,6 +940,12 @@ class LumaSiftWindow(QMainWindow):
         )
         write_json_report(self.output_dir / "user_labels.json", {"records": self.state_db.export_labeled_records()})
 
+    def _selected_record_indexes(self) -> list[QModelIndex]:
+        if not hasattr(self, "photo_list") or self.photo_list.selectionModel() is None:
+            return []
+        indexes = self.photo_list.selectionModel().selectedIndexes()
+        return [index for index in indexes if index.isValid() and index.data(Qt.ItemDataRole.UserRole)]
+
     def _open_path(self, path: Path) -> None:
         try:
             if not path.exists():
@@ -898,7 +995,7 @@ class LumaSiftWindow(QMainWindow):
         if not self.stat_labels:
             return
         scanned = summary.get("scanned", len(self.records)) if summary else len(self.records)
-        selected = self.photo_list.selectedItems() if hasattr(self, "photo_list") else []
+        selected = self._selected_record_indexes() if hasattr(self, "photo_list") else []
         mode = "Qwen" if hasattr(self, "mode_combo") and self.mode_combo.currentText() == "qwen_vision" else "Local"
         self.stat_labels["scanned"].setText(str(scanned))
         self.stat_labels["shown"].setText(str(len(self.visible_records)))
@@ -1026,7 +1123,7 @@ class LumaSiftWindow(QMainWindow):
                 border: 1px solid #34d399;
             }
             QLabel#stepTitle { font-weight: 800; color: #0f172a; }
-            QLineEdit, QSpinBox, QComboBox, QTextEdit, QListWidget {
+            QLineEdit, QSpinBox, QComboBox, QTextEdit, QListView {
                 background: #ffffff;
                 border: 1px solid #cbd5e1;
                 border-radius: 6px;
@@ -1053,24 +1150,24 @@ class LumaSiftWindow(QMainWindow):
             QPushButton#markRejectButton { background: #fee2e2; color: #991b1b; }
             QPushButton#markRejectButton:hover { background: #fecaca; }
             QPushButton:disabled { background: #cbd5e1; color: #64748b; }
-            QListWidget#photoGrid {
+            QListView#photoGrid {
                 background: #f8fafc;
                 border: 1px solid #d8e0ea;
                 border-radius: 8px;
                 padding: 10px;
             }
-            QListWidget#photoGrid::item {
+            QListView#photoGrid::item {
                 background: #ffffff;
                 border: 1px solid #d9e2ec;
                 border-radius: 8px;
                 padding: 8px;
                 color: #1e293b;
             }
-            QListWidget#photoGrid::item:hover {
+            QListView#photoGrid::item:hover {
                 border: 1px solid #60a5fa;
                 background: #f8fbff;
             }
-            QListWidget#photoGrid::item:selected {
+            QListView#photoGrid::item:selected {
                 border: 2px solid #2563eb;
                 background: #eff6ff;
             }

@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import QApplication
+
+from lumasift.app.desktop import PhotoListModel
+
+
+def test_photo_list_model_handles_large_record_sets() -> None:
+    app = QApplication.instance() or QApplication([])
+    _ = app
+    model = PhotoListModel(QIcon())
+    records = [
+        {
+            "rank": index + 1,
+            "path": f"C:/tmp/{index}.jpg",
+            "filename": f"{index}.jpg",
+            "final_selection_score": 90.0,
+            "category": "story_candidate",
+            "recommended_style": "test_style",
+            "user_label": "keep" if index == 0 else "",
+        }
+        for index in range(2000)
+    ]
+
+    model.set_records(records)
+
+    assert model.rowCount() == 2000
+    first = model.index(0, 0)
+    assert "keep" in model.data(first, int(Qt.ItemDataRole.DisplayRole))
+    assert model.data(first, int(Qt.ItemDataRole.UserRole))["filename"] == "0.jpg"

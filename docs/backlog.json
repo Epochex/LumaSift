@@ -1,0 +1,328 @@
+{
+  "schema": "lumasift.backlog.v1",
+  "updated_at": "2026-05-12",
+  "policy": {
+    "selection": "Pick the lowest priority ready item, then prefer product value and smallest safe implementation slice.",
+    "agent_rule": "Agent findings must be converted into backlog items before execution.",
+    "execution_loop": "plan agents -> update backlog -> scripts/backlog.py next -> implement one task -> test -> mark done -> commit -> push"
+  },
+  "items": [
+    {
+      "id": "LS-000",
+      "title": "Establish executable backlog loop",
+      "priority": 0,
+      "status": "done",
+      "dependencies": [],
+      "area": "process",
+      "source": "user_request",
+      "rationale": "Planning-agent findings were not automatically becoming execution work. The repo needs a durable source of truth for the agent loop.",
+      "acceptance": [
+        "docs/BACKLOG.md explains the operating loop.",
+        "docs/backlog.json contains prioritized executable work.",
+        "scripts/backlog.py can show the next ready item.",
+        "Development log records the new workflow."
+      ],
+      "risk": "If this remains only conversational, planning reviews will keep drifting away from implementation."
+    },
+    {
+      "id": "LS-001",
+      "title": "Virtualized thumbnail grid MVP",
+      "priority": 0,
+      "status": "done",
+      "dependencies": [
+        "LS-000"
+      ],
+      "area": "gui-performance",
+      "source": "planning_agent",
+      "rationale": "The current item-based review grid will struggle with thousands of photos.",
+      "acceptance": [
+        "Load 2000+ result records without creating heavyweight widgets for every row.",
+        "Scrolling remains responsive.",
+        "Only visible cells and a small prefetch window request thumbnail work.",
+        "Search, sorting, filtering, selection, and labels still work.",
+        "Thumbnail loading remains cancellable."
+      ],
+      "risk": "Model/view refactor can break selection, detail panel, and label persistence."
+    },
+    {
+      "id": "LS-002",
+      "title": "Stabilize selection and label state after grid virtualization",
+      "priority": 0,
+      "status": "todo",
+      "dependencies": [
+        "LS-001"
+      ],
+      "area": "review-workflow",
+      "source": "planning_agent",
+      "rationale": "Virtualized cells must not leak stale labels, thumbnails, or selection state.",
+      "acceptance": [
+        "Keep/maybe/reject display correctly in virtualized cells.",
+        "Multi-select and batch marking work after filtering and sorting.",
+        "Label filters all/keep/maybe/reject/unlabeled work.",
+        "Labels restore after rerun or app restart."
+      ],
+      "risk": "Cell reuse can show stale visual state unless data roles are authoritative."
+    },
+    {
+      "id": "LS-003",
+      "title": "Qwen analysis queue UI",
+      "priority": 0,
+      "status": "todo",
+      "dependencies": [
+        "LS-000"
+      ],
+      "area": "ai-workflow",
+      "source": "planning_agent",
+      "rationale": "Users need to see where time and API spend are going during Top-N vision review.",
+      "acceptance": [
+        "UI shows queued/running/done/cache-hit/failed/retrying states.",
+        "UI shows current model, Top-N, completed count, failed count, and cache hits.",
+        "Local progress and Qwen progress are separate.",
+        "Failures are readable and reports remain usable."
+      ],
+      "risk": "Current harness exposes only coarse progress; richer events are needed."
+    },
+    {
+      "id": "LS-004",
+      "title": "Qwen queue cancellation and graceful downgrade",
+      "priority": 0,
+      "status": "todo",
+      "dependencies": [
+        "LS-003"
+      ],
+      "area": "ai-workflow",
+      "source": "planning_agent",
+      "rationale": "A commercial local app must let users stop expensive/slow API work without losing local results.",
+      "acceptance": [
+        "User can cancel the Qwen stage.",
+        "Completed Qwen items remain saved.",
+        "Pending items become skipped/cancelled.",
+        "Report still contains local-only ranking plus Qwen errors/status."
+      ],
+      "risk": "Network request cancellation and cache writes need conservative handling."
+    },
+    {
+      "id": "LS-005",
+      "title": "SQLite run history view",
+      "priority": 0,
+      "status": "todo",
+      "dependencies": [
+        "LS-000"
+      ],
+      "area": "product-workflow",
+      "source": "planning_agent",
+      "rationale": "Users need to revisit prior runs instead of treating every batch as disposable.",
+      "acceptance": [
+        "GUI lists recent runs with time, input folder, output folder, mode, photo count, Qwen count, and failures.",
+        "User can open a run output folder.",
+        "User can restore a historical report into the review board.",
+        "Missing output paths show a clear unavailable state."
+      ],
+      "risk": "Run history can drift from deleted or moved output folders."
+    },
+    {
+      "id": "LS-006",
+      "title": "Unify SQLite manifest and cache identity",
+      "priority": 1,
+      "status": "todo",
+      "dependencies": [
+        "LS-005"
+      ],
+      "area": "storage",
+      "source": "planning_agent",
+      "rationale": "A persistent photo manifest enables faster reruns and less repeated API spend.",
+      "acceptance": [
+        "Each photo stores path, size, mtime, identity hash, preview path, last_run_id, scores, and Qwen cache key.",
+        "Reruns only recompute changed files where safe.",
+        "JSON/CSV remain export formats rather than the sole state store."
+      ],
+      "risk": "Schema migration, path case, external drives, and moved folders add complexity."
+    },
+    {
+      "id": "LS-007",
+      "title": "Use keep/maybe/reject as review feedback without polluting model score",
+      "priority": 1,
+      "status": "todo",
+      "dependencies": [
+        "LS-002",
+        "LS-006"
+      ],
+      "area": "personalization",
+      "source": "planning_agent",
+      "rationale": "User labels should improve workflow while remaining separable from algorithm scores.",
+      "acceptance": [
+        "Keep items can be prioritized or surfaced in future runs.",
+        "Reject items can skip repeated Qwen review unless explicitly enabled.",
+        "Reports distinguish user_label from model score/category."
+      ],
+      "risk": "User preference and model evaluation must not be conflated."
+    },
+    {
+      "id": "LS-008",
+      "title": "Evaluation dataset format",
+      "priority": 1,
+      "status": "todo",
+      "dependencies": [
+        "LS-000"
+      ],
+      "area": "evaluation",
+      "source": "planning_agent",
+      "rationale": "A labeled local evaluation set is required to prove ranking quality.",
+      "acceptance": [
+        "Define local eval labels format with photo path/id, gold label, story rank, notes, split, and prompt version.",
+        "Export from SQLite labels without copying private photos into git.",
+        "Document a 100-300 photo evaluation workflow."
+      ],
+      "risk": "Private photo paths and data must not be committed."
+    },
+    {
+      "id": "LS-009",
+      "title": "Ranking evaluation metrics tool",
+      "priority": 1,
+      "status": "todo",
+      "dependencies": [
+        "LS-008"
+      ],
+      "area": "evaluation",
+      "source": "planning_agent",
+      "rationale": "Precision@K/NDCG@K make the AI ranking system measurable rather than anecdotal.",
+      "acceptance": [
+        "Compute Precision@K, Recall@K, NDCG@K, MRR, and label distribution.",
+        "Compare local-only and Qwen runs by prompt_version/model_version.",
+        "Write metrics JSON and Markdown summary."
+      ],
+      "risk": "Small subjective datasets can produce unstable metrics."
+    },
+    {
+      "id": "LS-010",
+      "title": "Qwen prompt version evaluation loop",
+      "priority": 1,
+      "status": "todo",
+      "dependencies": [
+        "LS-008",
+        "LS-009"
+      ],
+      "area": "evaluation",
+      "source": "planning_agent",
+      "rationale": "Prompt changes must be comparable and cache-safe.",
+      "acceptance": [
+        "Prompt version appears in Qwen cache key and reports.",
+        "Evaluation report can compare prompt A/B.",
+        "Report lists false negatives such as technically weak but story-strong photos."
+      ],
+      "risk": "Model version drift and API cost can reduce comparability."
+    },
+    {
+      "id": "LS-011",
+      "title": "Windows installer signing",
+      "priority": 2,
+      "status": "todo",
+      "dependencies": [
+        "LS-001",
+        "LS-003",
+        "LS-008"
+      ],
+      "area": "distribution",
+      "source": "planning_agent",
+      "rationale": "Signing matters for commercial distribution but should follow core workflow stability.",
+      "acceptance": [
+        "Build script supports optional Authenticode certificate path or CI secret.",
+        "Unsigned friend-test build still works.",
+        "Document certificate options and timestamping."
+      ],
+      "risk": "Certificate cost, timestamp service failures, and secret handling."
+    },
+    {
+      "id": "LS-012",
+      "title": "Versioned release and auto-update plan",
+      "priority": 2,
+      "status": "todo",
+      "dependencies": [
+        "LS-011"
+      ],
+      "area": "distribution",
+      "source": "planning_agent",
+      "rationale": "Auto-update is commercial hardening, not a core selection workflow feature.",
+      "acceptance": [
+        "App version, installer version, portable zip version, and release notes are consistent.",
+        "Document update channel strategy.",
+        "Choose Inno/MSIX/Squirrel/winget-style path."
+      ],
+      "risk": "Windows auto-update can trigger permissions and antivirus issues."
+    },
+    {
+      "id": "LS-013",
+      "title": "Crash diagnostics and privacy-safe log export",
+      "priority": 2,
+      "status": "todo",
+      "dependencies": [
+        "LS-005"
+      ],
+      "area": "supportability",
+      "source": "planning_agent",
+      "rationale": "Friend testing and early product use need actionable bug reports without leaking photos or keys.",
+      "acceptance": [
+        "GUI can open logs folder.",
+        "GUI can export a diagnostics bundle with version, run summary, events, and tracebacks.",
+        "Bundle excludes API keys and original photos."
+      ],
+      "risk": "Privacy filtering must be reliable."
+    },
+    {
+      "id": "LS-014",
+      "title": "Friend-test observability checklist",
+      "priority": 2,
+      "status": "todo",
+      "dependencies": [
+        "LS-003",
+        "LS-005",
+        "LS-013"
+      ],
+      "area": "qa",
+      "source": "planning_agent",
+      "rationale": "A repeatable test matrix makes the product safer to send to friends.",
+      "acceptance": [
+        "Friend-test guide covers 100/500/2000 photo runs.",
+        "Guide covers local/Qwen, cancel, cache hit, labels, history restore, and reinstall.",
+        "Expected results match current GUI behavior."
+      ],
+      "risk": "Docs can drift from implementation."
+    },
+    {
+      "id": "LS-020",
+      "title": "Similar-photo grouping and best-of-group selection",
+      "priority": 1,
+      "status": "todo",
+      "dependencies": [
+        "LS-006"
+      ],
+      "area": "ranking",
+      "source": "product_agent",
+      "rationale": "Real culling often means choosing the strongest image from near-duplicates and burst-like sequences.",
+      "acceptance": [
+        "Group visually similar photos using perceptual hash or embeddings.",
+        "Show group size and best candidate.",
+        "Qwen can be applied to group winners instead of every similar frame."
+      ],
+      "risk": "Weak similarity grouping can accidentally hide meaningful differences."
+    },
+    {
+      "id": "LS-021",
+      "title": "Top-K explainable selection report",
+      "priority": 1,
+      "status": "todo",
+      "dependencies": [
+        "LS-003"
+      ],
+      "area": "reporting",
+      "source": "product_agent",
+      "rationale": "Users need a clear explanation of why the top images are worth editing.",
+      "acceptance": [
+        "Top-K report explains keep reasons, reject risks, editing potential, and final ordering.",
+        "Report highlights story-strong but technically imperfect photos.",
+        "Report can be viewed from the GUI and exported."
+      ],
+      "risk": "Report quality depends on Qwen reliability and structured output quality."
+    }
+  ]
+}
