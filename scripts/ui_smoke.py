@@ -263,6 +263,7 @@ def setup_collapsed_checks(window: Any, font_database_type: Any, font_metrics_ty
         check_value(font_ok, "zh_font_available", f"font={font_family}"),
         check_value(glyph_ok, "zh_glyphs_renderable", glyph_detail),
         check_visible(window.controls_frame, "controls_visible"),
+        check_visible(window.history_button, "history_button_visible"),
         check_not_visible(window.advanced_panel, "advanced_collapsed_by_default"),
         check_min_size(window.progress, "progress_bar_height", min_height=16),
         check_min_size(window.run_button, "analyze_button_size", min_width=92, min_height=44),
@@ -300,6 +301,7 @@ def review_checks(window: Any) -> list[dict[str, Any]]:
     plain_text = window.detail_text.toPlainText()
     return [
         check_visible(window.review_bar, "review_bar_visible"),
+        check_visible(window.review_history_button, "review_history_button_visible"),
         check_not_visible(window.header_frame, "header_hidden_in_review"),
         check_not_visible(window.workflow_frame, "workflow_hidden_in_review"),
         check_not_visible(window.controls_frame, "setup_controls_hidden_in_review"),

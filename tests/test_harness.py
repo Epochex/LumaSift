@@ -6,6 +6,7 @@ from PIL import Image
 
 from lumasift.core.config import Settings
 from lumasift.core.harness import LumaSiftHarness
+from lumasift.storage.state_db import LumaSiftStateDb
 
 
 def test_harness_runs_local_only(tmp_path: Path) -> None:
@@ -112,4 +113,44 @@ def test_desktop_app_module_imports() -> None:
     assert "本地" in window.windowTitle()
     window.language_combo.setCurrentText("English")
     assert "Local" in window.windowTitle()
+    window.close()
+
+
+def test_desktop_restores_history_run(tmp_path: Path) -> None:
+    from lumasift.app.desktop import LumaSiftWindow
+
+    app = QApplication.instance() or QApplication([])
+    output_dir = tmp_path / "run-output"
+    output_dir.mkdir()
+    (output_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "rank": 1,
+                        "path": str(tmp_path / "photo.jpg"),
+                        "filename": "photo.jpg",
+                        "category": "story_candidate",
+                        "final_selection_score": 88.0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    window = LumaSiftWindow()
+    window.state_db = LumaSiftStateDb(tmp_path / "state.sqlite")
+    window.state_db.record_run(
+        run_id="history-run",
+        input_dir=str(tmp_path),
+        output_dir=str(output_dir),
+        ai_mode="local_only",
+        summary={"scanned": 1, "processed": 1, "failed": 0},
+    )
+
+    window._restore_history_run(window.state_db.list_runs(limit=1)[0])
+
+    assert window.review_mode
+    assert len(window.records) == 1
+    assert window.output_dir == output_dir
     window.close()

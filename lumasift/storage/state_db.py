@@ -57,6 +57,19 @@ class LumaSiftStateDb:
                 ),
             )
 
+    def list_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select run_id, input_dir, output_dir, ai_mode, scanned, processed, failed, created_at
+                from runs
+                order by created_at desc, rowid desc
+                limit ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def load_labels(self, paths: Iterable[str | Path]) -> dict[str, str]:
         normalized = [self._normalize_path(path) for path in paths]
         if not normalized:

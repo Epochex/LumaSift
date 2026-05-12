@@ -153,3 +153,9 @@
 - The cancel button marks the Qwen queue as cancelling immediately while allowing any in-flight request to finish safely rather than corrupting cache/report state.
 - Extended UI smoke to cover the cancelled queue state without requiring live API access.
 - Added regression coverage so pending Qwen candidates can be cancelled without making a network request.
+
+## 2026-05-12 - SQLite run history view
+- Added a recent-run history view backed by the existing local SQLite run table.
+- The GUI now exposes a `历史` entry from both setup and review mode, listing recent runs with time, mode, scanned/processed/failed counts, output path, and availability state.
+- Historical runs with a valid `report.json` can be restored directly into the review board; missing output folders or reports show an unavailable state instead of failing silently.
+- Added tests for run listing order and GUI history restoration, and extended UI smoke to keep the history entry visible in setup and review modes.

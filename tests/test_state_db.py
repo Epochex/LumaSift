@@ -44,6 +44,16 @@ def test_state_db_records_run_history(tmp_path: Path) -> None:
 
     rows = db.path.read_bytes()
     assert rows
+    db.record_run(
+        run_id="newer-run",
+        input_dir="D:/DCIM2",
+        output_dir="./outputs/gui2",
+        ai_mode="qwen_vision",
+        summary={"scanned": 3, "processed": 3, "failed": 0},
+    )
+    runs = db.list_runs(limit=2)
+    assert [run["run_id"] for run in runs] == ["newer-run", "run-1"]
+    assert runs[0]["processed"] == 3
 
 
 def test_state_db_loads_labels_in_chunks(tmp_path: Path) -> None:

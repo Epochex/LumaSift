@@ -37,6 +37,8 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStyle,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -111,6 +113,9 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "review_mode": "筛片模式",
         "show_setup": "展开设置",
         "new_scan": "重新分析",
+        "run_history": "历史",
+        "load_run": "载入",
+        "missing_run": "输出不可用",
         "running_grid": "正在分析，结果会自动出现。",
         "empty_filtered": "没有匹配结果，调整筛选条件。",
         "done": "完成",
@@ -181,6 +186,9 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "review_mode": "Review Mode",
         "show_setup": "Show Setup",
         "new_scan": "Analyze Again",
+        "run_history": "History",
+        "load_run": "Load",
+        "missing_run": "Output unavailable",
         "running_grid": "Analysis is running. Results will appear here.",
         "empty_filtered": "No matches. Adjust filters.",
         "done": "Done",
@@ -501,6 +509,135 @@ class LargePreviewDialog(QDialog):
         self.image_label.setPixmap(scaled)
 
 
+class RunHistoryDialog(QDialog):
+    def __init__(self, runs: list[dict[str, Any]], language: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.runs = runs
+        self.language = language if language in {"zh", "en"} else "zh"
+        self.selected_run: dict[str, Any] | None = None
+        self.setWindowTitle("运行历史" if self.language == "zh" else "Run History")
+        self.resize(920, 420)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        self.table = QTableWidget(0, 7)
+        self.table.setObjectName("historyTable")
+        headers = (
+            ["时间", "模式", "照片", "成功", "失败", "输出", "状态"]
+            if self.language == "zh"
+            else ["Time", "Mode", "Photos", "Done", "Failed", "Output", "State"]
+        )
+        self.table.setHorizontalHeaderLabels(headers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._populate()
+        layout.addWidget(self.table, stretch=1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.open_button = QPushButton("打开输出" if self.language == "zh" else "Open Output")
+        self.open_button.setObjectName("secondaryButton")
+        self.open_button.clicked.connect(self._open_selected_output)
+        self.load_button = QPushButton("载入结果" if self.language == "zh" else "Load Run")
+        self.load_button.setObjectName("primaryButton")
+        self.load_button.clicked.connect(self._load_selected)
+        close_button = QPushButton("关闭" if self.language == "zh" else "Close")
+        close_button.setObjectName("secondaryButton")
+        close_button.clicked.connect(self.reject)
+        buttons.addWidget(self.open_button)
+        buttons.addWidget(self.load_button)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+
+        self.setStyleSheet(
+            """
+            QDialog { background: #090d12; color: #dbe7f3; font-family: Microsoft YaHei UI, Microsoft YaHei, Segoe UI; }
+            QTableWidget {
+                background: #0c1117;
+                alternate-background-color: #101820;
+                border: 1px solid #26313d;
+                border-radius: 8px;
+                color: #dbe7f3;
+                gridline-color: #26313d;
+            }
+            QHeaderView::section {
+                background: #111820;
+                color: #9fb0c2;
+                border: none;
+                padding: 7px;
+                font-weight: 800;
+            }
+            QPushButton {
+                border: none;
+                border-radius: 6px;
+                padding: 9px 13px;
+                font-weight: 800;
+            }
+            QPushButton#primaryButton { background: #00a6ff; color: #061019; }
+            QPushButton#secondaryButton { background: #233044; color: #f8fafc; }
+            """
+        )
+
+    def _populate(self) -> None:
+        self.table.setRowCount(len(self.runs))
+        for row, run in enumerate(self.runs):
+            output_dir = Path(str(run.get("output_dir", "")))
+            report_path = output_dir / "report.json"
+            available = output_dir.exists() and report_path.exists()
+            values = [
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(int(run.get("created_at", 0) or 0))),
+                str(run.get("ai_mode", "")),
+                str(run.get("scanned", 0)),
+                str(run.get("processed", 0)),
+                str(run.get("failed", 0)),
+                str(output_dir),
+                ("可载入" if self.language == "zh" else "Ready") if available else ("缺失" if self.language == "zh" else "Missing"),
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.ItemDataRole.UserRole, run)
+                if not available:
+                    item.setForeground(QColor("#ff9f1c"))
+                self.table.setItem(row, column, item)
+        self.table.resizeColumnsToContents()
+        if self.runs:
+            self.table.selectRow(0)
+
+    def _current_run(self) -> dict[str, Any] | None:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        run = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        return run if isinstance(run, dict) else None
+
+    def _load_selected(self) -> None:
+        run = self._current_run()
+        if not run:
+            return
+        output_dir = Path(str(run.get("output_dir", "")))
+        if not (output_dir / "report.json").exists():
+            QMessageBox.information(self, self.windowTitle(), "输出不可用" if self.language == "zh" else "Output unavailable")
+            return
+        self.selected_run = run
+        self.accept()
+
+    def _open_selected_output(self) -> None:
+        run = self._current_run()
+        if not run:
+            return
+        output_dir = Path(str(run.get("output_dir", "")))
+        if not output_dir.exists():
+            QMessageBox.information(self, self.windowTitle(), "输出不可用" if self.language == "zh" else "Output unavailable")
+            return
+        os.startfile(output_dir)  # type: ignore[attr-defined]
+
+
 class PhotoListModel(QAbstractListModel):
     def __init__(self, placeholder_icon: QIcon) -> None:
         super().__init__()
@@ -699,6 +836,8 @@ class LumaSiftWindow(QMainWindow):
         if hasattr(self, "browse_input_button"):
             self.browse_input_button.setText(self._t("browse"))
             self.browse_output_button.setText(self._t("browse"))
+        if hasattr(self, "history_button"):
+            self.history_button.setText(self._t("run_history"))
         mini_map = {
             "mini_Mode": "mode",
             "mini_Scan": "scan",
@@ -727,6 +866,7 @@ class LumaSiftWindow(QMainWindow):
             self.cancel_button.setText(self._t("cancel"))
             self.advanced_button.setText(self._t("hide_advanced") if self.advanced_panel.isVisible() else self._t("advanced_settings"))
             self.review_setup_button.setText(self._t("show_setup"))
+            self.review_history_button.setText(self._t("run_history"))
             self.review_new_scan_button.setText(self._t("new_scan"))
             self.search_edit.setPlaceholderText(self._t("search"))
             self.photo_list.setToolTip(self._t("grid_tooltip"))
@@ -955,6 +1095,11 @@ class LumaSiftWindow(QMainWindow):
         self.language_combo.currentTextChanged.connect(self._change_language)
         layout.addWidget(self.language_combo)
 
+        self.history_button = QPushButton("")
+        self.history_button.setObjectName("secondaryButton")
+        self.history_button.clicked.connect(self._open_run_history)
+        layout.addWidget(self.history_button)
+
         for key, label in [
             ("scanned", "Scanned"),
             ("shown", "Shown"),
@@ -1024,12 +1169,16 @@ class LumaSiftWindow(QMainWindow):
         self.review_setup_button = QPushButton("")
         self.review_setup_button.setObjectName("ghostButton")
         self.review_setup_button.clicked.connect(lambda: self._exit_review_mode(show_advanced=True))
+        self.review_history_button = QPushButton("")
+        self.review_history_button.setObjectName("secondaryButton")
+        self.review_history_button.clicked.connect(self._open_run_history)
         self.review_new_scan_button = QPushButton("")
         self.review_new_scan_button.setObjectName("secondaryButton")
         self.review_new_scan_button.clicked.connect(lambda: self._exit_review_mode(show_advanced=False))
 
         layout.addWidget(mode_label)
         layout.addWidget(self.review_summary_label, stretch=1)
+        layout.addWidget(self.review_history_button)
         layout.addWidget(self.review_setup_button)
         layout.addWidget(self.review_new_scan_button)
         return frame
@@ -2060,6 +2209,43 @@ class LumaSiftWindow(QMainWindow):
             os.startfile(path)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, self._t("failed"), str(exc))
+
+    def _open_run_history(self) -> None:
+        dialog = RunHistoryDialog(self.state_db.list_runs(limit=30), self.language, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.selected_run:
+            return
+        self._restore_history_run(dialog.selected_run)
+
+    def _restore_history_run(self, run: dict[str, Any]) -> None:
+        output_dir = Path(str(run.get("output_dir", "")))
+        report_path = output_dir / "report.json"
+        if not report_path.exists():
+            QMessageBox.information(self, self._t("run_history"), self._t("missing_run"))
+            return
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 - broken historical reports should not crash the GUI.
+            QMessageBox.warning(self, self._t("failed"), str(exc))
+            return
+        self.output_dir = output_dir
+        self.output_edit.setText(str(output_dir))
+        self.input_edit.setText(str(run.get("input_dir", "")))
+        mode_index = self.mode_combo.findData(str(run.get("ai_mode", "local_only")))
+        if mode_index >= 0:
+            self.mode_combo.setCurrentIndex(mode_index)
+        self.current_run_id = str(run.get("run_id", ""))
+        self.records = list(report.get("records", []))
+        self._merge_user_labels()
+        self._refresh_filter_options()
+        self._populate_records()
+        self._enter_review_mode(
+            {
+                "processed": int(run.get("processed", len(self.records)) or len(self.records)),
+                "failed": int(run.get("failed", 0) or 0),
+            }
+        )
+        self.status_label.setText(self._t("done"))
+        self._fade_in(self.photo_list)
 
     def _apply_shadow(self, widget: QWidget, *, blur: int, y: int, alpha: int) -> None:
         shadow = QGraphicsDropShadowEffect(widget)
