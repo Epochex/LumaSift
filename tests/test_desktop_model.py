@@ -126,6 +126,8 @@ def test_top_nav_settings_button_toggles_setup_panel_like_user_click() -> None:
     app.processEvents()
 
     assert window.controls_frame.isVisible()
+    assert window.advanced_panel.isVisible()
+    assert window.title_label.text() != "LumaSift"
     QTest.mouseClick(window.settings_nav_button, Qt.MouseButton.LeftButton)
     app.processEvents()
 
@@ -134,6 +136,7 @@ def test_top_nav_settings_button_toggles_setup_panel_like_user_click() -> None:
     app.processEvents()
 
     assert window.controls_frame.isVisible()
+    assert window.advanced_panel.isVisible()
     window.close()
 
 

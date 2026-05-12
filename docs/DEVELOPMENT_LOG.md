@@ -234,3 +234,12 @@
 - Added Qt click-path regression coverage for the settings toggle and kept the top navigation visible in review mode.
 - Verification: `python -m pytest -q` passed with 57 tests, `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed, and a live key check reported 2 valid keys with about ¥24.699 remaining.
 - Live Qwen smoke with 2 local RAW files and Top-1 completed with one grouped non-winner skipped and one Qwen `done`, confirming the current API chain is not globally failing.
+
+## 2026-05-12 - VSCode-style navigation and full settings workspace
+- Reworked the desktop chrome into a thin VSCode-style menu strip: the visible LumaSift wordmark, decorative subtitle, and scanned/shown/selected/mode cards were removed from the main canvas.
+- Kept language switching in the top strip and moved operational state into tooltips and contextual controls instead of permanent summary cards.
+- Changed the setup workspace so opening settings shows the full local/Qwen/run configuration directly; the nested advanced expand/collapse path was removed.
+- Sharpened the constructivist UI language with square panels, hard borders, lower vertical chrome, and denser review action controls.
+- Replaced text-heavy review decisions with compact geometric glyphs and Qt standard icons with tooltips for keep, maybe, reject, editing advice, output folder, and contact sheet.
+- Updated desktop regression tests and UI smoke so the full settings workspace is visible by default and the review action strip remains compact after cockpit scrolling.
+- Verification: `python -m pytest -q` passed with 57 tests, `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed, `packaging/build_windows.ps1` rebuilt `dist/LumaSift` and `dist/installer/LumaSiftSetup.exe`, and the packaged exe launched successfully in an offscreen smoke.

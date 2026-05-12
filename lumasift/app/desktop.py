@@ -123,6 +123,10 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "run_history": "历史",
         "settings": "设置",
         "hide_settings": "收起设置",
+        "nav_run": "运行",
+        "nav_view": "视图",
+        "nav_output": "输出",
+        "nav_help": "帮助",
         "load_run": "载入",
         "missing_run": "输出不可用",
         "running_grid": "正在分析，结果会自动出现。",
@@ -213,6 +217,10 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "run_history": "History",
         "settings": "Settings",
         "hide_settings": "Hide Settings",
+        "nav_run": "Run",
+        "nav_view": "View",
+        "nav_output": "Output",
+        "nav_help": "Help",
         "load_run": "Load",
         "missing_run": "Output unavailable",
         "running_grid": "Analysis is running. Results will appear here.",
@@ -866,13 +874,9 @@ class LumaSiftWindow(QMainWindow):
             self.language_combo.setCurrentText("English" if self.language == "en" else "中文")
             self.language_combo.blockSignals(False)
         if hasattr(self, "title_label"):
-            self.title_label.setText(self._t("hero_title"))
+            self.title_label.setText("▰")
         if hasattr(self, "subtitle_label"):
             self.subtitle_label.setText(self._t("hero_subtitle"))
-        for key in ("scanned", "shown", "selected", "mode"):
-            label = self.static_labels.get(f"stat_{key}")
-            if label:
-                label.setText(self._t(key))
         step_keys = {
             "import": ("step_import", "step_import_caption"),
             "local": ("step_local", "step_local_caption"),
@@ -901,6 +905,10 @@ class LumaSiftWindow(QMainWindow):
             self.history_button.setText(self._t("run_history"))
         if hasattr(self, "settings_nav_button"):
             self._sync_setup_nav_button()
+        for text_key in ("nav_run", "nav_output", "nav_view", "nav_help"):
+            button = self.static_labels.get(f"nav_{text_key}")
+            if button:
+                button.setText(self._t(text_key))
         mini_map = {
             "mini_Mode": "mode",
             "mini_Scan": "scan",
@@ -927,20 +935,19 @@ class LumaSiftWindow(QMainWindow):
             self.save_keys_checkbox.setText(self._t("save_keys"))
             self.run_button.setText(self._t("analyze"))
             self.cancel_button.setText(self._t("cancel"))
-            self.advanced_button.setText(self._t("hide_advanced") if self.advanced_panel.isVisible() else self._t("advanced_settings"))
             self.review_setup_button.setText(self._t("show_setup"))
             self.review_history_button.setText(self._t("run_history"))
             self.review_new_scan_button.setText(self._t("new_scan"))
             self.search_edit.setPlaceholderText(self._t("search"))
             self.photo_list.setToolTip(self._t("grid_tooltip"))
             self.detail_hint_label.setText(self._t("detail_hint"))
-            self.keep_button.setText("√")
+            self.keep_button.setText("▲")
             self.keep_button.setToolTip(self._t("keep"))
-            self.maybe_button.setText("◇")
+            self.maybe_button.setText("◆")
             self.maybe_button.setToolTip(self._t("maybe"))
-            self.reject_button.setText("×")
+            self.reject_button.setText("■")
             self.reject_button.setToolTip(self._t("reject"))
-            self.generate_advice_button.setText(("◆ " + self._t("editing_plan")) if self.language == "zh" else "◆ Edit")
+            self.generate_advice_button.setText("")
             self.generate_advice_button.setToolTip(self._t("editing_plan"))
             self.open_output_button.setText("")
             self.open_output_button.setToolTip(self._t("open_output"))
@@ -1015,8 +1022,8 @@ class LumaSiftWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget()
         root = QVBoxLayout(central)
-        root.setContentsMargins(12, 8, 12, 12)
-        root.setSpacing(8)
+        root.setContentsMargins(8, 6, 8, 8)
+        root.setSpacing(6)
 
         self.header_frame = self._build_header()
         self.workflow_frame = self._build_workflow()
@@ -1093,40 +1100,42 @@ class LumaSiftWindow(QMainWindow):
         action_bar = QFrame()
         action_bar.setObjectName("actionBar")
         action_grid = QGridLayout(action_bar)
-        action_grid.setContentsMargins(8, 8, 8, 8)
-        action_grid.setHorizontalSpacing(8)
-        action_grid.setVerticalSpacing(8)
+        action_grid.setContentsMargins(5, 5, 5, 5)
+        action_grid.setHorizontalSpacing(5)
+        action_grid.setVerticalSpacing(5)
         self.keep_button = QPushButton("")
         self.keep_button.setObjectName("markKeepButton")
-        self.keep_button.setMinimumHeight(38)
-        self.keep_button.setMinimumWidth(64)
+        self.keep_button.setMinimumHeight(32)
+        self.keep_button.setMinimumWidth(48)
         self.keep_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.keep_button.clicked.connect(lambda: self._mark_selected("keep"))
         action_grid.addWidget(self.keep_button, 0, 0)
         self.maybe_button = QPushButton("")
         self.maybe_button.setObjectName("markMaybeButton")
-        self.maybe_button.setMinimumHeight(38)
-        self.maybe_button.setMinimumWidth(64)
+        self.maybe_button.setMinimumHeight(32)
+        self.maybe_button.setMinimumWidth(48)
         self.maybe_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.maybe_button.clicked.connect(lambda: self._mark_selected("maybe"))
         action_grid.addWidget(self.maybe_button, 0, 1)
         self.reject_button = QPushButton("")
         self.reject_button.setObjectName("markRejectButton")
-        self.reject_button.setMinimumHeight(38)
-        self.reject_button.setMinimumWidth(64)
+        self.reject_button.setMinimumHeight(32)
+        self.reject_button.setMinimumWidth(48)
         self.reject_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.reject_button.clicked.connect(lambda: self._mark_selected("reject"))
         action_grid.addWidget(self.reject_button, 0, 2)
         self.generate_advice_button = QPushButton("")
         self.generate_advice_button.setObjectName("primaryButton")
-        self.generate_advice_button.setMinimumHeight(38)
+        self.generate_advice_button.setMinimumHeight(32)
+        self.generate_advice_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
+        self.generate_advice_button.setIconSize(QSize(18, 18))
         self.generate_advice_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.generate_advice_button.clicked.connect(self._generate_selected_advice)
         action_grid.addWidget(self.generate_advice_button, 1, 0)
         self.open_output_button = QPushButton("")
         self.open_output_button.setObjectName("secondaryButton")
-        self.open_output_button.setMinimumHeight(38)
-        self.open_output_button.setMinimumWidth(52)
+        self.open_output_button.setMinimumHeight(32)
+        self.open_output_button.setMinimumWidth(44)
         self.open_output_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.open_output_button.setIconSize(QSize(18, 18))
         self.open_output_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1134,8 +1143,8 @@ class LumaSiftWindow(QMainWindow):
         action_grid.addWidget(self.open_output_button, 1, 1)
         self.open_contact_button = QPushButton("")
         self.open_contact_button.setObjectName("secondaryButton")
-        self.open_contact_button.setMinimumHeight(38)
-        self.open_contact_button.setMinimumWidth(52)
+        self.open_contact_button.setMinimumHeight(32)
+        self.open_contact_button.setMinimumWidth(44)
         self.open_contact_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
         self.open_contact_button.setIconSize(QSize(18, 18))
         self.open_contact_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1152,11 +1161,13 @@ class LumaSiftWindow(QMainWindow):
         frame = QFrame()
         frame.setObjectName("topNav")
         layout = QHBoxLayout(frame)
-        layout.setContentsMargins(10, 6, 10, 6)
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        title = QLabel("LumaSift")
-        title.setObjectName("navTitle")
+        title = QLabel("▰")
+        title.setObjectName("navMark")
+        title.setFixedWidth(36)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label = title
         subtitle = QLabel("")
         subtitle.setVisible(False)
@@ -1165,14 +1176,27 @@ class LumaSiftWindow(QMainWindow):
         layout.addWidget(title)
 
         self.settings_nav_button = QPushButton("")
-        self.settings_nav_button.setObjectName("ghostButton")
+        self.settings_nav_button.setObjectName("navButton")
         self.settings_nav_button.clicked.connect(self._toggle_setup_panel)
         layout.addWidget(self.settings_nav_button)
 
         self.history_button = QPushButton("")
-        self.history_button.setObjectName("ghostButton")
+        self.history_button.setObjectName("navButton")
         self.history_button.clicked.connect(self._open_run_history)
         layout.addWidget(self.history_button)
+
+        for text_key, handler in [
+            ("nav_run", self._start_analysis),
+            ("nav_output", lambda: self._open_path(self.output_dir)),
+            ("nav_view", lambda: self._toggle_setup_panel()),
+            ("nav_help", lambda: self.status_label.setText(self._t("ready")) if hasattr(self, "status_label") else None),
+        ]:
+            button = QPushButton("")
+            button.setObjectName("navButton")
+            button.setText(self._t(text_key))
+            button.clicked.connect(handler)
+            self.static_labels[f"nav_{text_key}"] = button
+            layout.addWidget(button)
 
         layout.addStretch(1)
 
@@ -1181,26 +1205,6 @@ class LumaSiftWindow(QMainWindow):
         self.language_combo.setFixedWidth(104)
         self.language_combo.currentTextChanged.connect(self._change_language)
         layout.addWidget(self.language_combo)
-
-        for key, label in [
-            ("scanned", "Scanned"),
-            ("shown", "Shown"),
-            ("selected", "Selected"),
-            ("mode", "Mode"),
-        ]:
-            card = QFrame()
-            card.setObjectName("navStat")
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(10, 4, 10, 4)
-            value = QLabel("0" if key != "mode" else "Local")
-            value.setObjectName("navStatValue")
-            caption = QLabel(label)
-            caption.setObjectName("navStatCaption")
-            card_layout.addWidget(value)
-            card_layout.addWidget(caption)
-            self.stat_labels[key] = value
-            self.static_labels[f"stat_{key}"] = caption
-            layout.addWidget(card)
         return frame
 
     def _build_workflow(self) -> QFrame:
@@ -1328,12 +1332,8 @@ class LumaSiftWindow(QMainWindow):
         self.progress.setValue(0)
         self.status_label = QLabel("Ready")
         self.status_label.setObjectName("muted")
-        self.advanced_button = QPushButton("")
-        self.advanced_button.setObjectName("ghostButton")
-        self.advanced_button.clicked.connect(self._toggle_advanced_panel)
         progress_row.addWidget(self.progress, stretch=1)
         progress_row.addWidget(self.status_label, stretch=0)
-        progress_row.addWidget(self.advanced_button, stretch=0)
         layout.addLayout(progress_row)
         self.qwen_queue_label = QLabel("")
         self.qwen_queue_label.setObjectName("qwenQueueLabel")
@@ -1380,7 +1380,7 @@ class LumaSiftWindow(QMainWindow):
 
         self.advanced_panel = QFrame()
         self.advanced_panel.setObjectName("advancedPanel")
-        self.advanced_panel.setFixedHeight(188)
+        self.advanced_panel.setMinimumHeight(178)
         self.advanced_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         advanced_layout = QVBoxLayout(self.advanced_panel)
         advanced_layout.setContentsMargins(10, 10, 10, 10)
@@ -1445,7 +1445,7 @@ class LumaSiftWindow(QMainWindow):
         key_grid.setRowMinimumHeight(2, 20)
         key_grid.setColumnStretch(1, 1)
         advanced_layout.addLayout(key_grid)
-        self.advanced_panel.setVisible(False)
+        self.advanced_panel.setVisible(True)
         layout.addWidget(self.advanced_panel)
         return group
 
@@ -1513,11 +1513,9 @@ class LumaSiftWindow(QMainWindow):
             self._save_preferences()
 
     def _toggle_advanced_panel(self) -> None:
-        if self.review_mode:
-            self._exit_review_mode(show_advanced=True)
-            return
-        self.advanced_panel.setVisible(not self.advanced_panel.isVisible())
-        self.advanced_button.setText(self._t("hide_advanced") if self.advanced_panel.isVisible() else self._t("advanced_settings"))
+        self.controls_frame.setVisible(True)
+        self.advanced_panel.setVisible(True)
+        self._sync_setup_nav_button()
 
     def _toggle_setup_panel(self) -> None:
         if self.review_mode:
@@ -1529,8 +1527,10 @@ class LumaSiftWindow(QMainWindow):
     def _sync_setup_nav_button(self) -> None:
         if not hasattr(self, "settings_nav_button"):
             return
-        visible = self.controls_frame.isVisible() if hasattr(self, "controls_frame") else True
-        self.settings_nav_button.setText(self._t("hide_settings") if visible else self._t("settings"))
+        self.settings_nav_button.setText(self._t("settings"))
+        self.settings_nav_button.setProperty("active", self.controls_frame.isVisible() if hasattr(self, "controls_frame") else True)
+        self.settings_nav_button.style().unpolish(self.settings_nav_button)
+        self.settings_nav_button.style().polish(self.settings_nav_button)
 
     def _focus_workflow_step(self, step: str) -> None:
         if self.review_mode:
@@ -1543,14 +1543,12 @@ class LumaSiftWindow(QMainWindow):
             self.input_edit.setFocus()
         elif step == "local":
             self.limit_spin.setFocus()
-            if not self.advanced_panel.isVisible():
-                self._toggle_advanced_panel()
+            self.advanced_panel.setVisible(True)
         elif step == "qwen":
             mode_index = self.mode_combo.findData("qwen_vision")
             if mode_index >= 0:
                 self.mode_combo.setCurrentIndex(mode_index)
-            if not self.advanced_panel.isVisible():
-                self._toggle_advanced_panel()
+            self.advanced_panel.setVisible(True)
             self.api_key_edit.setFocus()
         elif step == "edit":
             self.generate_advice_button.setFocus()
@@ -1560,7 +1558,7 @@ class LumaSiftWindow(QMainWindow):
         self.header_frame.setVisible(True)
         self.workflow_frame.setVisible(False)
         self.controls_frame.setVisible(False)
-        self.advanced_panel.setVisible(False)
+        self.advanced_panel.setVisible(True)
         self.review_bar.setVisible(True)
         processed = summary.get("processed", len(self.records)) if summary else len(self.records)
         failed = summary.get("failed", 0) if summary else 0
@@ -1574,8 +1572,7 @@ class LumaSiftWindow(QMainWindow):
         self.workflow_frame.setVisible(True)
         self.controls_frame.setVisible(True)
         self.review_bar.setVisible(False)
-        self.advanced_panel.setVisible(show_advanced)
-        self.advanced_button.setText(self._t("hide_advanced") if show_advanced else self._t("advanced_settings"))
+        self.advanced_panel.setVisible(True)
         self._sync_setup_nav_button()
 
     def _start_analysis(self) -> None:
@@ -1627,8 +1624,7 @@ class LumaSiftWindow(QMainWindow):
 
         self.run_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
-        self.advanced_panel.setVisible(False)
-        self.advanced_button.setText(self._t("advanced_settings"))
+        self.advanced_panel.setVisible(True)
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.status_label.setText(self._t("step_local"))
@@ -2436,7 +2432,6 @@ class LumaSiftWindow(QMainWindow):
         self.save_keys_checkbox.setEnabled(True)
         if hasattr(self, "cache_note"):
             self.cache_note.setText(self._t("cache_note") if qwen_enabled else self._t("qwen_key_local_hint"))
-        self.stat_labels.get("mode", QLabel()).setText(self._t("qwen") if qwen_enabled else self._t("local"))
         self._update_workflow("qwen" if qwen_enabled else "import")
         self._render_qwen_queue_state()
 
@@ -2587,15 +2582,11 @@ class LumaSiftWindow(QMainWindow):
             step.style().polish(step)
 
     def _update_dashboard(self, summary: dict[str, Any] | None = None) -> None:
-        if not self.stat_labels:
-            return
         scanned = summary.get("scanned", len(self.records)) if summary else len(self.records)
         selected = self._selected_record_indexes() if hasattr(self, "photo_list") else []
         mode = self._t("qwen") if hasattr(self, "mode_combo") and (self.mode_combo.currentData() or self.mode_combo.currentText()) == "qwen_vision" else self._t("local")
-        self.stat_labels["scanned"].setText(str(scanned))
-        self.stat_labels["shown"].setText(str(len(self.visible_records)))
-        self.stat_labels["selected"].setText(str(len(selected)))
-        self.stat_labels["mode"].setText(mode)
+        if hasattr(self, "result_count_label") and self.records:
+            self.result_count_label.setToolTip(f"{self._t('scanned')}: {scanned}  {self._t('shown')}: {len(self.visible_records)}  {self._t('selected')}: {len(selected)}  {self._t('mode')}: {mode}")
 
     def _empty_detail_html(self) -> str:
         return """
@@ -2863,9 +2854,9 @@ class LumaSiftWindow(QMainWindow):
             }
             QLabel { background: transparent; }
             QLabel#title { font-size: 34px; font-weight: 900; color: #f8fafc; letter-spacing: 0px; }
-            QLabel#navTitle { font-size: 20px; font-weight: 900; color: #f8fafc; letter-spacing: 0px; padding-right: 10px; }
+            QLabel#navMark { font-size: 19px; font-weight: 900; color: #00a6ff; letter-spacing: 0px; }
             QLabel#subtitle { color: #9fb0c2; font-size: 13px; }
-            QLabel#muted, QLabel#statCaption, QLabel#navStatCaption, QLabel#stepCaption { color: #93a4b8; }
+            QLabel#muted, QLabel#statCaption, QLabel#stepCaption { color: #93a4b8; }
             QLabel#sectionTitle { font-size: 14px; font-weight: 900; color: #f8fafc; }
             QLabel#fieldLabel { color: #c8d4e0; font-weight: 800; }
             QLabel#miniLabel { color: #9fb0c2; font-weight: 800; }
@@ -2874,20 +2865,27 @@ class LumaSiftWindow(QMainWindow):
                 background: #101820;
                 border: 1px solid #26384a;
                 border-left: 6px solid #ffd400;
-                border-radius: 6px;
+                border-radius: 0px;
                 padding: 6px 10px;
                 font-weight: 700;
             }
             QFrame#hero, QFrame#topNav, QFrame#controlCard, QFrame#toolbar, QFrame#reviewBar {
                 background: #111820;
                 border: 1px solid #26313d;
-                border-radius: 8px;
+                border-radius: 0px;
+            }
+            QFrame#topNav {
+                background: #1b1b1b;
+                border: none;
+                border-bottom: 1px solid #2f3640;
+                min-height: 34px;
+                max-height: 34px;
             }
             QFrame#detailPanel {
                 background: #0d1218;
                 border: 2px solid #26313d;
                 border-left: 6px solid #ff3b30;
-                border-radius: 8px;
+                border-radius: 0px;
             }
             QFrame#constructGuide { background: transparent; border: none; }
             QFrame#guideCyan { background: #00a6ff; border: none; }
@@ -2896,39 +2894,33 @@ class LumaSiftWindow(QMainWindow):
             QFrame#actionBar {
                 background: #0a0f15;
                 border: 1px solid #26313d;
-                border-radius: 8px;
+                border-radius: 0px;
             }
             QFrame#statCard {
                 background: #101820;
                 border: 1px solid #293646;
-                border-radius: 8px;
+                border-radius: 0px;
                 min-width: 92px;
-            }
-            QFrame#navStat {
-                background: #0f151d;
-                border: 1px solid #26313d;
-                border-radius: 6px;
-                min-width: 74px;
             }
             QFrame#optionBar { background: transparent; border: none; }
             QFrame#advancedPanel {
-                background: #101419;
+                background: #0f141a;
                 border: 1px solid #26313d;
-                border-radius: 8px;
+                border-left: 6px solid #00a6ff;
+                border-radius: 0px;
             }
             QFrame#miniControl {
                 background: #151b22;
                 border: 1px solid #293646;
-                border-radius: 8px;
+                border-radius: 0px;
                 min-width: 132px;
             }
             QLabel#statValue { font-size: 20px; font-weight: 900; color: #8fd3ff; }
-            QLabel#navStatValue { font-size: 16px; font-weight: 900; color: #8fd3ff; }
             QFrame#workflow { background: transparent; }
             QFrame#stepCard {
                 background: #151b22;
                 border: 1px solid #26313d;
-                border-radius: 8px;
+                border-radius: 0px;
             }
             QFrame#stepCard[state="active"] {
                 background: #172232;
@@ -2942,7 +2934,7 @@ class LumaSiftWindow(QMainWindow):
             QLineEdit, QSpinBox, QComboBox, QTextEdit, QListView {
                 background: #0c1117;
                 border: 1px solid #2a3645;
-                border-radius: 6px;
+                border-radius: 0px;
                 padding: 7px;
                 color: #dbe7f3;
                 selection-background-color: #245d82;
@@ -2968,9 +2960,29 @@ class LumaSiftWindow(QMainWindow):
             }
             QPushButton {
                 border: none;
-                border-radius: 6px;
+                border-radius: 0px;
                 padding: 9px 13px;
                 font-weight: 800;
+            }
+            QPushButton#navButton {
+                background: transparent;
+                color: #a7a7a7;
+                border: none;
+                border-radius: 0px;
+                padding: 7px 10px;
+                font-weight: 500;
+                min-height: 32px;
+                max-height: 32px;
+            }
+            QPushButton#navButton:hover {
+                color: #f8fafc;
+                background: #242424;
+                border-bottom: 2px solid #00a6ff;
+            }
+            QPushButton#navButton[active="true"] {
+                color: #f8fafc;
+                background: #20242a;
+                border-bottom: 2px solid #ffd400;
             }
             QPushButton#primaryButton { background: #00a6ff; color: #061019; }
             QPushButton#primaryButton:hover { background: #45c0ff; }
@@ -2985,15 +2997,15 @@ class LumaSiftWindow(QMainWindow):
             QPushButton#markRejectButton { background: #ff3b30; color: #ffffff; }
             QPushButton#markRejectButton:hover { background: #ff625a; }
             QPushButton#markKeepButton, QPushButton#markMaybeButton, QPushButton#markRejectButton {
-                font-size: 21px;
+                font-size: 20px;
                 font-weight: 900;
-                padding: 4px 10px;
+                padding: 2px 8px;
             }
             QPushButton:disabled { background: #26313d; color: #66778a; }
             QListView#photoGrid {
                 background: #0c1117;
                 border: 1px solid #26313d;
-                border-radius: 8px;
+                border-radius: 0px;
                 padding: 10px;
             }
             QListView#photoGrid::item {

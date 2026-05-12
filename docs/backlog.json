@@ -543,6 +543,28 @@
         "UI smoke and desktop click-path tests cover the compact navigation and settings toggle."
       ],
       "risk": "A full Lightroom-style multi-page settings workspace is still larger than this v0.1 slice, but the current panel can now be hidden without losing the main review workflow."
+    },
+    {
+      "id": "LS-040",
+      "title": "VSCode-style compact nav and full settings workspace",
+      "priority": 0,
+      "status": "done",
+      "dependencies": [
+        "LS-035",
+        "LS-039"
+      ],
+      "area": "uiux",
+      "source": "user_feedback",
+      "rationale": "The compact navigation still carried decorative branding and summary cards, and the settings area still had a nested advanced toggle that made the setup surface feel like a cramped form instead of a professional software workspace.",
+      "acceptance": [
+        "The visible LumaSift wordmark and permanent scanned/shown/selected/mode cards are removed from the desktop canvas.",
+        "The top navigation uses a low-height VSCode-like menu strip with language switching preserved.",
+        "Opening settings shows all run, Qwen, key-check, and output controls directly without an advanced expand/collapse path.",
+        "The visual system moves toward sharper constructivist geometry with low-radius panels and hard color rails.",
+        "Review decision and output controls use compact geometric/icon controls with tooltips instead of large text-heavy buttons.",
+        "Desktop regression tests and UI smoke cover the always-expanded settings workspace and compact review action strip."
+      ],
+      "risk": "Icon-only controls rely on stable tooltips and recognizable symbols; friend testing should confirm the glyph vocabulary is understood."
     }
   ]
 }
