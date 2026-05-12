@@ -477,6 +477,29 @@
         "A live Qwen smoke confirms the v2 prompt returns concrete visible evidence instead of generic photo-review phrasing."
       ],
       "risk": "Prompt quality still needs larger human-labeled evaluation, but v2 prevents the most obvious generic analysis failure."
+    },
+    {
+      "id": "LS-037",
+      "title": "Photographer-grade story reading and evidence-bound editing advice",
+      "priority": 0,
+      "status": "done",
+      "dependencies": [
+        "LS-003",
+        "LS-020",
+        "LS-036"
+      ],
+      "area": "ai-workflow",
+      "source": "user_feedback",
+      "rationale": "The selected editing advice still flattened Qwen evidence into template-like Lightroom text, making the product sound generic instead of like a serious street/documentary photo editor.",
+      "acceptance": [
+        "Qwen prompt v3 requests visible inventory, editorial verdict, score rationales, moment status, frame failure reasons, and evidence-bound editing plan.",
+        "Local-only records are marked as local technical pre-screening and as needing Qwen review.",
+        "Selected editing advice separates formal vision-evidence advice from technical drafts and blocks unsupported photographic claims.",
+        "GUI and Markdown advice show photo reading, visible evidence, content decision, crop keep/reduce reasoning, local mask targets, and do-not-overedit guidance.",
+        "UI smoke fails if the advice page loses visible evidence, crop reasoning, do-not-overedit guidance, or reintroduces generic subject-relationship claims.",
+        "A live Qwen v3 smoke on private local RAW files returns concrete evidence and structured editing actions rather than generic review text."
+      ],
+      "risk": "Top-N runs must include enough Qwen-reviewed records; local-only review is now intentionally framed as pre-screening, not final photographic judgment."
     }
   ]
 }

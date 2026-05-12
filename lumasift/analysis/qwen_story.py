@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
-QWEN_STORY_PROMPT_VERSION = "qwen-story-v2"
+QWEN_STORY_PROMPT_VERSION = "qwen-story-v3"
 QWEN_STORY_PROMPT = """
 你是严格但有摄影判断力的街拍/纪实/人文/旅行摄影选片编辑。
 
@@ -18,8 +18,25 @@ QWEN_STORY_PROMPT = """
 如果照片属于连拍/相似组，要判断这一张是否有更好的身体动作、视线、遮挡关系、街头瞬间或
 环境线索。不要因为“更清楚”就自动胜出；优先决定性瞬间和人文信息。
 
+每条修图动作必须能追溯到可见证据；如果看不清人、手势、表情或空间关系，必须写“不确定/看不清”，不能脑补。
 文字字段用中文，枚举值和 JSON key 保持英文。只返回一个合法 JSON 对象，不要 Markdown。
 {
+  "analysis_source": "qwen_vision",
+  "analysis_quality": "concrete|weak|generic|missing",
+  "analysis_quality_self_check": "一句话说明这次阅读是否具体，如果不具体说明原因",
+  "editorial_verdict": {
+    "action": "keep|maybe|reject",
+    "confidence": 0-100,
+    "one_line_reason": "必须包含具体画面对象"
+  },
+  "visible_inventory": {
+    "main_subject": "主对象；不确定就写不确定",
+    "secondary_subjects": ["次要对象"],
+    "setting_context": ["地点、招牌、车辆、街道、室内空间等"],
+    "gesture_expression_motion": ["动作、表情、视线、运动方向；看不清就写看不清"],
+    "light_color_structure": ["光线、颜色、明暗结构"],
+    "edge_obstructions": ["边缘干扰、遮挡、裁切风险"]
+  },
   "storytelling_score": 0-100,
   "human_documentary_value_score": 0-100,
   "decisive_moment_score": 0-100,
@@ -30,9 +47,17 @@ QWEN_STORY_PROMPT = """
   "final_selection_score": 0-100,
   "category": "portfolio_candidate|strong_edit_candidate|story_candidate|technically_weak_but_interesting|ordinary_record|reject_candidate",
   "visible_evidence": ["3-6条具体可见证据，不要泛泛而谈"],
+  "score_rationales": {
+    "storytelling_score": {"reason": "具体理由", "evidence_ids": [0]},
+    "human_documentary_value_score": {"reason": "具体理由", "evidence_ids": [0]},
+    "decisive_moment_score": {"reason": "具体理由", "evidence_ids": [0]},
+    "editing_potential_score": {"reason": "具体理由", "evidence_ids": [0]}
+  },
   "subject_relationship": "主体、人物/物件、环境之间的关系；如果看不清就明确说不确定",
   "decisive_moment_read": "这个瞬间是否成立，以及成立/不成立的原因",
+  "moment_status": "strong|weak|missed|ambiguous",
   "why_this_frame": "为什么这张值得保留、待定或淘汰；相似组里要说明和邻近帧相比的判断依据",
+  "frame_failure_reasons": ["具体失败点；没有就空数组"],
   "story_interpretation": "2-4句具体照片阅读：发生了什么、张力在哪里、观者为什么会停留",
   "why_keep": ["具体保留理由"],
   "why_deprioritize": ["具体风险或淘汰理由"],
@@ -55,7 +80,25 @@ QWEN_STORY_PROMPT = """
   },
   "crop_strategy": "裁切策略必须说明保留/去掉什么视觉信息",
   "local_adjustments": ["具体蒙版/局部加减光动作"],
-  "avoid_overediting": "哪些质感、颜色或模糊不应该被修掉"
+  "avoid_overediting": "哪些质感、颜色或模糊不应该被修掉",
+  "editing_plan": {
+    "edit_intent": "修图要强化的摄影内容，必须引用可见对象",
+    "color_mode": {"choice": "color|bw", "reason": "为什么"},
+    "crop_plan": {
+      "aspect_ratio": "original|3:2|4:5|16:9|custom",
+      "keep": ["必须保留的画面信息"],
+      "remove_or_reduce": ["要裁掉或压弱的干扰"]
+    },
+    "local_masks": [
+      {
+        "target": "具体区域或对象",
+        "operation": "曝光/阴影/饱和度/清晰度等",
+        "settings": {"exposure": "+0.20"},
+        "reason": "为了强化或压弱哪条内容"
+      }
+    ],
+    "do_not_overedit": ["不要修掉的现场感、模糊、颜色或颗粒"]
+  }
 }
 """.strip()
 
@@ -141,10 +184,18 @@ def merge_qwen_story_analysis(record: dict[str, Any], response: dict[str, Any]) 
         "technical_quality_score",
         "final_selection_score",
         "category",
+        "analysis_source",
+        "analysis_quality",
+        "analysis_quality_self_check",
+        "editorial_verdict",
+        "visible_inventory",
         "visible_evidence",
+        "score_rationales",
         "subject_relationship",
         "decisive_moment_read",
+        "moment_status",
         "why_this_frame",
+        "frame_failure_reasons",
         "story_interpretation",
         "recommended_style",
         "best_editing_direction",
@@ -152,6 +203,7 @@ def merge_qwen_story_analysis(record: dict[str, Any], response: dict[str, Any]) 
         "crop_strategy",
         "local_adjustments",
         "avoid_overediting",
+        "editing_plan",
     ]:
         if key in data:
             record[key] = data[key]
@@ -159,4 +211,96 @@ def merge_qwen_story_analysis(record: dict[str, Any], response: dict[str, Any]) 
         record["positive_reasons"] = data["why_keep"]
     if "why_deprioritize" in data:
         record["negative_reasons"] = data["why_deprioritize"]
+    record["analysis_source"] = "qwen_vision"
+    record["analysis_quality"] = _analysis_quality(data)
     record["qwen_model"] = response.get("model", "unknown")
+
+
+def _analysis_quality(data: Mapping[str, Any]) -> str:
+    evidence = data.get("visible_evidence")
+    if not isinstance(evidence, Sequence) or isinstance(evidence, (str, bytes, bytearray)):
+        return "missing"
+    concrete = [str(item) for item in evidence if _looks_concrete(str(item))]
+    if (
+        len(concrete) >= 3
+        and data.get("subject_relationship")
+        and data.get("decisive_moment_read")
+        and _valid_editorial_verdict(data.get("editorial_verdict"))
+        and _valid_score_rationales(data.get("score_rationales"), len(evidence))
+        and _valid_editing_plan(data.get("editing_plan"))
+    ):
+        return "concrete"
+    if concrete:
+        return "weak"
+    return "generic"
+
+
+def _looks_concrete(text: str) -> bool:
+    generic_terms = ("故事感", "人文感", "主体关系", "瞬间感", "氛围", "张力", "构图", "现场感", "画面成立")
+    has_specific_anchor = any(char.isdigit() for char in text) or any(
+        token in text
+        for token in ("左", "右", "上", "下", "前景", "中景", "背景", "人物", "行人", "车辆", "招牌", "标识", "街道", "手", "脸", "背影", "窗口", "路口")
+    )
+    if not has_specific_anchor:
+        return False
+    stripped = text.strip()
+    return not any(stripped == term for term in generic_terms)
+
+
+def _valid_editorial_verdict(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    action = str(value.get("action") or "")
+    reason = str(value.get("one_line_reason") or "")
+    return action in {"keep", "maybe", "reject"} and _looks_concrete(reason)
+
+
+def _valid_score_rationales(value: Any, evidence_count: int) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    checked = 0
+    for key in ("storytelling_score", "human_documentary_value_score", "decisive_moment_score", "editing_potential_score"):
+        entry = value.get(key)
+        if not isinstance(entry, Mapping):
+            continue
+        reason = str(entry.get("reason") or "")
+        ids = entry.get("evidence_ids")
+        if not _looks_concrete(reason) or not isinstance(ids, Sequence) or isinstance(ids, (str, bytes, bytearray)):
+            continue
+        valid_ids = []
+        for item in ids:
+            try:
+                index = int(item)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= index < evidence_count:
+                valid_ids.append(index)
+        if valid_ids:
+            checked += 1
+    return checked >= 3
+
+
+def _valid_editing_plan(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    intent = str(value.get("edit_intent") or "")
+    crop_plan = value.get("crop_plan")
+    masks = value.get("local_masks")
+    if not _looks_concrete(intent):
+        return False
+    if not isinstance(crop_plan, Mapping):
+        return False
+    keep = crop_plan.get("keep")
+    reduce = crop_plan.get("remove_or_reduce")
+    if not isinstance(keep, Sequence) or isinstance(keep, (str, bytes, bytearray)) or not list(keep):
+        return False
+    if not isinstance(reduce, Sequence) or isinstance(reduce, (str, bytes, bytearray)) or not list(reduce):
+        return False
+    if not isinstance(masks, Sequence) or isinstance(masks, (str, bytes, bytearray)):
+        return False
+    for mask in masks:
+        if not isinstance(mask, Mapping):
+            continue
+        if str(mask.get("target") or "").strip() and str(mask.get("operation") or "").strip() and _looks_concrete(str(mask.get("reason") or "")):
+            return True
+    return False

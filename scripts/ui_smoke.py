@@ -143,15 +143,43 @@ def make_records(photo_dir: Path, *, count: int) -> list[dict[str, Any]]:
                 "category": categories[index % len(categories)],
                 "recommended_style": styles[index % len(styles)],
                 "user_label": "unlabeled",
+                "analysis_source": "qwen_vision",
+                "analysis_quality": "concrete",
+                "editorial_verdict": {
+                    "action": "maybe",
+                    "confidence": 72,
+                    "one_line_reason": "pedestrians crossing the frame remain separated from the vehicle edge",
+                },
                 "final_selection_score": max(score, 35.0),
                 "street_documentary_potential_score": max(score - 4, 30.0),
                 "composition_score": max(score - 8, 25.0),
                 "editability_score": max(score - 6, 25.0),
                 "story_interpretation": "Synthetic UI smoke record for checking review density and detail hierarchy.",
-                "visible_evidence": ["pedestrians crossing the frame", "street signs and vehicle edges create layered context"],
+                "visible_evidence": [
+                    "pedestrians crossing the frame",
+                    "street signs and vehicle edges create layered context",
+                    "foreground vehicle edge separates the pedestrian cluster",
+                ],
                 "subject_relationship": "The main pedestrian cluster sits against vehicles and signage, giving a readable street relationship.",
                 "decisive_moment_read": "The frame works if the pedestrian spacing remains separated rather than merged into the car edge.",
                 "why_this_frame": "Within the synthetic group this first frame is treated as the clearest group winner.",
+                "editing_plan": {
+                    "edit_intent": "Use the pedestrian cluster and vehicle edge as the reason for the edit, not a generic preset.",
+                    "crop_plan": {
+                        "aspect_ratio": "3:2",
+                        "keep": ["pedestrian cluster", "street signs"],
+                        "remove_or_reduce": ["empty edge clutter"],
+                    },
+                    "local_masks": [
+                        {
+                            "target": "pedestrian cluster",
+                            "operation": "Exposure +0.20, Shadows +10",
+                            "settings": {"exposure": "+0.20"},
+                            "reason": "keep the human relationship readable",
+                        }
+                    ],
+                    "do_not_overedit": ["street texture"],
+                },
                 "best_editing_direction": "Preserve the humanistic read and increase local contrast without over-cleaning.",
                 "crop_strategy": "Keep the subject relationship readable; avoid over-tight cropping.",
                 "positive_reasons": ["clear subject relationship", "usable story signal"],
@@ -396,6 +424,11 @@ def editing_plan_checks(window: Any) -> list[dict[str, Any]]:
         check_value(expected_title in plain_text, "editing_plan_language", f"contains={expected_title!r}"),
         check_value(forbidden_default not in plain_text, "editing_plan_not_wrong_language", f"forbidden={forbidden_default!r}"),
         check_value("Lightroom" in plain_text, "editing_plan_parameters_visible", "Lightroom section visible"),
+        check_value(("可见证据" in plain_text) or ("Visible Evidence" in plain_text), "editing_plan_evidence_visible", plain_text[:1200]),
+        check_value(("裁切保留" in plain_text) or ("Crop Keep" in plain_text), "editing_plan_crop_reason_visible", plain_text[:1600]),
+        check_value(("别修掉" in plain_text) or ("Do Not Remove" in plain_text) or ("质感处理" in plain_text), "editing_plan_do_not_overedit_visible", plain_text[-1200:]),
+        check_value("保护照片里真正有价值的瞬间和人物关系" not in plain_text, "editing_plan_no_generic_subject_claim", "generic phrase absent"),
+        check_value("主体/手势蒙版" not in plain_text, "editing_plan_no_generic_mask_claim", "generic mask phrase absent"),
         check_file_nonempty(window.output_dir / "selected_editing_advice.md", "editing_plan_markdown_written"),
     ]
 

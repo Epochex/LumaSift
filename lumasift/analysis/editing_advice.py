@@ -235,7 +235,14 @@ def _advice_for_record(record: dict[str, Any], *, language: str) -> dict[str, An
     parameters = _lightroom_parameters(record, style)
     tone = _tone_recommendation(record, style, language=language)
     score = _float(record.get("final_selection_score"))
-    direction = _editing_direction(record, style, tone["recommendation"], language=language)
+    photo_reading = _photo_reading(record, language=language)
+    content_decision = _content_decision(record, language=language)
+    editing_intent = _editing_intent(record, style, tone["recommendation"], language=language)
+    has_vision = _has_vision_read(record)
+    adjustments = _local_adjustments(record, style, tone["recommendation"], language=language) if has_vision else _technical_adjustments(record, language=language)
+    local_masks = _local_masks(record, adjustments, language=language) if has_vision else []
+    crop_plan = _crop_plan(record, language=language)
+    blocked_reason = _blocked_reason(record, has_vision=has_vision, language=language)
 
     return {
         "rank": record.get("rank"),
@@ -255,14 +262,352 @@ def _advice_for_record(record: dict[str, Any], *, language: str) -> dict[str, An
         "recommended_style": style,
         "recommended_style_label": _style_label(style, language),
         "category_label": _category_label(record.get("category"), language),
-        "editing_direction": direction,
+        "analysis_status": _analysis_status(record, language=language),
+        "analysis_source": "qwen_vision" if has_vision else str(record.get("analysis_source") or "local_proxy"),
+        "analysis_quality": str(record.get("analysis_quality") or ("concrete" if has_vision else "missing_semantic_read")),
+        "editing_advice_source": "vision_evidence" if has_vision else "technical_draft",
+        "blocked_reason": blocked_reason,
+        "advice_confidence": _advice_confidence(record, has_vision=has_vision),
+        "photo_reading": photo_reading,
+        "content_decision": content_decision,
+        "editing_intent": editing_intent,
+        "evidence_snapshot": _evidence_snapshot(record),
+        "crop_plan": crop_plan,
+        "local_masks": local_masks,
+        "visible_evidence": _string_list(record.get("visible_evidence")),
+        "subject_relationship": str(record.get("subject_relationship") or ""),
+        "decisive_moment_read": str(record.get("decisive_moment_read") or ""),
+        "why_this_frame": str(record.get("why_this_frame") or ""),
+        "avoid_overediting": str(record.get("avoid_overediting") or ""),
+        "story_interpretation": str(record.get("story_interpretation") or ""),
+        "why_keep": _string_list(record.get("positive_reasons")),
+        "why_deprioritize": _string_list(record.get("negative_reasons")),
+        "editing_direction": editing_intent,
         "lightroom_parameters": parameters,
         "lightroom_parameter_labels": _parameter_labels(language),
         "crop_strategy": _crop_strategy(record, language=language),
-        "local_adjustments": _local_adjustments(record, style, tone["recommendation"], language=language),
+        "local_adjustments": adjustments,
         "tone_recommendation": tone,
         "grain_sharpness_motion_blur": _grain_sharpness_motion_blur(record, style, tone["recommendation"], language=language),
     }
+
+
+def _has_vision_read(record: dict[str, Any]) -> bool:
+    if str(record.get("analysis_source") or "") != "qwen_vision":
+        return False
+    if str(record.get("analysis_quality") or "") != "concrete":
+        return False
+    evidence = [item for item in _string_list(record.get("visible_evidence")) if _looks_concrete_evidence(item)]
+    if len(evidence) < 3:
+        return False
+    verdict = record.get("editorial_verdict")
+    if not isinstance(verdict, dict) or not str(verdict.get("one_line_reason") or "").strip():
+        return False
+    plan = record.get("editing_plan")
+    if not isinstance(plan, dict):
+        return False
+    crop_plan = plan.get("crop_plan")
+    if not isinstance(crop_plan, dict) or not _string_list(crop_plan.get("keep")) or not _string_list(crop_plan.get("remove_or_reduce")):
+        return False
+    masks = plan.get("local_masks")
+    if not isinstance(masks, list) or not masks:
+        return False
+    for mask in masks:
+        if not isinstance(mask, dict):
+            continue
+        if str(mask.get("target") or "").strip() and str(mask.get("operation") or "").strip() and str(mask.get("reason") or "").strip():
+            return True
+    return False
+
+
+def _looks_concrete_evidence(text: str) -> bool:
+    anchors = ("左", "右", "上", "下", "前景", "中景", "背景", "人物", "行人", "车辆", "招牌", "标志", "标识", "街道", "路口", "栏杆", "车站", "文字", "手", "脸", "背影")
+    english = ("left", "right", "foreground", "background", "pedestrian", "cyclist", "vehicle", "street", "sign", "storefront", "face", "hand")
+    lower = text.lower()
+    return len(text.strip()) >= 8 and (any(anchor in text for anchor in anchors) or any(anchor in lower for anchor in english))
+
+
+def _blocked_reason(record: dict[str, Any], *, has_vision: bool, language: str) -> str:
+    if has_vision:
+        return ""
+    if str(record.get("analysis_source") or "") == "qwen_vision":
+        return (
+            "Qwen 返回了部分视觉信息，但证据数量、结论、裁切计划或局部蒙版不完整；不能生成正式摄影修图方案。这里只给技术草案。"
+            if language == "zh"
+            else "Qwen returned partial visual information, but evidence, verdict, crop plan, or local masks are incomplete. This is only a technical draft."
+        )
+    return (
+        "未完成 Qwen 视觉深评，不能生成正式摄影修图方案；这里只是曝光、明暗和风险控制草案。"
+        if language == "zh"
+        else "No Qwen vision review yet, so this is a technical grading draft rather than a photographic editing plan."
+    )
+
+
+def _analysis_status(record: dict[str, Any], *, language: str) -> dict[str, str]:
+    if _has_vision_read(record):
+        if language == "zh":
+            return {"level": "vision_read", "label": "已深评", "note": "这份方案基于 Qwen 对画面内容的具体阅读。"}
+        return {"level": "vision_read", "label": "Vision-read", "note": "This plan uses Qwen's concrete image read."}
+    if str(record.get("analysis_source") or "") == "qwen_vision":
+        if language == "zh":
+            return {
+                "level": "vision_incomplete",
+                "label": "深评不完整",
+                "note": "Qwen 返回了部分信息，但证据、裁切或局部蒙版不足，不能生成正式摄影修图方案。",
+            }
+        return {
+            "level": "vision_incomplete",
+            "label": "Incomplete vision review",
+            "note": "Qwen returned partial information, but evidence or edit-plan structure is insufficient.",
+        }
+    if language == "zh":
+        return {
+            "level": "local_prefilter",
+            "label": "仅本地预筛",
+            "note": "这张尚未完成视觉深评；以下只依据技术指标和已有标签生成，不能替代摄影内容判断。",
+        }
+    return {
+        "level": "local_prefilter",
+        "label": "Local pre-screen only",
+        "note": "This frame has not been vision-reviewed; the plan is based on technical proxies and labels only.",
+    }
+
+
+def _advice_confidence(record: dict[str, Any], *, has_vision: bool) -> int:
+    if not has_vision:
+        return 25
+    verdict = record.get("editorial_verdict")
+    if isinstance(verdict, dict):
+        try:
+            return max(0, min(100, int(float(verdict.get("confidence", 72)))))
+        except (TypeError, ValueError):
+            pass
+    quality = str(record.get("analysis_quality") or "")
+    if quality == "concrete":
+        return 78
+    if quality == "weak":
+        return 55
+    return 45
+
+
+def _evidence_snapshot(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "visible_evidence": _string_list(record.get("visible_evidence")),
+        "subject_relationship": str(record.get("subject_relationship") or ""),
+        "decisive_moment_read": str(record.get("decisive_moment_read") or ""),
+        "why_this_frame": str(record.get("why_this_frame") or ""),
+        "avoid_overediting": str(record.get("avoid_overediting") or ""),
+    }
+
+
+def _photo_reading(record: dict[str, Any], *, language: str) -> dict[str, Any]:
+    evidence = _string_list(record.get("visible_evidence"))
+    if _has_vision_read(record):
+        return {
+            "summary": str(record.get("story_interpretation") or ""),
+            "visible_evidence": evidence,
+            "subject_relationship": str(record.get("subject_relationship") or ""),
+            "decisive_moment_read": str(record.get("decisive_moment_read") or ""),
+            "why_this_frame": str(record.get("why_this_frame") or ""),
+        }
+    metrics = record.get("local_metrics") if isinstance(record.get("local_metrics"), dict) else {}
+    brightness = _float(metrics.get("brightness"))
+    contrast = _float(metrics.get("contrast"))
+    if language == "zh":
+        return {
+            "summary": (
+                "未完成视觉深评。当前只能说这张在技术预筛中具备一定可修空间；"
+                f"亮度约 {brightness:.0f}、对比约 {contrast:.0f}。请先对选中照片运行 Qwen 深评，再做真正的故事/瞬间判断。"
+            ),
+            "visible_evidence": [],
+            "subject_relationship": "",
+            "decisive_moment_read": "",
+            "why_this_frame": "",
+        }
+    return {
+        "summary": (
+            "No vision review yet. Only technical pre-screening is available; "
+            f"brightness is about {brightness:.0f} and contrast about {contrast:.0f}."
+        ),
+        "visible_evidence": [],
+        "subject_relationship": "",
+        "decisive_moment_read": "",
+        "why_this_frame": "",
+    }
+
+
+def _crop_plan(record: dict[str, Any], *, language: str) -> dict[str, Any]:
+    plan = record.get("editing_plan")
+    if isinstance(plan, dict):
+        crop_plan = plan.get("crop_plan")
+        if isinstance(crop_plan, dict):
+            return {
+                "aspect_ratio": str(crop_plan.get("aspect_ratio") or "original"),
+                "keep": _string_list(crop_plan.get("keep")),
+                "remove_or_reduce": _string_list(crop_plan.get("remove_or_reduce")),
+                "reason": str(record.get("crop_strategy") or ""),
+            }
+    if _has_vision_read(record):
+        keep = _string_list(record.get("visible_evidence"))[:2]
+        remove = _string_list(record.get("negative_reasons"))[:2]
+        return {
+            "aspect_ratio": _suggested_aspect(record),
+            "keep": keep,
+            "remove_or_reduce": remove,
+            "reason": str(record.get("crop_strategy") or ""),
+        }
+    if language == "zh":
+        return {
+            "aspect_ratio": _suggested_aspect(record),
+            "keep": ["未深评前保留原始画面信息，避免裁掉可能关键的环境线索。"],
+            "remove_or_reduce": ["只在边缘明显干扰时做轻微裁切。"],
+            "reason": "缺少视觉深评，裁切只能作为技术草案。",
+        }
+    return {
+        "aspect_ratio": _suggested_aspect(record),
+        "keep": ["Keep original context until vision review confirms what matters."],
+        "remove_or_reduce": ["Trim only obvious edge clutter."],
+        "reason": "Technical draft only because no vision review is available.",
+    }
+
+
+def _suggested_aspect(record: dict[str, Any]) -> str:
+    width = _float(record.get("width"))
+    height = _float(record.get("height"))
+    if width and height and height > width:
+        return "4:5"
+    if width and height and width / height >= 1.6:
+        return "16:9"
+    return "3:2"
+
+
+def _local_masks(record: dict[str, Any], adjustments: list[str], *, language: str) -> list[dict[str, Any]]:
+    plan = record.get("editing_plan")
+    if isinstance(plan, dict) and isinstance(plan.get("local_masks"), list):
+        masks = [mask for mask in plan["local_masks"] if isinstance(mask, dict)]
+        if masks:
+            return masks
+    evidence = _string_list(record.get("visible_evidence"))
+    target = evidence[0] if evidence else ("主体/关键动作区域" if language == "zh" else "main subject or key gesture")
+    reason = str(record.get("why_this_frame") or record.get("decisive_moment_read") or "")
+    masks: list[dict[str, Any]] = []
+    for adjustment in adjustments[:3]:
+        masks.append(
+            {
+                "target": target,
+                "operation": adjustment,
+                "settings": {},
+                "reason": reason,
+            }
+        )
+    return masks
+
+
+def _content_decision(record: dict[str, Any], *, language: str) -> dict[str, Any]:
+    if _has_vision_read(record):
+        keep = _string_list(record.get("positive_reasons"))
+        risks = _string_list(record.get("negative_reasons"))
+        if language == "zh":
+            verdict = _category_label(record.get("category"), language)
+            return {
+                "verdict": verdict,
+                "keep_reasons": keep,
+                "risks": risks,
+                "editor_note": str(record.get("why_this_frame") or record.get("decisive_moment_read") or ""),
+            }
+        return {
+            "verdict": _category_label(record.get("category"), language),
+            "keep_reasons": keep,
+            "risks": risks,
+            "editor_note": str(record.get("why_this_frame") or record.get("decisive_moment_read") or ""),
+        }
+    if language == "zh":
+        return {
+            "verdict": "等待深评",
+            "keep_reasons": [],
+            "risks": ["没有视觉深评时，软件不能可靠判断人物关系、决定性瞬间和故事价值。"],
+            "editor_note": "不要把本地技术预筛当成摄影判断。",
+        }
+    return {
+        "verdict": "Pending vision review",
+        "keep_reasons": [],
+        "risks": ["Without vision review, the app cannot reliably judge subject relationship, timing, or story value."],
+        "editor_note": "Do not treat local technical pre-screening as a photographic read.",
+    }
+
+
+def _editing_intent(record: dict[str, Any], style: str, tone: str, *, language: str) -> str:
+    plan = record.get("editing_plan")
+    if isinstance(plan, dict) and str(plan.get("edit_intent") or "").strip():
+        return str(plan["edit_intent"]).strip()
+    existing = str(record.get("best_editing_direction") or "").strip()
+    if _has_vision_read(record) and existing and "Run qwen_vision mode" not in existing:
+        return existing
+    avoid = str(record.get("avoid_overediting") or "").strip()
+    if language == "zh":
+        if _has_vision_read(record):
+            subject = str(record.get("subject_relationship") or "主体关系").strip()
+            moment = str(record.get("decisive_moment_read") or "瞬间判断").strip()
+            base = f"修图目标不是让照片变漂亮，而是让「{subject}」和「{moment}」更容易被看见。"
+            if tone == "black_and_white":
+                base += "优先用黑白把颜色信息退后，让手势、遮挡和明暗关系成为主线。"
+            elif style == "do_not_overedit":
+                base += "只做轻微校正，避免把现场偶然性修成商业质感。"
+            else:
+                base += "保留克制彩色，让地点、标识、肤色和环境线索继续承担叙事。"
+            if avoid:
+                base += f"不要修掉：{avoid}"
+            return base
+        return "未深评前只做保守技术修正：校正曝光和边缘干扰，不要假设主体、故事或情绪已经成立。"
+    if _has_vision_read(record):
+        subject = str(record.get("subject_relationship") or "the subject relationship").strip()
+        moment = str(record.get("decisive_moment_read") or "the timing").strip()
+        return f"Edit to clarify {subject} and {moment}, not to cosmetically polish the file."
+    return "Before vision review, make only conservative technical corrections; do not assume the story is confirmed."
+
+
+def _technical_adjustments(record: dict[str, Any], *, language: str) -> list[str]:
+    brightness = _metric(record, "brightness")
+    contrast = _metric(record, "contrast")
+    highlight_clip = _metric(record, "highlight_clipping_ratio")
+    shadow_clip = _metric(record, "shadow_clipping_ratio")
+    if language == "zh":
+        adjustments = [
+            "技术草案：先只校正曝光、对比和可读性；不要做主体/人物/手势类判断。",
+        ]
+        if brightness < 88:
+            adjustments.append("整体曝光 +0.15 到 +0.30，阴影 +10 到 +20；只为了确认暗部是否还有信息。")
+        elif brightness > 165:
+            adjustments.append("整体曝光 -0.10 到 -0.25，高光 -25 到 -45；先保护亮部细节。")
+        else:
+            adjustments.append("曝光保持接近原片，只微调中间调，避免过早改变现场气质。")
+        if contrast < 24:
+            adjustments.append("对比 +8 到 +14，清晰度 +4；只测试结构是否能读出来。")
+        elif contrast > 62:
+            adjustments.append("对比不要继续猛加，优先用高光/阴影控制层次。")
+        else:
+            adjustments.append("对比只做小幅微调；不要把技术清晰度误当成照片成立。")
+        if highlight_clip >= 0.02:
+            adjustments.append("过曝区域高光 -35、白色色阶 -10；不要强行恢复到假灰。")
+        if shadow_clip >= 0.02:
+            adjustments.append("死黑区域阴影 +20、黑色色阶 +6；如果没有内容就保持黑。")
+        return adjustments
+    adjustments = [
+        "Technical draft only: adjust exposure, contrast, and readability; do not infer subject or gesture.",
+    ]
+    if brightness < 88:
+        adjustments.append("Exposure +0.15 to +0.30 and Shadows +10 to +20 to check whether dark areas hold information.")
+    elif brightness > 165:
+        adjustments.append("Exposure -0.10 to -0.25 and Highlights -25 to -45 to protect bright detail.")
+    else:
+        adjustments.append("Keep exposure close to the original and make only midtone checks.")
+    if contrast < 24:
+        adjustments.append("Contrast +8 to +14 and Clarity +4 only to test readability.")
+    elif contrast > 62:
+        adjustments.append("Avoid adding more global contrast; use highlight/shadow control first.")
+    else:
+        adjustments.append("Make only small contrast changes; do not confuse technical clarity with photographic strength.")
+    return adjustments
 
 
 def _recommended_style(record: dict[str, Any]) -> str:
@@ -371,6 +716,12 @@ def _tone_recommendation(record: dict[str, Any], style: str, *, language: str) -
 
 
 def _editing_direction(record: dict[str, Any], style: str, tone: str, *, language: str) -> str:
+    if not _has_vision_read(record):
+        return (
+            "技术草案：只处理曝光、明暗和可读性；缺少具体视觉深评前，不生成摄影编辑结论。"
+            if language == "zh"
+            else "Technical draft only: adjust exposure, tone, and readability; no photographic edit verdict without concrete vision review."
+        )
     existing = str(record.get("best_editing_direction") or "").strip()
     if existing and "Run qwen_vision mode" not in existing and (language != "zh" or _contains_cjk(existing)):
         return existing
@@ -426,6 +777,22 @@ def _crop_strategy(record: dict[str, Any], *, language: str) -> str:
 
 
 def _local_adjustments(record: dict[str, Any], style: str, tone: str, *, language: str) -> list[str]:
+    plan = record.get("editing_plan")
+    if isinstance(plan, dict) and isinstance(plan.get("local_masks"), list):
+        adjustments: list[str] = []
+        for mask in plan["local_masks"]:
+            if not isinstance(mask, dict):
+                continue
+            target = str(mask.get("target", "")).strip()
+            operation = str(mask.get("operation", "")).strip()
+            reason = str(mask.get("reason", "")).strip()
+            if target or operation or reason:
+                if language == "zh":
+                    adjustments.append(f"{target}：{operation}；原因：{reason}".strip("；原因："))
+                else:
+                    adjustments.append(f"{target}: {operation}; reason: {reason}".strip("; reason: "))
+        if adjustments:
+            return adjustments
     existing = record.get("local_adjustments")
     if isinstance(existing, list) and existing and (language != "zh" or any(_contains_cjk(str(item)) for item in existing)):
         return [str(item) for item in existing]
@@ -649,3 +1016,11 @@ def _format_signed_int(value: int) -> str:
     if value == 0:
         return "0"
     return f"{value:+d}"
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []

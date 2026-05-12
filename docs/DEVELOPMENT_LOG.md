@@ -208,3 +208,13 @@
 - Local-only fallback now explicitly presents itself as technical pre-screening and varies reasons by brightness, contrast, clipping, visual structure, and editability instead of repeating one generic line.
 - Verification: `python -m pytest -q` passed with 50 tests, and `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed with the new scrolled-detail screenshot.
 - Live Qwen v2 smoke on 4 private local RAW files with Top-1 deep review completed in 81.40 seconds, processed 4/4 with 0 failures, and returned concrete evidence for the reviewed frame including station signage, foreground passenger, background pedestrians, platform/signage context, and a negative decisive-moment judgment.
+
+## 2026-05-12 - Photographer-grade evidence-bound advice
+- Upgraded the Qwen story prompt to `qwen-story-v3`, adding `visible_inventory`, `editorial_verdict`, `score_rationales`, `moment_status`, `frame_failure_reasons`, and a structured `editing_plan`.
+- Added a lightweight Qwen response quality classification so records carry `analysis_source=qwen_vision` and `analysis_quality` such as `concrete`, `weak`, `generic`, or `missing`.
+- Local-only records now carry `analysis_source=local_proxy`, `analysis_quality=missing_semantic_read`, and `needs_qwen_review=true` so technical pre-screening is not presented as final photographic judgment.
+- Reworked selected editing advice: Qwen-reviewed records use visible evidence, crop keep/reduce reasoning, structured local masks, editorial verdict, and do-not-overedit guidance; local-only records produce only a technical draft with a `blocked_reason`.
+- The GUI advice page and Markdown export now show analysis status, photo reading, visible evidence, content decision, crop intent, local mask targets, and evidence-bound edit intent before Lightroom parameters.
+- UI smoke now checks that advice output includes visible evidence, crop reasoning, do-not-overedit guidance, and does not reintroduce the generic phrase about protecting valuable moments and relationships.
+- Verification: `python -m pytest -q` passed with 51 tests, and `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed.
+- Live Qwen v3 smoke on 4 private local RAW files with Top-1 deep review completed in 86.81 seconds, processed 4/4 with 0 failures, and returned `analysis_quality=concrete` with concrete inventory, `moment_status=weak`, a `maybe` editorial verdict, 16:9 crop guidance, and local mask actions tied to the DB/Juten Tach sign and the left foreground passenger.

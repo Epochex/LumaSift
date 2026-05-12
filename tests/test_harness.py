@@ -338,7 +338,7 @@ def test_qwen_stage_writes_prompt_version_and_cache_key(tmp_path: Path, monkeypa
         ]
     )
 
-    assert result[0]["qwen_prompt_version"] == "qwen-story-v2"
+    assert result[0]["qwen_prompt_version"] == "qwen-story-v3"
     assert result[0]["qwen_cache_key"] == "cache-digest"
 
 

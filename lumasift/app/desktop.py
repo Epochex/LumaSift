@@ -2125,6 +2125,10 @@ class LumaSiftWindow(QMainWindow):
             "frame": "为什么是这张" if self.language == "zh" else "Why This Frame",
             "avoid": "别修掉" if self.language == "zh" else "Do Not Remove",
         }
+        if str(record.get("analysis_source") or "") == "local_proxy":
+            labels["story"] = "结构" if self.language == "zh" else "Structure"
+            labels["human"] = "可修" if self.language == "zh" else "Recover"
+            labels["editability"] = "风险" if self.language == "zh" else "Risk"
         group_size = int(record.get("group_size", 1) or 1)
         group_text = ""
         if group_size > 1:
@@ -2133,9 +2137,15 @@ class LumaSiftWindow(QMainWindow):
             else:
                 best_text = f"{labels['best']}: {self._escape(Path(str(record.get('group_best_path', ''))).name)}"
             group_text = f" | {labels['group']} {self._escape(str(record.get('group_rank', '-')))}/{group_size} {best_text}"
-        story_score = self._first_score(record, "street_documentary_potential_score", "storytelling_score")
-        human_score = self._first_score(record, "human_documentary_value_score", "decisive_moment_score", "composition_score")
-        editability_score = self._first_score(record, "editability_score", "editing_potential_score")
+        if str(record.get("analysis_source") or "") == "local_proxy":
+            metrics = record.get("local_metrics") if isinstance(record.get("local_metrics"), dict) else {}
+            story_score = self._first_score(record, "visual_tension_score")
+            human_score = self._first_score(record, "editability_score", "editing_potential_score")
+            editability_score = max(0.0, min(100.0, self._number(metrics.get("highlight_clipping_ratio")) * 1200 + self._number(metrics.get("shadow_clipping_ratio")) * 1200))
+        else:
+            story_score = self._first_score(record, "street_documentary_potential_score", "storytelling_score")
+            human_score = self._first_score(record, "human_documentary_value_score", "decisive_moment_score", "composition_score")
+            editability_score = self._first_score(record, "editability_score", "editing_potential_score")
         return f"""
         <html><head>{self._detail_html_style()}</head><body>
         <div class="detail-shell">
@@ -2497,6 +2507,26 @@ class LumaSiftWindow(QMainWindow):
         tone = item.get("tone_recommendation") if isinstance(item.get("tone_recommendation"), dict) else {}
         tone_text = self._escape(str(tone.get("label") or tone.get("recommendation", "")).replace("_", " "))
         tone_reason = self._escape(str(tone.get("rationale", "")))
+        status = item.get("analysis_status") if isinstance(item.get("analysis_status"), dict) else {}
+        status_text = self._escape(str(status.get("label", "")))
+        status_note = self._escape(str(status.get("note", "")))
+        blocked_reason = self._escape(str(item.get("blocked_reason", "") or ""))
+        photo_reading = item.get("photo_reading") if isinstance(item.get("photo_reading"), dict) else {}
+        read_summary = self._escape(str(photo_reading.get("summary", "") or ""))
+        evidence = self._html_list(photo_reading.get("visible_evidence", [])[:6] if isinstance(photo_reading.get("visible_evidence"), list) else [], "")
+        relationship = self._escape(str(photo_reading.get("subject_relationship", "") or ""))
+        moment = self._escape(str(photo_reading.get("decisive_moment_read", "") or ""))
+        why_frame = self._escape(str(photo_reading.get("why_this_frame", "") or ""))
+        decision = item.get("content_decision") if isinstance(item.get("content_decision"), dict) else {}
+        decision_note = self._escape(str(decision.get("editor_note", "") or ""))
+        keep_reasons = self._html_list(decision.get("keep_reasons", [])[:5] if isinstance(decision.get("keep_reasons"), list) else [], "")
+        risk_reasons = self._html_list(decision.get("risks", [])[:5] if isinstance(decision.get("risks"), list) else [], "")
+        crop_plan = item.get("crop_plan") if isinstance(item.get("crop_plan"), dict) else {}
+        crop_keep = self._html_list(crop_plan.get("keep", []) if isinstance(crop_plan.get("keep"), list) else [], "")
+        crop_remove = self._html_list(crop_plan.get("remove_or_reduce", []) if isinstance(crop_plan.get("remove_or_reduce"), list) else [], "")
+        crop_reason = self._escape(str(crop_plan.get("reason", "") or item.get("crop_strategy", "") or ""))
+        avoid_overediting = self._escape(str(item.get("avoid_overediting", "") or ""))
+        local_masks = item.get("local_masks") if isinstance(item.get("local_masks"), list) else []
         labels = item.get("lightroom_parameter_labels", {})
         params = item.get("lightroom_parameters", {}) or {}
         parameter_order = [
@@ -2535,9 +2565,21 @@ class LumaSiftWindow(QMainWindow):
                 handling_rows += f"<tr><td>{label}</td><td>{self._escape(str(handling.get(key, '')))}</td></tr>"
         text = {
             "rank": "第" if self.language == "zh" else "Rank",
+            "rank_suffix": " 张" if self.language == "zh" else "",
             "style": "风格" if self.language == "zh" else "Style",
             "tone": "色彩方向" if self.language == "zh" else "Tone",
             "direction": "总体方向" if self.language == "zh" else "Direction",
+            "status": "分析状态" if self.language == "zh" else "Analysis",
+            "read": "照片阅读" if self.language == "zh" else "Photo Read",
+            "evidence": "可见证据" if self.language == "zh" else "Visible Evidence",
+            "relationship": "关系" if self.language == "zh" else "Relationship",
+            "moment": "瞬间" if self.language == "zh" else "Moment",
+            "why_frame": "为什么是这张" if self.language == "zh" else "Why This Frame",
+            "decision": "内容判断" if self.language == "zh" else "Content Decision",
+            "crop_keep": "裁切保留" if self.language == "zh" else "Crop Keep",
+            "crop_remove": "裁切压弱" if self.language == "zh" else "Crop Reduce",
+            "masks": "局部蒙版" if self.language == "zh" else "Local Masks",
+            "avoid": "别修掉" if self.language == "zh" else "Do Not Remove",
             "params": "Lightroom 参数" if self.language == "zh" else "Lightroom Parameters",
             "crop": "裁切" if self.language == "zh" else "Crop",
             "local": "局部调整" if self.language == "zh" else "Local Adjustments",
@@ -2547,23 +2589,54 @@ class LumaSiftWindow(QMainWindow):
         <div class="advice-card">
           <div class="advice-head">
             <table class="head-table"><tr>
-              <td><span class="rank">{text["rank"]} {rank}</span><span class="pill">{category}</span><h2>{filename}</h2></td>
+              <td><span class="rank">{text["rank"]} {rank}{text["rank_suffix"]}</span><span class="pill">{category}</span><h2>{filename}</h2></td>
               <td class="score-cell">{score:.1f}</td>
             </tr></table>
+            <p class="meta">{text["status"]}: {status_text} - {status_note}</p>
             <p class="meta">{text["style"]}: {style} | {text["tone"]}: {tone_text} - {tone_reason}</p>
           </div>
+          {f'<h3>{text["status"]}</h3><p>{blocked_reason}</p>' if blocked_reason else ''}
+          <h3>{text["read"]}</h3>
+          <p>{read_summary}</p>
+          {f'<h3>{text["evidence"]}</h3>{evidence}' if evidence else ''}
+          {f'<h3>{text["relationship"]}</h3><p>{relationship}</p>' if relationship else ''}
+          {f'<h3>{text["moment"]}</h3><p>{moment}</p>' if moment else ''}
+          {f'<h3>{text["why_frame"]}</h3><p>{why_frame}</p>' if why_frame else ''}
+          <h3>{text["decision"]}</h3>
+          {f'<p>{decision_note}</p>' if decision_note else ''}
+          {keep_reasons}
+          {risk_reasons}
           <h3>{text["direction"]}</h3>
-          <p>{self._escape(str(item.get("editing_direction", "")))}</p>
+          <p>{self._escape(str(item.get("editing_intent") or item.get("editing_direction", "")))}</p>
           <h3>{text["params"]}</h3>
           <table class="param-table">{rows}</table>
           <h3>{text["crop"]}</h3>
-          <p>{self._escape(str(item.get("crop_strategy", "")))}</p>
+          <p>{crop_reason}</p>
+          {f'<h3>{text["crop_keep"]}</h3>{crop_keep}' if crop_keep else ''}
+          {f'<h3>{text["crop_remove"]}</h3>{crop_remove}' if crop_remove else ''}
           <h3>{text["local"]}</h3>
           {local_adjustments}
+          {self._format_local_masks_html(local_masks, text["masks"])}
+          {f'<h3>{text["avoid"]}</h3><p>{avoid_overediting}</p>' if avoid_overediting else ''}
           <h3>{text["detail"]}</h3>
           <table>{handling_rows}</table>
         </div>
         """
+
+    def _format_local_masks_html(self, local_masks: list[Any], title: str) -> str:
+        if not local_masks:
+            return ""
+        rows = ""
+        for mask in local_masks[:6]:
+            if not isinstance(mask, dict):
+                continue
+            target = self._escape(str(mask.get("target", "")))
+            operation = self._escape(str(mask.get("operation", "")))
+            reason = self._escape(str(mask.get("reason", "")))
+            rows += f"<tr><td>{target}</td><td>{operation}<br>{reason}</td></tr>"
+        if not rows:
+            return ""
+        return f"<h3>{title}</h3><table>{rows}</table>"
 
     def _detail_html_style(self) -> str:
         return """
