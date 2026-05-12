@@ -302,6 +302,50 @@ def test_qwen_stage_skips_non_winning_group_members_by_default(tmp_path: Path) -
     assert by_name["best.jpg"]["qwen_status"] == "cancelled"
 
 
+def test_qwen_stage_keeps_moment_risk_group_members_eligible(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    events: list[dict] = []
+    settings = Settings(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        ai_mode="qwen_vision",
+        vision_api_keys=["test-key"],
+        top_n_api_analysis=3,
+    )
+    harness = LumaSiftHarness(settings=settings, run_id="moment-risk", event_callback=events.append)
+    ranked = [
+        {
+            "filename": "best.jpg",
+            "path": str(input_dir / "best.jpg"),
+            "category": "story_candidate",
+            "final_selection_score": 90,
+            "group_id": "g0001",
+            "group_size": 2,
+            "is_group_best": True,
+        },
+        {
+            "filename": "gesture-risk.jpg",
+            "path": str(input_dir / "gesture-risk.jpg"),
+            "category": "story_candidate",
+            "final_selection_score": 86,
+            "group_id": "g0001",
+            "group_size": 2,
+            "is_group_best": False,
+            "group_moment_risk": True,
+        },
+    ]
+    (output_dir / "STOP_LUMASIFT").write_text("stop", encoding="utf-8")
+
+    result = harness._apply_qwen_vision(ranked)
+
+    by_name = {record["filename"]: record for record in result}
+    assert by_name["gesture-risk.jpg"]["qwen_status"] == "cancelled"
+    assert by_name["gesture-risk.jpg"].get("qwen_skip_reason", "") == ""
+    assert any(event["type"] == "qwen_queue_prepared" and event["total"] == 2 for event in events)
+
+
 def test_qwen_stage_writes_prompt_version_and_cache_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
@@ -338,7 +382,7 @@ def test_qwen_stage_writes_prompt_version_and_cache_key(tmp_path: Path, monkeypa
         ]
     )
 
-    assert result[0]["qwen_prompt_version"] == "qwen-story-v3"
+    assert result[0]["qwen_prompt_version"] == "qwen-story-v4"
     assert result[0]["qwen_cache_key"] == "cache-digest"
 
 

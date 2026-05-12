@@ -587,6 +587,29 @@
         "UI smoke captures the main page, settings page, Qwen progress panel, review board, scrolled cockpit, and editing plan."
       ],
       "risk": "The current Qwen status can expose only observable pipeline phases, not hidden model chain-of-thought; live API cancellation still stops between candidates unless the provider request returns earlier."
+    },
+    {
+      "id": "LS-042",
+      "title": "Scene-sequence grouping and photographer-grade editing parameters",
+      "priority": 0,
+      "status": "done",
+      "dependencies": [
+        "LS-020",
+        "LS-041"
+      ],
+      "area": "ranking-ai-workflow",
+      "source": "user_feedback",
+      "rationale": "Near-duplicate grouping alone split real street/documentary sequences, while deep-review output still leaked raw English Lightroom keys and lacked color-grading structure.",
+      "acceptance": [
+        "Similar grouping uses an additional scene signature and filename-sequence guard so visually related consecutive frames can form one group without merging unrelated distant files.",
+        "Non-best group members are skipped by Qwen by default, with only user-selected, very close, or story/decisive-moment-risk alternates preserved for deep review.",
+        "Records and CSV manifest carry scene signature and group review role fields without changing model scores.",
+        "Selected editing advice includes basic, curve, HSL/color mixer, color grading, calibration, detail, noise reduction, lens correction, and grain/vignette parameters.",
+        "Chinese UI and Markdown show professional Chinese parameter names instead of raw English parameter keys.",
+        "Qwen key checking reports the automatically selected vision model and stores it for subsequent runs.",
+        "UI smoke checks the Chinese color-grading parameter surface and prevents raw English parameter keys from leaking into Chinese editing plans."
+      ],
+      "risk": "Scene grouping remains conservative and should keep evolving with real photographer feedback so decisive moments are not hidden."
     }
   ]
 }

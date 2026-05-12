@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
-QWEN_STORY_PROMPT_VERSION = "qwen-story-v3"
+QWEN_STORY_PROMPT_VERSION = "qwen-story-v4"
 QWEN_STORY_PROMPT = """
 你是严格但有摄影判断力的街拍/纪实/人文/旅行摄影选片编辑。
 
@@ -56,6 +56,12 @@ QWEN_STORY_PROMPT = """
   "subject_relationship": "主体、人物/物件、环境之间的关系；如果看不清就明确说不确定",
   "decisive_moment_read": "这个瞬间是否成立，以及成立/不成立的原因",
   "moment_status": "strong|weak|missed|ambiguous",
+  "sequence_comparison": "如果这张来自相似组，说明它相对邻近帧在人、动作、遮挡、空间线索和情绪上的胜负；如果看不到邻近帧，只根据本帧写不确定",
+  "decisive_moment_factors": ["人物动作", "视线/姿态", "遮挡关系", "空间张力", "环境信息"],
+  "subject_identity_uncertainty": "主体、人物身份或动作看不清时必须明确写不确定，不能补故事",
+  "selection_risk": "保留/待定/淘汰这张的最大风险，尤其说明是否可能误伤决定性瞬间",
+  "edit_vs_select_warning": "哪些问题只能靠选择更好一帧解决，不能靠修图解决",
+  "reject_only_if": "只有在画面内容、瞬间和可修空间都不足时才建议淘汰；不要因为轻微模糊/偏色/噪点直接淘汰",
   "why_this_frame": "为什么这张值得保留、待定或淘汰；相似组里要说明和邻近帧相比的判断依据",
   "frame_failure_reasons": ["具体失败点；没有就空数组"],
   "story_interpretation": "2-4句具体照片阅读：发生了什么、张力在哪里、观者为什么会停留",
@@ -77,6 +83,16 @@ QWEN_STORY_PROMPT = """
     "saturation": "-5",
     "temperature": "-300K",
     "tint": "+4"
+  },
+  "advanced_lightroom_parameters": {
+    "tone_curve": {"point_curve": "medium_contrast", "highlights": "-6", "lights": "+4", "darks": "-6", "shadows": "+4"},
+    "hsl_color_mixer": {"red": {"hue": "-4", "saturation": "-8", "luminance": "+2"}, "orange": {"hue": "-2", "saturation": "+2", "luminance": "+4"}, "yellow": {"hue": "-10", "saturation": "-16", "luminance": "-4"}, "green": {"hue": "+8", "saturation": "-20", "luminance": "-6"}, "aqua": {"hue": "-6", "saturation": "-14", "luminance": "0"}, "blue": {"hue": "-8", "saturation": "-10", "luminance": "-8"}, "purple": {"hue": "0", "saturation": "-10", "luminance": "0"}, "magenta": {"hue": "0", "saturation": "-10", "luminance": "0"}},
+    "color_grading": {"shadows": {"hue": "220", "saturation": "8", "luminance": "-2"}, "midtones": {"hue": "34", "saturation": "5", "luminance": "0"}, "highlights": {"hue": "46", "saturation": "4", "luminance": "+2"}, "blending": "45", "balance": "-10"},
+    "calibration": {"shadow_tint": "+3", "red_primary_hue": "+5", "red_primary_saturation": "-4", "green_primary_hue": "0", "green_primary_saturation": "-2", "blue_primary_hue": "-6", "blue_primary_saturation": "+8"},
+    "detail": {"sharpening_amount": "28", "radius": "0.9", "detail": "15", "masking": "80"},
+    "noise_reduction": {"luminance": "8", "detail": "40", "contrast": "0", "color": "15", "color_detail": "50"},
+    "lens_corrections": {"remove_chromatic_aberration": "on", "enable_profile_corrections": "on"},
+    "effects_grain_vignette": {"grain_amount": "8", "grain_size": "22", "grain_roughness": "35", "post_crop_vignette": "-6"}
   },
   "crop_strategy": "裁切策略必须说明保留/去掉什么视觉信息",
   "local_adjustments": ["具体蒙版/局部加减光动作"],
@@ -114,6 +130,9 @@ def build_qwen_story_prompt(record: Mapping[str, Any] | None = None) -> str:
         "group_size": record.get("group_size"),
         "group_rank": record.get("group_rank"),
         "is_group_best": record.get("is_group_best"),
+        "group_review_role": record.get("group_review_role"),
+        "group_moment_risk": record.get("group_moment_risk"),
+        "group_score_delta": record.get("group_score_delta"),
         "local_metrics": record.get("local_metrics"),
     }
     compact = json.dumps({key: value for key, value in context.items() if value not in (None, "", {})}, ensure_ascii=False, sort_keys=True)
@@ -194,12 +213,19 @@ def merge_qwen_story_analysis(record: dict[str, Any], response: dict[str, Any]) 
         "subject_relationship",
         "decisive_moment_read",
         "moment_status",
+        "sequence_comparison",
+        "decisive_moment_factors",
+        "subject_identity_uncertainty",
+        "selection_risk",
+        "edit_vs_select_warning",
+        "reject_only_if",
         "why_this_frame",
         "frame_failure_reasons",
         "story_interpretation",
         "recommended_style",
         "best_editing_direction",
         "specific_edit_parameters",
+        "advanced_lightroom_parameters",
         "crop_strategy",
         "local_adjustments",
         "avoid_overediting",

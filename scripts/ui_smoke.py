@@ -437,6 +437,8 @@ def editing_plan_checks(window: Any) -> list[dict[str, Any]]:
         check_value(expected_title in plain_text, "editing_plan_language", f"contains={expected_title!r}"),
         check_value(forbidden_default not in plain_text, "editing_plan_not_wrong_language", f"forbidden={forbidden_default!r}"),
         check_value("Lightroom" in plain_text, "editing_plan_parameters_visible", "Lightroom section visible"),
+        check_value((window.language != "zh") or ("色彩分级" in plain_text and "HSL / 颜色混合" in plain_text), "editing_plan_chinese_color_grading_visible", plain_text[-1800:]),
+        check_value((window.language != "zh") or ("blacks" not in plain_text.lower() and "clarity" not in plain_text.lower()), "editing_plan_no_raw_english_parameter_keys", plain_text[-1800:]),
         check_value(("可见证据" in plain_text) or ("Visible Evidence" in plain_text), "editing_plan_evidence_visible", plain_text[:1200]),
         check_value(("裁切保留" in plain_text) or ("Crop Keep" in plain_text), "editing_plan_crop_reason_visible", plain_text[:1600]),
         check_value(("别修掉" in plain_text) or ("Do Not Remove" in plain_text) or ("质感处理" in plain_text), "editing_plan_do_not_overedit_visible", plain_text[-1200:]),

@@ -136,6 +136,9 @@ def test_qwen_prompt_requires_visible_story_evidence() -> None:
     assert "subject_relationship" in prompt
     assert "decisive_moment_read" in prompt
     assert "why_this_frame" in prompt
+    assert "sequence_comparison" in prompt
+    assert "selection_risk" in prompt
+    assert "advanced_lightroom_parameters" in prompt
     assert "visible_inventory" in prompt
     assert "editing_plan" in prompt
     assert "analysis_quality" in prompt
@@ -159,6 +162,9 @@ def test_merge_qwen_story_analysis_preserves_evidence_fields() -> None:
                       "subject_relationship": "人物和街道标识形成城市压力关系",
                       "decisive_moment_read": "人物刚进入路口，遮挡还没有破坏动作",
                       "moment_status": "strong",
+                      "sequence_comparison": "比相似帧更完整地保留人物与车辆间距",
+                      "selection_risk": "边缘车辆可能抢走注意力",
+                      "edit_vs_select_warning": "遮挡若压住主体只能换帧",
                       "why_this_frame": "这一帧比邻近帧更清楚地保留了行人与车辆的间距",
                       "avoid_overediting": "不要抹掉街道颗粒和招牌信息",
                       "editing_plan": {"edit_intent": "突出行人与车流间距"},
@@ -177,6 +183,9 @@ def test_merge_qwen_story_analysis_preserves_evidence_fields() -> None:
     assert record["visible_inventory"] == {"main_subject": "路口中的行人"}
     assert record["subject_relationship"] == "人物和街道标识形成城市压力关系"
     assert record["moment_status"] == "strong"
+    assert record["sequence_comparison"].startswith("比相似帧")
+    assert record["selection_risk"] == "边缘车辆可能抢走注意力"
+    assert record["edit_vs_select_warning"] == "遮挡若压住主体只能换帧"
     assert record["why_this_frame"].startswith("这一帧")
     assert record["editing_plan"] == {"edit_intent": "突出行人与车流间距"}
     assert record["analysis_source"] == "qwen_vision"

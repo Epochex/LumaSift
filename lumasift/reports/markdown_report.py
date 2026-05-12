@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from lumasift.analysis.editing_advice import ADVANCED_LIGHTROOM_SECTION_ORDER
+
 
 def render_selected_editing_advice_markdown(payload: dict[str, Any]) -> str:
     advice_items = payload.get("selected_editing_advice", [])
@@ -94,6 +96,9 @@ def _render_item(item: dict[str, Any]) -> list[str]:
             "tint",
         ]:
             lines.append(f"- {key.replace('_', ' ').title()}: `{parameters.get(key, '')}`")
+    advanced = _advanced_parameters_markdown(item, language="en")
+    if advanced:
+        lines.extend(["", advanced])
     lines.extend(
         [
             "",
@@ -183,6 +188,9 @@ def _render_item_zh(item: dict[str, Any]) -> list[str]:
         ]:
             label = labels.get(key, key) if isinstance(labels, dict) else key
             lines.append(f"- {label}：`{parameters.get(key, '')}`")
+    advanced = _advanced_parameters_markdown(item, language="zh")
+    if advanced:
+        lines.extend(["", advanced])
     lines.extend(
         [
             "",
@@ -217,6 +225,57 @@ def _render_item_zh(item: dict[str, Any]) -> list[str]:
         ]
     )
     return lines
+
+
+def _advanced_parameters_markdown(item: dict[str, Any], *, language: str) -> str:
+    sections = item.get("advanced_lightroom_parameters")
+    labels = item.get("advanced_lightroom_parameter_labels")
+    if not isinstance(sections, dict):
+        return ""
+    label_map = labels if isinstance(labels, dict) else {}
+    section_labels = label_map.get("sections") if isinstance(label_map.get("sections"), dict) else {}
+    key_labels = label_map.get("keys") if isinstance(label_map.get("keys"), dict) else {}
+    lines: list[str] = []
+    for section_key in ADVANCED_LIGHTROOM_SECTION_ORDER:
+        if section_key == "basic":
+            continue
+        value = sections.get(section_key)
+        if not isinstance(value, dict) or not value:
+            continue
+        title = str(section_labels.get(section_key) or _fallback_label(section_key, language=language))
+        lines.extend([f"#### {title}", ""])
+        for key, row_value in value.items():
+            label = str(key_labels.get(key) or _fallback_label(key, language=language))
+            if isinstance(row_value, dict):
+                parts = []
+                for nested_key, nested_value in row_value.items():
+                    nested_label = str(key_labels.get(nested_key) or _fallback_label(nested_key, language=language))
+                    parts.append(f"{nested_label} {_localized_value(nested_value, key_labels)}")
+                lines.append(f"- {label}：`{' / '.join(parts)}`" if language == "zh" else f"- {label}: `{' / '.join(parts)}`")
+            else:
+                lines.append(f"- {label}：`{_localized_value(row_value, key_labels)}`" if language == "zh" else f"- {label}: `{_localized_value(row_value, key_labels)}`")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _localized_value(value: Any, key_labels: dict[str, Any]) -> str:
+    text = str(value)
+    return str(key_labels.get(text, text))
+
+
+def _fallback_label(key: str, *, language: str) -> str:
+    if language != "zh":
+        return key.replace("_", " ").title()
+    return {
+        "tone_curve": "曲线",
+        "hsl_color_mixer": "HSL / 颜色混合",
+        "color_grading": "色彩分级",
+        "calibration": "校准",
+        "detail": "细节",
+        "noise_reduction": "降噪",
+        "lens_corrections": "镜头校正",
+        "effects_grain_vignette": "效果 / 颗粒 / 暗角",
+    }.get(key, key.replace("_", " "))
 
 
 def _tone_text(value: object) -> str:

@@ -17,6 +17,8 @@ class QwenKeyBalance:
     total: float
     remaining: float
     used: float
+    recommended_model: str = "qwen3.6-plus"
+    supports_vision: bool = True
 
 
 def query_newcoin_balance(api_key: str, *, timeout_seconds: int = 20) -> QwenKeyBalance:
@@ -43,6 +45,8 @@ def query_newcoin_balance(api_key: str, *, timeout_seconds: int = 20) -> QwenKey
                     total=_credit_value(data.get("total_granted")),
                     remaining=_credit_value(data.get("total_available")),
                     used=_credit_value(data.get("total_used")),
+                    recommended_model=_recommended_model_for_endpoint(endpoint),
+                    supports_vision=True,
                 )
             last_error = str(payload.get("message") or payload.get("error") or "invalid balance response")
         except requests.RequestException as exc:
@@ -65,6 +69,8 @@ def query_newcoin_balances(api_keys: list[str], *, timeout_seconds: int = 20) ->
                     total=result.total,
                     remaining=result.remaining,
                     used=result.used,
+                    recommended_model=result.recommended_model,
+                    supports_vision=result.supports_vision,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - caller needs all key errors summarized.
@@ -78,9 +84,23 @@ def format_balance_summary(balances: list[QwenKeyBalance], *, language: str = "z
     total = sum(item.total for item in balances)
     remaining = sum(item.remaining for item in balances)
     used = sum(item.used for item in balances)
+    model = recommended_qwen_vision_model(balances)
     if language == "zh":
-        return f"Key 有效：{len(balances)} 个；剩余 ¥{remaining:.4f} / 总额 ¥{total:.4f}；已用 ¥{used:.4f}"
-    return f"Keys valid: {len(balances)}; remaining ¥{remaining:.4f} / total ¥{total:.4f}; used ¥{used:.4f}"
+        return f"Key 有效：{len(balances)} 个；视觉模型 {model}；剩余 ¥{remaining:.4f} / 总额 ¥{total:.4f}；已用 ¥{used:.4f}"
+    return f"Keys valid: {len(balances)}; vision model {model}; remaining ¥{remaining:.4f} / total ¥{total:.4f}; used ¥{used:.4f}"
+
+
+def recommended_qwen_vision_model(balances: list[QwenKeyBalance]) -> str:
+    for balance in balances:
+        if balance.supports_vision and balance.recommended_model:
+            return balance.recommended_model
+    return "qwen3.6-plus"
+
+
+def _recommended_model_for_endpoint(endpoint: str) -> str:
+    if endpoint == "top":
+        return "qwen3.6-plus"
+    return "qwen3.5-plus"
 
 
 def _credit_value(value: Any) -> float:

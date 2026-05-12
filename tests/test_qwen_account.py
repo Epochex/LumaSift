@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import requests
 
-from lumasift.analysis.qwen_account import format_balance_summary, query_newcoin_balances
+from lumasift.analysis.qwen_account import format_balance_summary, query_newcoin_balances, recommended_qwen_vision_model
 
 
 class FakeResponse:
@@ -40,7 +40,10 @@ def test_query_newcoin_balances_converts_credit_units(monkeypatch) -> None:
 
     assert balances[0].total == 5.0
     assert balances[0].remaining == 2.5
+    assert recommended_qwen_vision_model(balances) == "qwen3.6-plus"
+    assert balances[0].supports_vision is True
     assert "剩余 ¥2.5000" in format_balance_summary(balances, language="zh")
+    assert "视觉模型 qwen3.6-plus" in format_balance_summary(balances, language="zh")
 
 
 def test_query_newcoin_balances_reports_all_key_failures(monkeypatch) -> None:

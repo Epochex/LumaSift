@@ -93,6 +93,7 @@ def test_state_db_persists_manifest_without_overwriting_label(tmp_path: Path) ->
         qwen_cache_key="qwen-key",
         visual_hash="abcd",
         visual_color="1,2,3",
+        visual_scene_signature="001122",
         group_id="g0001",
         group_size=2,
         group_rank=1,
@@ -111,6 +112,7 @@ def test_state_db_persists_manifest_without_overwriting_label(tmp_path: Path) ->
     assert manifest["qwen_cache_key"] == "qwen-key"
     assert manifest["visual_hash"] == "abcd"
     assert manifest["visual_color"] == "1,2,3"
+    assert manifest["visual_scene_signature"] == "001122"
     assert manifest["group_id"] == "g0001"
     assert manifest["is_group_best"] == 1
 

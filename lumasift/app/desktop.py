@@ -44,8 +44,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from lumasift.analysis.editing_advice import build_selected_editing_advice
-from lumasift.analysis.qwen_account import format_balance_summary, query_newcoin_balances
+from lumasift.analysis.editing_advice import ADVANCED_LIGHTROOM_SECTION_ORDER, build_selected_editing_advice
+from lumasift.analysis.qwen_account import format_balance_summary, query_newcoin_balances, recommended_qwen_vision_model
 from lumasift.analysis.user_feedback import apply_user_feedback_fields, normalized_user_label
 from lumasift.core.config import Settings
 from lumasift.core.harness import LumaSiftHarness
@@ -343,7 +343,7 @@ class AnalysisWorker(QObject):
 
 
 class QwenKeyCheckWorker(QObject):
-    finished = Signal(str)
+    finished = Signal(str, str)
     failed = Signal(str)
 
     def __init__(self, api_keys: list[str], language: str) -> None:
@@ -354,7 +354,7 @@ class QwenKeyCheckWorker(QObject):
     def run(self) -> None:
         try:
             balances = query_newcoin_balances(self.api_keys, timeout_seconds=20)
-            self.finished.emit(format_balance_summary(balances, language=self.language))
+            self.finished.emit(format_balance_summary(balances, language=self.language), recommended_qwen_vision_model(balances))
         except Exception as exc:  # noqa: BLE001 - GUI should surface provider failures.
             self.failed.emit(str(exc))
 
@@ -853,6 +853,7 @@ class LumaSiftWindow(QMainWindow):
         self.current_nav_page = "main"
         self.nav_buttons: dict[str, QPushButton] = {}
         self.qwen_queue_state: dict[str, Any] = {}
+        self.detected_vision_model = str(self.settings_store.value("vision_model", "qwen3.6-plus"))
         self.preview_dialogs: list[LargePreviewDialog] = []
         self._build_ui()
         self._load_preferences()
@@ -1713,6 +1714,8 @@ class LumaSiftWindow(QMainWindow):
         settings.input_dir = input_dir
         settings.output_dir = output_dir
         settings.ai_mode = str(self.mode_combo.currentData() or "local_only")
+        if self.detected_vision_model:
+            settings.vision_model = self.detected_vision_model
         settings.limit = self.limit_spin.value()
         settings.top_n_api_analysis = self.top_n_spin.value()
         settings.selected_ranks = f"1-{self.selected_top_spin.value()}"
@@ -1850,7 +1853,10 @@ class LumaSiftWindow(QMainWindow):
         except Exception:
             return []
 
-    def _qwen_key_check_finished(self, summary: str) -> None:
+    def _qwen_key_check_finished(self, summary: str, model: str) -> None:
+        if model:
+            self.detected_vision_model = model
+            self.settings_store.setValue("vision_model", model)
         self.cache_note.setText(summary)
         self.status_label.setText(self._t("key_check_ok"))
         self.check_key_button.setEnabled(True)
@@ -2412,11 +2418,14 @@ class LumaSiftWindow(QMainWindow):
         avoid_overediting = self._escape(str(record.get("avoid_overediting", "") or ""))
         params = record.get("specific_edit_parameters", {}) or {}
         params_rows = "".join(
-            f"<tr><td>{self._escape(str(key)).replace('_', ' ')}</td><td>{self._escape(str(value))}</td></tr>"
+            f"<tr><td>{self._escape(self._lightroom_detail_label(str(key)))}</td><td>{self._escape(str(value))}</td></tr>"
             for key, value in params.items()
         )
         if not params_rows:
             params_rows = f"<tr><td>{'参数' if self.language == 'zh' else 'Parameters'}</td><td>{'点击「修图方案」生成具体参数' if self.language == 'zh' else 'Generate an editing plan.'}</td></tr>"
+        advanced_params = record.get("advanced_lightroom_parameters")
+        advanced_labels = record.get("advanced_lightroom_parameter_labels")
+        advanced_params_html = self._format_advanced_parameters_html(advanced_params, advanced_labels, include_basic=False) if isinstance(advanced_params, dict) else ""
         labels = {
             "selected": "已选" if self.language == "zh" else "Selected",
             "user_label": "标记" if self.language == "zh" else "Mark",
@@ -2489,6 +2498,7 @@ class LumaSiftWindow(QMainWindow):
           <p>{crop}</p>
           <h3>{labels["params"]}</h3>
           <table>{params_rows}</table>
+          {advanced_params_html}
           {f'<h3>{labels["avoid"]}</h3><p>{avoid_overediting}</p>' if avoid_overediting else ''}
         </div>
         </body></html>
@@ -2612,6 +2622,7 @@ class LumaSiftWindow(QMainWindow):
         self.top_n_spin.setValue(int(self.settings_store.value("top_n", 5)))
         self.selected_top_spin.setValue(int(self.settings_store.value("selected_top", 10)))
         self.display_limit_spin.setValue(int(self.settings_store.value("display_limit", 300)))
+        self.detected_vision_model = str(self.settings_store.value("vision_model", self.detected_vision_model or "qwen3.6-plus"))
         mode = str(self.settings_store.value("mode", "local_only"))
         mode_index = self.mode_combo.findData(mode if mode in {"local_only", "qwen_vision"} else "local_only")
         self.mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
@@ -2628,6 +2639,7 @@ class LumaSiftWindow(QMainWindow):
         self.settings_store.setValue("selected_top", self.selected_top_spin.value())
         self.settings_store.setValue("display_limit", self.display_limit_spin.value())
         self.settings_store.setValue("mode", self.mode_combo.currentData() or "local_only")
+        self.settings_store.setValue("vision_model", self.detected_vision_model or "qwen3.6-plus")
         if self.save_keys_checkbox.isChecked():
             self.settings_store.setValue("api_keys", self.api_key_edit.text())
         else:
@@ -2938,6 +2950,11 @@ class LumaSiftWindow(QMainWindow):
         local_masks = item.get("local_masks") if isinstance(item.get("local_masks"), list) else []
         labels = item.get("lightroom_parameter_labels", {})
         params = item.get("lightroom_parameters", {}) or {}
+        advanced_html = self._format_advanced_parameters_html(
+            item.get("advanced_lightroom_parameters"),
+            item.get("advanced_lightroom_parameter_labels"),
+            include_basic=False,
+        )
         parameter_order = [
             "exposure",
             "contrast",
@@ -3019,6 +3036,7 @@ class LumaSiftWindow(QMainWindow):
           <p>{self._escape(str(item.get("editing_intent") or item.get("editing_direction", "")))}</p>
           <h3>{text["params"]}</h3>
           <table class="param-table">{rows}</table>
+          {advanced_html}
           <h3>{text["crop"]}</h3>
           <p>{crop_reason}</p>
           {f'<h3>{text["crop_keep"]}</h3>{crop_keep}' if crop_keep else ''}
@@ -3046,6 +3064,111 @@ class LumaSiftWindow(QMainWindow):
         if not rows:
             return ""
         return f"<h3>{title}</h3><table>{rows}</table>"
+
+    def _format_advanced_parameters_html(self, sections: Any, labels: Any, *, include_basic: bool = True) -> str:
+        if not isinstance(sections, dict):
+            return ""
+        label_map = labels if isinstance(labels, dict) else {}
+        section_labels = label_map.get("sections") if isinstance(label_map.get("sections"), dict) else {}
+        key_labels = label_map.get("keys") if isinstance(label_map.get("keys"), dict) else {}
+        blocks: list[str] = []
+        for section_key in ADVANCED_LIGHTROOM_SECTION_ORDER:
+            if section_key == "basic" and not include_basic:
+                continue
+            value = sections.get(section_key)
+            if not isinstance(value, dict) or not value:
+                continue
+            title = str(section_labels.get(section_key) or self._lightroom_detail_label(section_key))
+            rows = self._format_parameter_rows(value, key_labels=key_labels)
+            if rows:
+                blocks.append(f"<h3>{self._escape(title)}</h3><table class=\"param-table\">{rows}</table>")
+        return "".join(blocks)
+
+    def _format_parameter_rows(self, values: dict[str, Any], *, key_labels: dict[str, Any]) -> str:
+        rows: list[str] = []
+        for key, value in values.items():
+            label = str(key_labels.get(key) or self._lightroom_detail_label(str(key)))
+            if isinstance(value, dict):
+                nested_parts = []
+                for nested_key, nested_value in value.items():
+                    nested_label = str(key_labels.get(nested_key) or self._lightroom_detail_label(str(nested_key)))
+                    nested_parts.append(f"{self._escape(nested_label)} {self._escape(self._localized_parameter_value(nested_value, key_labels))}")
+                display = " / ".join(nested_parts)
+            else:
+                display = self._escape(self._localized_parameter_value(value, key_labels))
+            rows.append(f"<tr><td>{self._escape(label)}</td><td>{display}</td></tr>")
+        return "".join(rows)
+
+    def _localized_parameter_value(self, value: Any, key_labels: dict[str, Any]) -> str:
+        text = str(value)
+        return str(key_labels.get(text, text))
+
+    def _lightroom_detail_label(self, key: str) -> str:
+        normalized = key.strip()
+        if self.language != "zh":
+            return normalized.replace("_", " ").title()
+        return {
+            "basic": "基础",
+            "tone_curve": "曲线",
+            "hsl_color_mixer": "HSL / 颜色混合",
+            "color_grading": "色彩分级",
+            "calibration": "校准",
+            "detail": "细节",
+            "noise_reduction": "降噪",
+            "lens_corrections": "镜头校正",
+            "effects_grain_vignette": "效果 / 颗粒 / 暗角",
+            "exposure": "曝光",
+            "contrast": "对比度",
+            "highlights": "高光",
+            "shadows": "阴影",
+            "whites": "白色色阶",
+            "blacks": "黑色色阶",
+            "texture": "纹理",
+            "clarity": "清晰度",
+            "dehaze": "去朦胧",
+            "vibrance": "自然饱和度",
+            "saturation": "饱和度",
+            "temperature": "色温",
+            "tint": "色调",
+            "point_curve": "点曲线",
+            "lights": "亮调",
+            "darks": "暗调",
+            "red": "红色",
+            "orange": "橙色",
+            "yellow": "黄色",
+            "green": "绿色",
+            "aqua": "青色",
+            "blue": "蓝色",
+            "purple": "紫色",
+            "magenta": "洋红",
+            "hue": "色相",
+            "luminance": "明亮度",
+            "midtones": "中间调",
+            "blending": "混合",
+            "balance": "平衡",
+            "shadow_tint": "阴影色调",
+            "red_primary_hue": "红原色色相",
+            "red_primary_saturation": "红原色饱和度",
+            "green_primary_hue": "绿原色色相",
+            "green_primary_saturation": "绿原色饱和度",
+            "blue_primary_hue": "蓝原色色相",
+            "blue_primary_saturation": "蓝原色饱和度",
+            "sharpening_amount": "锐化数量",
+            "radius": "半径",
+            "masking": "蒙版",
+            "color": "颜色",
+            "color_detail": "颜色细节",
+            "remove_chromatic_aberration": "移除色差",
+            "enable_profile_corrections": "启用配置文件校正",
+            "manual_distortion": "手动扭曲",
+            "manual_vignetting": "手动暗角",
+            "grain_amount": "颗粒数量",
+            "grain_size": "颗粒大小",
+            "grain_roughness": "颗粒粗糙度",
+            "post_crop_vignette": "裁剪后暗角",
+            "vignette_midpoint": "暗角中点",
+            "vignette_feather": "暗角羽化",
+        }.get(normalized, normalized.replace("_", " "))
 
     def _detail_html_style(self) -> str:
         return """

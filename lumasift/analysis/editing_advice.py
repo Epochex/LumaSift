@@ -20,6 +20,18 @@ LIGHTROOM_PARAMETER_KEYS = [
     "tint",
 ]
 
+ADVANCED_LIGHTROOM_SECTION_ORDER = [
+    "basic",
+    "tone_curve",
+    "hsl_color_mixer",
+    "color_grading",
+    "calibration",
+    "detail",
+    "noise_reduction",
+    "lens_corrections",
+    "effects_grain_vignette",
+]
+
 _BW_STYLES = {"high_contrast_bw_documentary", "low_key_noir_street"}
 _COLOR_STYLES = {
     "cinematic_urban_color",
@@ -234,6 +246,7 @@ def _advice_for_record(record: dict[str, Any], *, language: str) -> dict[str, An
     style = _recommended_style(record)
     parameters = _lightroom_parameters(record, style)
     tone = _tone_recommendation(record, style, language=language)
+    advanced_parameters = _advanced_lightroom_parameters(record, style, tone["recommendation"], parameters)
     score = _float(record.get("final_selection_score"))
     photo_reading = _photo_reading(record, language=language)
     content_decision = _content_decision(record, language=language)
@@ -285,6 +298,8 @@ def _advice_for_record(record: dict[str, Any], *, language: str) -> dict[str, An
         "editing_direction": editing_intent,
         "lightroom_parameters": parameters,
         "lightroom_parameter_labels": _parameter_labels(language),
+        "advanced_lightroom_parameters": advanced_parameters,
+        "advanced_lightroom_parameter_labels": _advanced_parameter_labels(language),
         "crop_strategy": _crop_strategy(record, language=language),
         "local_adjustments": adjustments,
         "tone_recommendation": tone,
@@ -662,6 +677,143 @@ def _lightroom_parameters(record: dict[str, Any], style: str) -> dict[str, str]:
     return {key: parameters[key] for key in LIGHTROOM_PARAMETER_KEYS}
 
 
+def _advanced_lightroom_parameters(
+    record: dict[str, Any],
+    style: str,
+    tone: str,
+    basic_parameters: dict[str, str],
+) -> dict[str, Any]:
+    gritty = style in {"high_contrast_bw_documentary", "low_key_noir_street", "gritty_flash_street"}
+    color = tone != "black_and_white" and style not in _BW_STYLES
+    highlight_clip = _metric(record, "highlight_clipping_ratio")
+    shadow_clip = _metric(record, "shadow_clipping_ratio")
+    technical = _float(record.get("technical_quality_score"))
+    story = _float(record.get("storytelling_score"))
+    decisive = _float(record.get("decisive_moment_score"))
+
+    tone_curve = {
+        "point_curve": "strong_contrast" if gritty else "medium_contrast",
+        "highlights": "-8" if highlight_clip >= 0.02 else "+4",
+        "lights": "+6",
+        "darks": "-8" if gritty else "-4",
+        "shadows": "+6" if shadow_clip >= 0.02 else "-4",
+    }
+    if style == "soft_editorial_documentary":
+        tone_curve.update({"point_curve": "soft_contrast", "highlights": "-4", "darks": "-2", "shadows": "+6"})
+
+    if color:
+        hsl = {
+            "red": {"hue": "-4", "saturation": "-8", "luminance": "+2"},
+            "orange": {"hue": "-2", "saturation": "+2", "luminance": "+4"},
+            "yellow": {"hue": "-12", "saturation": "-18", "luminance": "-4"},
+            "green": {"hue": "+8", "saturation": "-22", "luminance": "-6"},
+            "aqua": {"hue": "-6", "saturation": "-16", "luminance": "0"},
+            "blue": {"hue": "-8", "saturation": "-12", "luminance": "-8"},
+            "purple": {"hue": "0", "saturation": "-10", "luminance": "0"},
+            "magenta": {"hue": "0", "saturation": "-10", "luminance": "0"},
+        }
+        if style in {"cold_metropolitan", "cinematic_urban_color"}:
+            hsl["blue"].update({"hue": "-14", "saturation": "+4", "luminance": "-12"})
+            hsl["orange"].update({"saturation": "-2", "luminance": "+6"})
+        color_grading = {
+            "shadows": {"hue": "220", "saturation": "8", "luminance": "-2"},
+            "midtones": {"hue": "34", "saturation": "5", "luminance": "0"},
+            "highlights": {"hue": "46", "saturation": "4", "luminance": "+2"},
+            "blending": "45",
+            "balance": "-10" if style in {"cold_metropolitan", "cinematic_urban_color"} else "0",
+        }
+        calibration = {
+            "shadow_tint": "+3",
+            "red_primary_hue": "+5",
+            "red_primary_saturation": "-4",
+            "green_primary_hue": "0",
+            "green_primary_saturation": "-2",
+            "blue_primary_hue": "-6",
+            "blue_primary_saturation": "+8",
+        }
+    else:
+        hsl = {
+            "red": {"hue": "0", "saturation": "-100", "luminance": "+4"},
+            "orange": {"hue": "0", "saturation": "-100", "luminance": "+6"},
+            "yellow": {"hue": "0", "saturation": "-100", "luminance": "-4"},
+            "green": {"hue": "0", "saturation": "-100", "luminance": "-8"},
+            "aqua": {"hue": "0", "saturation": "-100", "luminance": "0"},
+            "blue": {"hue": "0", "saturation": "-100", "luminance": "-10"},
+            "purple": {"hue": "0", "saturation": "-100", "luminance": "0"},
+            "magenta": {"hue": "0", "saturation": "-100", "luminance": "0"},
+        }
+        color_grading = {
+            "shadows": {"hue": "220", "saturation": "0", "luminance": "0"},
+            "midtones": {"hue": "40", "saturation": "0", "luminance": "0"},
+            "highlights": {"hue": "48", "saturation": "0", "luminance": "0"},
+            "blending": "50",
+            "balance": "0",
+        }
+        calibration = {
+            "shadow_tint": "0",
+            "red_primary_hue": "0",
+            "red_primary_saturation": "0",
+            "green_primary_hue": "0",
+            "green_primary_saturation": "0",
+            "blue_primary_hue": "0",
+            "blue_primary_saturation": "0",
+        }
+
+    if technical < 50 and (decisive >= 55 or story >= 55):
+        detail = {"sharpening_amount": "28", "radius": "0.9", "detail": "15", "masking": "80"}
+        noise = {"luminance": "10", "detail": "35", "contrast": "0", "color": "18", "color_detail": "50"}
+    elif technical < 50:
+        detail = {"sharpening_amount": "22", "radius": "1.0", "detail": "10", "masking": "85"}
+        noise = {"luminance": "14", "detail": "30", "contrast": "0", "color": "20", "color_detail": "50"}
+    else:
+        detail = {"sharpening_amount": "40", "radius": "0.8", "detail": "25", "masking": "70"}
+        noise = {"luminance": "8", "detail": "40", "contrast": "0", "color": "15", "color_detail": "50"}
+
+    grain_amount = "18" if gritty or tone == "black_and_white" else "8"
+    existing_plan = record.get("editing_plan") if isinstance(record.get("editing_plan"), dict) else {}
+    advanced_from_qwen = record.get("advanced_lightroom_parameters")
+    if not isinstance(advanced_from_qwen, dict) and isinstance(existing_plan, dict):
+        advanced_from_qwen = existing_plan.get("advanced_lightroom_parameters")
+    sections: dict[str, Any] = {
+        "basic": dict(basic_parameters),
+        "tone_curve": tone_curve,
+        "hsl_color_mixer": hsl,
+        "color_grading": color_grading,
+        "calibration": calibration,
+        "detail": detail,
+        "noise_reduction": noise,
+        "lens_corrections": {
+            "remove_chromatic_aberration": "on",
+            "enable_profile_corrections": "on",
+            "manual_distortion": "0",
+            "manual_vignetting": "0",
+        },
+        "effects_grain_vignette": {
+            "grain_amount": grain_amount,
+            "grain_size": "24" if gritty or tone == "black_and_white" else "22",
+            "grain_roughness": "48" if gritty or tone == "black_and_white" else "35",
+            "post_crop_vignette": "-10" if gritty else "-6",
+            "vignette_midpoint": "40",
+            "vignette_feather": "70",
+        },
+    }
+    if isinstance(advanced_from_qwen, dict):
+        for key, value in advanced_from_qwen.items():
+            if key in sections and isinstance(value, dict):
+                sections[key] = _merge_nested_dicts(sections[key], value)
+    return sections
+
+
+def _merge_nested_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_nested_dicts(merged[key], value)
+        elif value not in (None, ""):
+            merged[key] = value
+    return merged
+
+
 def _tone_recommendation(record: dict[str, Any], style: str, *, language: str) -> dict[str, str]:
     if style in _BW_STYLES:
         if language == "zh":
@@ -914,6 +1066,124 @@ def _parameter_labels(language: str) -> dict[str, str]:
         "temperature": "色温",
         "tint": "色调",
     }
+
+
+def _advanced_parameter_labels(language: str) -> dict[str, Any]:
+    if language != "zh":
+        return {
+            "sections": {
+                "basic": "Basic",
+                "tone_curve": "Tone Curve",
+                "hsl_color_mixer": "HSL / Color Mixer",
+                "color_grading": "Color Grading",
+                "calibration": "Calibration",
+                "detail": "Detail",
+                "noise_reduction": "Noise Reduction",
+                "lens_corrections": "Lens Corrections",
+                "effects_grain_vignette": "Effects / Grain / Vignette",
+            },
+            "keys": _english_parameter_labels(),
+        }
+    return {
+        "sections": {
+            "basic": "基础",
+            "tone_curve": "曲线",
+            "hsl_color_mixer": "HSL / 颜色混合",
+            "color_grading": "色彩分级",
+            "calibration": "校准",
+            "detail": "细节",
+            "noise_reduction": "降噪",
+            "lens_corrections": "镜头校正",
+            "effects_grain_vignette": "效果 / 颗粒 / 暗角",
+        },
+        "keys": {
+            **_parameter_labels("zh"),
+            "point_curve": "点曲线",
+            "strong_contrast": "强对比",
+            "medium_contrast": "中等对比",
+            "soft_contrast": "柔和对比",
+            "lights": "亮调",
+            "darks": "暗调",
+            "red": "红色",
+            "orange": "橙色",
+            "yellow": "黄色",
+            "green": "绿色",
+            "aqua": "青色",
+            "blue": "蓝色",
+            "purple": "紫色",
+            "magenta": "洋红",
+            "hue": "色相",
+            "luminance": "明亮度",
+            "midtones": "中间调",
+            "blending": "混合",
+            "balance": "平衡",
+            "shadow_tint": "阴影色调",
+            "red_primary_hue": "红原色色相",
+            "red_primary_saturation": "红原色饱和度",
+            "green_primary_hue": "绿原色色相",
+            "green_primary_saturation": "绿原色饱和度",
+            "blue_primary_hue": "蓝原色色相",
+            "blue_primary_saturation": "蓝原色饱和度",
+            "sharpening_amount": "锐化数量",
+            "radius": "半径",
+            "detail": "细节",
+            "masking": "蒙版",
+            "luminance": "明亮度",
+            "color": "颜色",
+            "color_detail": "颜色细节",
+            "remove_chromatic_aberration": "移除色差",
+            "enable_profile_corrections": "启用配置文件校正",
+            "manual_distortion": "手动扭曲",
+            "manual_vignetting": "手动暗角",
+            "grain_amount": "颗粒数量",
+            "grain_size": "颗粒大小",
+            "grain_roughness": "颗粒粗糙度",
+            "post_crop_vignette": "裁剪后暗角",
+            "vignette_midpoint": "暗角中点",
+            "vignette_feather": "暗角羽化",
+            "on": "开启",
+            "off": "关闭",
+        },
+    }
+
+
+def _english_parameter_labels() -> dict[str, str]:
+    labels = {key: key.replace("_", " ").title() for key in LIGHTROOM_PARAMETER_KEYS}
+    labels.update(
+        {
+            "point_curve": "Point Curve",
+            "lights": "Lights",
+            "darks": "Darks",
+            "hue": "Hue",
+            "luminance": "Luminance",
+            "midtones": "Midtones",
+            "blending": "Blending",
+            "balance": "Balance",
+            "shadow_tint": "Shadow Tint",
+            "red_primary_hue": "Red Primary Hue",
+            "red_primary_saturation": "Red Primary Saturation",
+            "green_primary_hue": "Green Primary Hue",
+            "green_primary_saturation": "Green Primary Saturation",
+            "blue_primary_hue": "Blue Primary Hue",
+            "blue_primary_saturation": "Blue Primary Saturation",
+            "sharpening_amount": "Sharpening Amount",
+            "radius": "Radius",
+            "detail": "Detail",
+            "masking": "Masking",
+            "color_detail": "Color Detail",
+            "remove_chromatic_aberration": "Remove Chromatic Aberration",
+            "enable_profile_corrections": "Enable Profile Corrections",
+            "manual_distortion": "Manual Distortion",
+            "manual_vignetting": "Manual Vignetting",
+            "grain_amount": "Grain Amount",
+            "grain_size": "Grain Size",
+            "grain_roughness": "Grain Roughness",
+            "post_crop_vignette": "Post-Crop Vignette",
+            "vignette_midpoint": "Vignette Midpoint",
+            "vignette_feather": "Vignette Feather",
+        }
+    )
+    return labels
 
 
 def _contains_cjk(text: str) -> bool:

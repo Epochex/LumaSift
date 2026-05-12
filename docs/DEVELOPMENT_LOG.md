@@ -251,3 +251,15 @@
 - Separated user cancellation from close handling so pressing `取消` writes the stop file and pauses analysis without marking the window for close; closing the app while workers run still requests stop and exits only after background tasks finish.
 - Added regression coverage for page navigation, Qwen progress feedback, and cancel-not-close behavior; UI smoke now captures `main_page`, `settings_page`, and Qwen progress states.
 - Verification: `python -m pytest -q` passed with 59 tests, `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed, `packaging/build_windows.ps1` rebuilt the Windows app and installer, and the packaged exe launched successfully in an offscreen smoke.
+
+## 2026-05-12 - Scene-sequence grouping and Chinese editing parameters
+- Extended LS-020 from near-duplicate grouping into conservative scene-sequence grouping by adding a normalized 8x8 scene signature plus filename-sequence guards. This catches real street/travel bursts such as adjacent red-steel/ceiling/person frames while avoiding unrelated distant files.
+- Added `visual_scene_signature`, `group_review_role`, and `group_moment_risk` to manifest/report surfaces. Qwen still defaults to group winners only; non-best alternates are deep-reviewed only when they are user-marked, nearly tied, or score higher on story/decisive/human-documentary risk.
+- Upgraded the Qwen story prompt to `qwen-story-v4` with sequence comparison, selection risk, edit-vs-select warning, subject uncertainty, and advanced Lightroom parameter fields.
+- Expanded selected editing advice beyond basic sliders: curve, HSL/color mixer, color grading, calibration, detail, noise reduction, lens correction, and grain/vignette are now generated and labeled.
+- Localized Chinese UI/Markdown parameter display so detail/advice panels show professional Chinese terms such as 黑色色阶、清晰度、色彩分级、HSL / 颜色混合 instead of raw `blacks` / `clarity` keys.
+- Qwen key checking now reports and stores the automatically selected compatible vision model, currently preferring `qwen3.6-plus` for the NewCoin top endpoint and `qwen3.5-plus` for the tech endpoint fallback.
+- Added tests for scene-sequence grouping, user-priority group best selection, moment-risk Qwen eligibility, prompt v4 fields, and model recommendation display.
+- UI smoke now asserts the Chinese editing plan includes color-grading/HSL parameter sections and does not leak raw English Lightroom keys.
+- 220 private local RAW/JPG stability validation under ignored `outputs/raw200-ls020/`: first run processed 220/220 in 42.14s with 35 groups and max group size 17; manifest reuse processed 220/220 in 5.22s with 220 reused records. Tightened moment-risk gating estimates 95 group winners/risk alternates for Qwen, 125 non-best skips, and 56.82% call savings versus reviewing all 220 records.
+- Verification: `python -m pytest -q` passed with 62 tests, and `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed.

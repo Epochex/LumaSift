@@ -8,7 +8,7 @@ from typing import Callable
 
 from lumasift.analysis.editing_advice import build_selected_editing_advice
 from lumasift.analysis.local_story import analyze_local_story_proxy
-from lumasift.analysis.grouping import apply_similarity_groups, compute_average_color, compute_dhash
+from lumasift.analysis.grouping import apply_similarity_groups, compute_average_color, compute_dhash, compute_scene_signature
 from lumasift.analysis.qwen_story import QWEN_STORY_PROMPT_VERSION, build_qwen_story_prompt, merge_qwen_story_analysis
 from lumasift.analysis.scoring import rank_records
 from lumasift.core.config import Settings
@@ -223,14 +223,23 @@ class LumaSiftHarness:
         if self.settings.qwen_group_winners_only:
             for record in updated:
                 if int(record.get("group_size", 1) or 1) > 1 and not bool(record.get("is_group_best")):
-                    record["qwen_status"] = "skipped_similar_group"
-                    record["qwen_skip_reason"] = "similar_group_non_winner"
+                    if bool(record.get("group_moment_risk")):
+                        record["qwen_status"] = "queued_moment_risk"
+                        record["qwen_skip_reason"] = ""
+                    else:
+                        record["qwen_status"] = "skipped_similar_group"
+                        record["qwen_skip_reason"] = "similar_group_non_winner"
         eligible = [
             record
             for record in updated
             if record.get("category") != "failed"
             and (self.settings.qwen_include_rejected or normalized_user_label(record.get("user_label")) != "reject")
-            and (not self.settings.qwen_group_winners_only or int(record.get("group_size", 1) or 1) <= 1 or bool(record.get("is_group_best")))
+            and (
+                not self.settings.qwen_group_winners_only
+                or int(record.get("group_size", 1) or 1) <= 1
+                or bool(record.get("is_group_best"))
+                or bool(record.get("group_moment_risk"))
+            )
         ]
         candidates = eligible[: self.settings.top_n_api_analysis]
         self._event(
@@ -308,6 +317,7 @@ class LumaSiftHarness:
                     preview = Path(str(preview_path))
                     record["visual_hash"] = compute_dhash(preview)
                     record["visual_color"] = compute_average_color(preview)
+                    record["visual_scene_signature"] = compute_scene_signature(preview)
                 except Exception as exc:  # noqa: BLE001 - grouping should never block analysis output.
                     record.setdefault("errors", []).append(f"visual_hash_failed: {exc}")
         apply_similarity_groups([record for record in records if record.get("category") != "failed"])
@@ -378,6 +388,7 @@ class LumaSiftHarness:
                 qwen_cache_key=str(record.get("qwen_cache_key")) if record.get("qwen_cache_key") else None,
                 visual_hash=str(record.get("visual_hash")) if record.get("visual_hash") else None,
                 visual_color=str(record.get("visual_color")) if record.get("visual_color") else None,
+                visual_scene_signature=str(record.get("visual_scene_signature")) if record.get("visual_scene_signature") else None,
                 group_id=str(record.get("group_id")) if record.get("group_id") else None,
                 group_size=int(record["group_size"]) if record.get("group_size") is not None else None,
                 group_rank=int(record["group_rank"]) if record.get("group_rank") is not None else None,
