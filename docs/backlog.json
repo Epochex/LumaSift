@@ -131,7 +131,7 @@
       "id": "LS-006",
       "title": "Unify SQLite manifest and cache identity",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "dependencies": [
         "LS-005"
       ],

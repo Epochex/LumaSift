@@ -24,6 +24,65 @@ def test_harness_runs_local_only(tmp_path: Path) -> None:
     assert (output_dir / "runs" / "test-run" / "events.jsonl").exists()
 
 
+def test_harness_persists_and_reuses_sqlite_manifest(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    photo = input_dir / "red.jpg"
+    Image.new("RGB", (32, 32), color=(200, 40, 40)).save(photo)
+    db = LumaSiftStateDb(tmp_path / "state.sqlite")
+
+    first_settings = Settings(input_dir=input_dir, output_dir=output_dir, ai_mode="local_only")
+    LumaSiftHarness(settings=first_settings, run_id="manifest-first", state_db=db).run()
+
+    row = db.load_manifest_record(photo)
+    assert row is not None
+    assert row["last_run_id"] == "manifest-first"
+    assert row["preview_path"]
+
+    second_settings = Settings(input_dir=input_dir, output_dir=output_dir, ai_mode="local_only")
+    LumaSiftHarness(settings=second_settings, run_id="manifest-second", state_db=db).run()
+    report = json.loads((output_dir / "report.json").read_text(encoding="utf-8"))
+
+    assert report["records"][0]["manifest_status"] == "reused"
+    assert db.load_manifest_record(photo)["last_run_id"] == "manifest-second"
+
+
+def test_harness_does_not_reuse_qwen_record_for_local_only_run(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    photo = input_dir / "red.jpg"
+    Image.new("RGB", (32, 32), color=(200, 40, 40)).save(photo)
+    stat = photo.stat()
+    db = LumaSiftStateDb(tmp_path / "state.sqlite")
+    db.upsert_photo_manifest(
+        path=photo,
+        size_bytes=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        identity_hash="identity-qwen",
+        last_run_id="qwen-run",
+        rank=1,
+        score=99.0,
+        category="portfolio_candidate",
+        record={
+            "path": str(photo.resolve()),
+            "filename": photo.name,
+            "final_selection_score": 99.0,
+            "category": "portfolio_candidate",
+            "qwen_status": "done",
+            "qwen_model": "qwen-test",
+        },
+    )
+
+    settings = Settings(input_dir=input_dir, output_dir=output_dir, ai_mode="local_only")
+    LumaSiftHarness(settings=settings, run_id="local-after-qwen", state_db=db).run()
+    report = json.loads((output_dir / "report.json").read_text(encoding="utf-8"))
+
+    assert report["records"][0].get("manifest_status") is None
+    assert report["records"][0].get("qwen_model") is None
+
+
 def test_harness_respects_limit(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"

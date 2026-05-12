@@ -53,6 +53,7 @@ class QwenVisionClient:
         self.sleep = sleep
         self.event_callback = event_callback
         self.last_cache_hit = False
+        self.last_cache_key_digest: str | None = None
 
     def _event(self, event_type: str, **payload: Any) -> None:
         if self.event_callback is not None:
@@ -60,6 +61,7 @@ class QwenVisionClient:
 
     def analyze_image(self, image_path: Path, prompt: str, prompt_version: str | None = None) -> dict[str, Any]:
         self.last_cache_hit = False
+        self.last_cache_key_digest = None
         image_identity = identify_image(image_path)
         cache = self._cache_for(image_path)
         cache_key = None
@@ -69,6 +71,7 @@ class QwenVisionClient:
                 model=self.model,
                 prompt_version=prompt_version or prompt_fingerprint(prompt),
             )
+            self.last_cache_key_digest = cache_key.digest
             cached = cache.load(cache_key)
             if cached is not None:
                 self.last_cache_hit = True

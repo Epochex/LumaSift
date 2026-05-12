@@ -273,10 +273,11 @@ class AnalysisWorker(QObject):
     progress = Signal(str, int, int)
     qwen_event = Signal(dict)
 
-    def __init__(self, settings: Settings, run_id: str) -> None:
+    def __init__(self, settings: Settings, run_id: str, state_db_path: Path | None = None) -> None:
         super().__init__()
         self.settings = settings
         self.run_id = run_id
+        self.state_db_path = state_db_path
 
     def run(self) -> None:
         try:
@@ -286,6 +287,7 @@ class AnalysisWorker(QObject):
                 run_id=self.run_id,
                 progress_callback=lambda stage, current, total: self.progress.emit(stage, current, total),
                 event_callback=lambda event: self.qwen_event.emit(event),
+                state_db=LumaSiftStateDb(self.state_db_path) if self.state_db_path else None,
             ).run()
             report = json.loads(result.report_json.read_text(encoding="utf-8"))
             self.finished.emit({"summary": result.summary, "report": report, "output_dir": str(self.settings.output_dir)})
@@ -1516,7 +1518,7 @@ class LumaSiftWindow(QMainWindow):
         self._update_dashboard()
 
         self.worker_thread = QThread()
-        self.worker = AnalysisWorker(settings=settings, run_id=self.current_run_id)
+        self.worker = AnalysisWorker(settings=settings, run_id=self.current_run_id, state_db_path=self.state_db.path)
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)
         self.worker.finished.connect(self._analysis_finished)

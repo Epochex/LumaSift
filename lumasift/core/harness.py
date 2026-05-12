@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,7 @@ from lumasift.reports.contact_sheet import write_contact_sheet
 from lumasift.reports.csv_report import write_csv_report
 from lumasift.reports.json_report import write_json_report
 from lumasift.reports.markdown_report import write_selected_editing_advice_markdown
+from lumasift.storage.state_db import LumaSiftStateDb
 
 
 @dataclass
@@ -50,6 +52,7 @@ class LumaSiftHarness:
         run_id: str | None = None,
         progress_callback: Callable[[str, int, int], None] | None = None,
         event_callback: Callable[[dict], None] | None = None,
+        state_db: LumaSiftStateDb | None = None,
     ) -> None:
         self.settings = settings
         self.settings.ensure_dirs()
@@ -58,6 +61,7 @@ class LumaSiftHarness:
         self.state = RunState(self.run_dir)
         self.progress_callback = progress_callback
         self.event_callback = event_callback
+        self.state_db = state_db
 
     def _progress(self, stage: str, current: int, total: int) -> None:
         if self.progress_callback is not None:
@@ -97,9 +101,28 @@ class LumaSiftHarness:
                 break
             if index <= resume_from_index:
                 continue
+            reusable = self._reusable_manifest_record(photo.path)
+            if reusable is not None:
+                reusable["manifest_status"] = "reused"
+                records.append(reusable)
+                self.state.append_event("photo_reused_from_manifest", index=index, path=str(photo.path))
+                self.state.save_checkpoint(
+                    {
+                        "run_id": self.run_id,
+                        "last_index": index,
+                        "processed": len([item for item in records if item.get("category") != "failed"]),
+                        "failed": len([item for item in records if item.get("category") == "failed"]),
+                    }
+                )
+                self._progress("local", index, len(photos))
+                continue
             try:
                 image = load_image(photo.path)
                 record = analyze_local_story_proxy(image)
+                try:
+                    record["preview_path"] = str(create_jpeg_preview(photo.path, self.settings.output_dir / "manifest_previews", max_side=360))
+                except Exception as exc:  # noqa: BLE001 - preview cache failure should not fail local ranking.
+                    record.setdefault("errors", []).append(f"manifest_preview_failed: {exc}")
                 records.append(record)
                 self.state.append_event("photo_processed", index=index, path=str(photo.path))
             except Exception as exc:  # noqa: BLE001 - batch robustness is the boundary here.
@@ -128,6 +151,7 @@ class LumaSiftHarness:
         ranked = rank_records(records)
         if self.settings.ai_mode == "qwen_vision":
             ranked = self._apply_qwen_vision(ranked)
+        self._persist_manifest_records(ranked)
 
         report_csv = self.settings.output_dir / "report.csv"
         report_json = self.settings.output_dir / "report.json"
@@ -160,11 +184,12 @@ class LumaSiftHarness:
                 markdown=str(selected_advice_md),
             )
 
+        failed_count = len([item for item in ranked if item.get("category") == "failed"])
         summary = {
             "run_id": self.run_id,
             "scanned": len(photos),
             "processed": len([item for item in ranked if item.get("category") != "failed"]),
-            "failed": failed,
+            "failed": failed_count,
         }
         self.state.append_event("run_completed", **summary)
         self._progress("done", len(photos), len(photos))
@@ -212,6 +237,7 @@ class LumaSiftHarness:
                     filename=record.get("filename"),
                 )
                 preview_path = create_jpeg_preview(Path(record["path"]), preview_dir)
+                record["preview_path"] = str(preview_path)
                 response = client.analyze_image(
                     preview_path,
                     QWEN_STORY_PROMPT,
@@ -220,6 +246,8 @@ class LumaSiftHarness:
                 merge_qwen_story_analysis(record, response)
                 status = "cache-hit" if client.last_cache_hit else "done"
                 record["qwen_status"] = status
+                if client.last_cache_key_digest:
+                    record["qwen_cache_key"] = client.last_cache_key_digest
                 self.state.append_event("qwen_analyzed", path=record["path"])
                 self._event(
                     "qwen_candidate_finished",
@@ -244,6 +272,71 @@ class LumaSiftHarness:
             finally:
                 self._progress("qwen", qwen_index, len(candidates))
         return rank_records(updated)
+
+    def _reusable_manifest_record(self, path: Path) -> dict | None:
+        if self.state_db is None:
+            return None
+        record = self.state_db.reusable_record_for_file(path)
+        if record is None:
+            return None
+        if record.get("category") == "failed":
+            return None
+        if self.settings.ai_mode == "local_only" and any(record.get(key) for key in ("qwen_model", "qwen_status", "qwen_cache_key")):
+            return None
+        return record
+
+    def _persist_manifest_records(self, records: list[dict]) -> None:
+        if self.state_db is None:
+            return
+        persisted = 0
+        for record in records:
+            raw_path = record.get("path")
+            if not raw_path:
+                continue
+            path = Path(str(raw_path))
+            try:
+                resolved, size_bytes, mtime_ns, identity_hash = self._file_identity(path)
+            except OSError as exc:
+                self.state.append_event("manifest_photo_identity_failed", path=str(path), error=str(exc))
+                continue
+            scores = {
+                key: record.get(key)
+                for key in (
+                    "storytelling_score",
+                    "human_documentary_value_score",
+                    "decisive_moment_score",
+                    "emotional_impact_score",
+                    "visual_tension_score",
+                    "editing_potential_score",
+                    "technical_quality_score",
+                    "final_selection_score",
+                )
+                if key in record
+            }
+            self.state_db.upsert_photo_manifest(
+                path=resolved,
+                size_bytes=size_bytes,
+                mtime_ns=mtime_ns,
+                identity_hash=identity_hash,
+                preview_path=record.get("preview_path"),
+                last_run_id=self.run_id,
+                rank=int(record["rank"]) if record.get("rank") is not None else None,
+                score=float(record["final_selection_score"]) if record.get("final_selection_score") is not None else None,
+                category=str(record.get("category")) if record.get("category") else None,
+                technical_quality_score=float(record["technical_quality_score"]) if record.get("technical_quality_score") is not None else None,
+                qwen_cache_key=str(record.get("qwen_cache_key")) if record.get("qwen_cache_key") else None,
+                scores=scores,
+                record=record,
+            )
+            persisted += 1
+        self.state.append_event("manifest_persisted", count=persisted)
+
+    @staticmethod
+    def _file_identity(path: Path) -> tuple[str, int, int, str]:
+        resolved = path.resolve()
+        stat = resolved.stat()
+        digest = hashlib.sha256(f"{resolved}|{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8", errors="ignore")).hexdigest()
+        return str(resolved), stat.st_size, stat.st_mtime_ns, digest
 
     def _qwen_cancel_requested(self) -> bool:
         return (self.settings.output_dir / "STOP_LUMASIFT").exists()

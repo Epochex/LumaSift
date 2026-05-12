@@ -70,3 +70,42 @@ def test_state_db_loads_labels_in_chunks(tmp_path: Path) -> None:
 
     assert labels[str(photos[0].resolve())] == "keep"
     assert labels[str(photos[-1].resolve())] == "reject"
+
+
+def test_state_db_persists_manifest_without_overwriting_label(tmp_path: Path) -> None:
+    db = LumaSiftStateDb(tmp_path / "state.sqlite")
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"manifest bytes")
+    stat = photo.stat()
+
+    db.set_user_label(path=photo, label="keep")
+    db.upsert_photo_manifest(
+        path=photo,
+        size_bytes=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        identity_hash="identity-1",
+        preview_path=tmp_path / "preview.jpg",
+        last_run_id="run-2",
+        rank=1,
+        score=92.5,
+        category="portfolio_candidate",
+        technical_quality_score=71.0,
+        qwen_cache_key="qwen-key",
+        scores={"final_selection_score": 92.5},
+        record={"path": str(photo.resolve()), "filename": photo.name, "final_selection_score": 92.5},
+    )
+
+    manifest = db.load_manifest_record(photo)
+    assert manifest is not None
+    assert manifest["user_label"] == "keep"
+    assert manifest["last_run_id"] == "run-2"
+    assert manifest["size_bytes"] == stat.st_size
+    assert manifest["qwen_cache_key"] == "qwen-key"
+
+    reusable = db.reusable_record_for_file(photo)
+    assert reusable is not None
+    assert reusable["filename"] == "photo.jpg"
+    assert reusable["user_label"] == "keep"
+
+    photo.write_bytes(b"changed bytes")
+    assert db.reusable_record_for_file(photo) is None

@@ -159,3 +159,10 @@
 - The GUI now exposes a `历史` entry from both setup and review mode, listing recent runs with time, mode, scanned/processed/failed counts, output path, and availability state.
 - Historical runs with a valid `report.json` can be restored directly into the review board; missing output folders or reports show an unavailable state instead of failing silently.
 - Added tests for run listing order and GUI history restoration, and extended UI smoke to keep the history entry visible in setup and review modes.
+
+## 2026-05-12 - SQLite photo manifest and rerun reuse
+- Extended the local SQLite `photos` table from label-only state into a photo manifest with size, mtime, identity hash, preview path, last run id, score/category/rank, full score JSON, cached record JSON, and Qwen cache key.
+- Wired GUI analysis workers into the same state database so completed runs persist manifest rows while keeping JSON/CSV reports as normal export artifacts.
+- Added safe rerun reuse: unchanged successful local records can be reused from SQLite, while failed records and Qwen-enriched records are not reused for local-only runs.
+- Exposed the Qwen response cache key digest from the client and stored it on Qwen-reviewed records when available.
+- Verified against 200 private local RAW files: first manifest run processed 200/200 in 32.18 seconds with 200 manifest preview paths; a second unchanged run reused 200/200 records in 3.39 seconds.
