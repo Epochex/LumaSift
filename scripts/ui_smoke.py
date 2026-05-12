@@ -36,7 +36,7 @@ def main() -> int:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     args.output.mkdir(parents=True, exist_ok=True)
 
-    from PySide6.QtCore import QEventLoop, QTimer, Qt
+    from PySide6.QtCore import QEventLoop, QItemSelectionModel, QTimer, Qt
     from PySide6.QtWidgets import QApplication
 
     from lumasift.app.desktop import LumaSiftWindow
@@ -48,6 +48,7 @@ def main() -> int:
     window.output_dir.mkdir(parents=True, exist_ok=True)
     window.language = args.language
     window._retranslate_ui()
+    window._queue_visible_thumbnails = lambda: None
     window.show()
     app.processEvents()
 
@@ -63,13 +64,14 @@ def main() -> int:
     window._merge_user_labels()
     window._reset_filter_combos()
     window._populate_records()
+    label_checks = exercise_label_workflow(window, QItemSelectionModel)
     first_index = window.photo_model.index(0, 0) if window.photo_model else None
     if first_index and first_index.isValid():
-        window.photo_list.selectionModel().select(first_index, window.photo_list.selectionModel().SelectionFlag.Select)
+        window.photo_list.selectionModel().select(first_index, QItemSelectionModel.SelectionFlag.Select)
         window._show_selected_detail()
     window._enter_review_mode({"scanned": len(records), "processed": len(records), "failed": 0})
     app.processEvents()
-    snapshots.append(capture(window, args.output, "review_with_records", review_checks(window)))
+    snapshots.append(capture(window, args.output, "review_with_records", review_checks(window) + label_checks))
 
     window._generate_selected_advice()
     app.processEvents()
@@ -148,6 +150,71 @@ def create_synthetic_photo(path: Path, index: int) -> None:
     draw.rectangle((218, 135, 233, 210), fill=(50, 50, 55))
     draw.line((0, 60 + index % 40, width, 120 + index % 35), fill=(170, 180, 190), width=2)
     image.save(path, quality=88)
+
+
+def exercise_label_workflow(window: Any, selection_model_type: Any) -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    select_rows(window, [0, 1], selection_model_type)
+    window._mark_selected("keep")
+    checks.append(check_value(count_label(window, "keep") >= 2, "multi_select_keep_marked", f"keep={count_label(window, 'keep')}"))
+
+    set_combo_data(window.label_filter, "keep")
+    window._populate_records()
+    checks.append(check_value(window.photo_model.rowCount() >= 2, "keep_filter_visible", f"rows={window.photo_model.rowCount()}"))
+    checks.append(check_value(all_visible_labels(window, {"keep"}), "keep_filter_labels_clean", visible_label_detail(window)))
+
+    select_rows(window, [0], selection_model_type)
+    window._mark_selected("reject")
+    checks.append(check_value(all_visible_labels(window, {"keep"}), "filtered_mark_repopulates", visible_label_detail(window)))
+
+    set_combo_data(window.label_filter, "reject")
+    window._populate_records()
+    checks.append(check_value(count_visible_label(window, "reject") >= 1, "reject_filter_after_relabel", visible_label_detail(window)))
+
+    set_combo_data(window.label_filter, "all")
+    window._populate_records()
+    select_rows(window, [0], selection_model_type)
+    checks.append(check_value(bool(window._selected_record_indexes()), "selection_restored_after_filter_reset", f"selected={len(window._selected_record_indexes())}"))
+    return checks
+
+
+def select_rows(window: Any, rows: list[int], selection_model_type: Any) -> None:
+    if window.photo_model is None or window.photo_list.selectionModel() is None:
+        return
+    selection_model = window.photo_list.selectionModel()
+    selection_model.clearSelection()
+    for row in rows:
+        if row < 0 or row >= window.photo_model.rowCount():
+            continue
+        index = window.photo_model.index(row, 0)
+        selection_model.select(
+            index,
+            selection_model_type.SelectionFlag.Select | selection_model_type.SelectionFlag.Rows,
+        )
+    window._show_selected_detail()
+
+
+def set_combo_data(combo: Any, value: str) -> None:
+    index = combo.findData(value)
+    combo.setCurrentIndex(index if index >= 0 else 0)
+
+
+def count_label(window: Any, label: str) -> int:
+    return sum(1 for record in window.records if record.get("user_label") == label)
+
+
+def count_visible_label(window: Any, label: str) -> int:
+    return sum(1 for record in getattr(window.photo_model, "records", []) if record.get("user_label") == label)
+
+
+def all_visible_labels(window: Any, allowed: set[str]) -> bool:
+    records = getattr(window.photo_model, "records", [])
+    return bool(records) and all((record.get("user_label") or "unlabeled") in allowed for record in records)
+
+
+def visible_label_detail(window: Any) -> str:
+    labels = [(record.get("filename"), record.get("user_label") or "unlabeled") for record in getattr(window.photo_model, "records", [])[:8]]
+    return f"labels={labels}"
 
 
 def capture(window: Any, output_dir: Path, name: str, checks: list[dict[str, Any]]) -> Snapshot:

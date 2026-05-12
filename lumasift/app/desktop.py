@@ -10,7 +10,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QAbstractListModel, QEasingCurve, QModelIndex, QObject, QPropertyAnimation, QSettings, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QAbstractListModel, QEasingCurve, QItemSelectionModel, QModelIndex, QObject, QPropertyAnimation, QSettings, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -1370,6 +1370,7 @@ class LumaSiftWindow(QMainWindow):
     def _populate_records(self) -> None:
         if not hasattr(self, "photo_list"):
             return
+        selected_keys = self._selected_record_keys()
         self._stop_thumbnail_worker()
         self.thumbnail_generation += 1
         self.loaded_thumbnail_rows.clear()
@@ -1382,6 +1383,7 @@ class LumaSiftWindow(QMainWindow):
             self._show_empty_grid(self._t("empty_filtered"))
             return
         self._set_grid_records(self.visible_records)
+        self._restore_selection_by_keys(selected_keys)
         self.result_count_label.setText(f"{len(self.visible_records)}/{len(self.records)}")
         self.status_label.setText(f"{len(self.visible_records)}/{len(self.records)}")
         self._update_dashboard()
@@ -1394,6 +1396,54 @@ class LumaSiftWindow(QMainWindow):
         if self.photo_model is not None:
             self.photo_model.set_records(records, empty_message)
 
+    def _record_key(self, record: dict[str, Any]) -> str:
+        path = str(record.get("path", "") or "")
+        if not path:
+            return str(record.get("filename", "") or "")
+        try:
+            return str(Path(path).expanduser().resolve())
+        except OSError:
+            return str(Path(path).expanduser())
+
+    def _canonical_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        key = self._record_key(record)
+        for candidate in self.records:
+            if self._record_key(candidate) == key:
+                return candidate
+        return record
+
+    def _normalized_user_label(self, record: dict[str, Any]) -> str:
+        label = str(record.get("user_label", "") or "").strip()
+        return "" if label in {"", "unlabeled"} else label
+
+    def _selected_record_keys(self) -> set[str]:
+        keys: set[str] = set()
+        for index in self._selected_record_indexes():
+            record = index.data(Qt.ItemDataRole.UserRole)
+            if isinstance(record, dict):
+                keys.add(self._record_key(record))
+        return keys
+
+    def _restore_selection_by_keys(self, selected_keys: set[str]) -> None:
+        if not selected_keys or self.photo_model is None or self.photo_list.selectionModel() is None:
+            return
+        selection_model = self.photo_list.selectionModel()
+        selection_model.clearSelection()
+        first_selected: QModelIndex | None = None
+        for row, record in enumerate(self.photo_model.records):
+            if self._record_key(record) not in selected_keys:
+                continue
+            index = self.photo_model.index(row, 0)
+            selection_model.select(
+                index,
+                QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+            )
+            if first_selected is None:
+                first_selected = index
+        if first_selected is not None:
+            self.photo_list.scrollTo(first_selected, QAbstractItemView.ScrollHint.PositionAtCenter)
+            self.photo_list.setCurrentIndex(first_selected)
+
     def _filtered_records(self) -> list[dict[str, Any]]:
         records = list(self.records)
         query = self.search_edit.text().strip().lower() if hasattr(self, "search_edit") else ""
@@ -1403,9 +1453,9 @@ class LumaSiftWindow(QMainWindow):
             records = [record for record in records if str(record.get("category", "")) == category]
         if label_filter and label_filter != "all":
             if label_filter == "unlabeled":
-                records = [record for record in records if not record.get("user_label")]
+                records = [record for record in records if not self._normalized_user_label(record)]
             else:
-                records = [record for record in records if str(record.get("user_label", "")) == label_filter]
+                records = [record for record in records if self._normalized_user_label(record) == label_filter]
         if query:
             records = [
                 record
@@ -1711,11 +1761,15 @@ class LumaSiftWindow(QMainWindow):
             return
         changed = 0
         changed_rows: list[int] = []
+        changed_keys: set[str] = set()
         for index in selected_indexes:
-            record = index.data(Qt.ItemDataRole.UserRole)
-            if not isinstance(record, dict) or not record.get("path"):
+            display_record = index.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(display_record, dict) or not display_record.get("path"):
                 continue
+            record = self._canonical_record(display_record)
             record["user_label"] = label
+            display_record["user_label"] = label
+            changed_keys.add(self._record_key(record))
             self.state_db.set_user_label(
                 path=record["path"],
                 label=label,
@@ -1727,9 +1781,15 @@ class LumaSiftWindow(QMainWindow):
             changed += 1
             changed_rows.append(index.row())
         self._write_current_reports()
-        if self.photo_model is not None:
+        active_label_filter = self.label_filter.currentData() if hasattr(self, "label_filter") else "all"
+        if active_label_filter and active_label_filter != "all":
+            self._populate_records()
+            self._restore_selection_by_keys(changed_keys)
+        elif self.photo_model is not None:
             for row in changed_rows:
                 self.photo_model.refresh_row(row)
+        self._show_selected_detail()
+        self._update_dashboard()
         self.status_label.setText(f"{changed} -> {self._t(label)}")
 
     def _cancel_analysis(self) -> None:

@@ -49,7 +49,7 @@
       "id": "LS-002",
       "title": "Stabilize selection and label state after grid virtualization",
       "priority": 0,
-      "status": "todo",
+        "status": "done",
       "dependencies": [
         "LS-001"
       ],

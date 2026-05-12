@@ -118,3 +118,9 @@
 - Added constructivist visual guide rails and stronger cyan/yellow/red hierarchy for selection, decision, and rejection actions while keeping the photo grid readable.
 - Removed English local-mode fallback strings from the Chinese review detail path and mapped categories, styles, labels, and local-only guidance to Chinese.
 - Tightened `scripts/ui_smoke.py` so review/detail width and localized fallback text are checked automatically.
+
+## 2026-05-12 - Selection and label state stabilization
+- Fixed keep/maybe/reject marking to update canonical records by normalized photo path instead of relying on Qt `UserRole` object identity.
+- Treated explicit `unlabeled` values as unlabeled in filters so generated records and persisted records behave consistently.
+- Preserved selection by photo identity across filter/sort repopulation and refreshed the review cockpit/dashboard after batch marking.
+- Extended `scripts/ui_smoke.py` with real multi-select, keep/reject relabeling, label-filter, and selection-restore checks.

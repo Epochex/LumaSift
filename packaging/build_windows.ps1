@@ -30,12 +30,8 @@ foreach ($LogFile in $LogFiles) {
 }
 
 $PackageDir = Join-Path $Root "dist"
-$ZipPath = Join-Path $PackageDir "LumaSift-Windows-Portable.zip"
-if (Test-Path $ZipPath) { Remove-Item -LiteralPath $ZipPath -Force }
-Compress-Archive -Path (Join-Path $PackageDir "LumaSift") -DestinationPath $ZipPath
-
-Write-Host "Built portable package:"
-Write-Host $ZipPath
+Write-Host "Built application directory:"
+Write-Host (Join-Path $PackageDir "LumaSift")
 
 if (-not $SkipInstaller) {
     $Iscc = Get-Command iscc -ErrorAction SilentlyContinue
@@ -73,6 +69,6 @@ if (-not $SkipInstaller) {
         Write-Host "Built installer:"
         Write-Host (Join-Path $PackageDir "installer\LumaSiftSetup.exe")
     } else {
-        Write-Warning "Inno Setup compiler not available. Portable zip was built; installer script is at packaging\LumaSiftInstaller.iss."
+        Write-Warning "Inno Setup compiler not available. Application directory was built; installer script is at packaging\LumaSiftInstaller.iss."
     }
 }
