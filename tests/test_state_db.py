@@ -44,3 +44,19 @@ def test_state_db_records_run_history(tmp_path: Path) -> None:
 
     rows = db.path.read_bytes()
     assert rows
+
+
+def test_state_db_loads_labels_in_chunks(tmp_path: Path) -> None:
+    db = LumaSiftStateDb(tmp_path / "state.sqlite")
+    photos = []
+    for index in range(1100):
+        photo = tmp_path / f"{index}.jpg"
+        photo.write_bytes(b"fake")
+        photos.append(photo)
+    db.set_user_label(path=photos[0], label="keep")
+    db.set_user_label(path=photos[-1], label="reject")
+
+    labels = db.load_labels(photos)
+
+    assert labels[str(photos[0].resolve())] == "keep"
+    assert labels[str(photos[-1].resolve())] == "reject"

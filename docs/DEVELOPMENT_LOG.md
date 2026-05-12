@@ -64,3 +64,12 @@
   - thumbnail work is queued from the visible viewport instead of the whole result set;
   - stale thumbnail writes are guarded by a generation id;
   - verified 2000 synthetic records can be loaded into the model.
+- Hardened the desktop app against common packaged-exe crashes:
+  - added crash logging under the user profile;
+  - changed window closing to wait for background analysis/thumbnail threads instead of destroying running `QThread`s;
+  - moved thumbnail worker cleanup to thread-finished lifecycle;
+  - added SQLite WAL/busy timeout and chunked label loading for large folders.
+- Added GUI language switching and Chinese-first UI:
+  - default UI is Chinese with an English switch in the header;
+  - major buttons, labels, filters, messages, and detail panels are localized;
+  - long explanatory UI text was shortened into workflow labels and state cues.

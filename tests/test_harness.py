@@ -81,5 +81,9 @@ def test_desktop_app_module_imports() -> None:
 
     app = QApplication.instance() or QApplication([])
     window = LumaSiftWindow()
-    assert window.windowTitle() == "LumaSift - Local AI Photo Curation"
+    assert window.windowTitle().startswith("LumaSift")
+    window.language_combo.setCurrentText("中文")
+    assert "本地" in window.windowTitle()
+    window.language_combo.setCurrentText("English")
+    assert "Local" in window.windowTitle()
     window.close()

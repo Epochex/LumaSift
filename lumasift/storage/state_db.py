@@ -61,13 +61,17 @@ class LumaSiftStateDb:
         normalized = [self._normalize_path(path) for path in paths]
         if not normalized:
             return {}
-        placeholders = ",".join("?" for _ in normalized)
+        labels: dict[str, str] = {}
         with self._connect() as conn:
-            rows = conn.execute(
-                f"select path, user_label from photos where path in ({placeholders}) and user_label is not null",
-                normalized,
-            ).fetchall()
-        return {str(row["path"]): str(row["user_label"]) for row in rows}
+            for start in range(0, len(normalized), 500):
+                chunk = normalized[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"select path, user_label from photos where path in ({placeholders}) and user_label is not null",
+                    chunk,
+                ).fetchall()
+                labels.update({str(row["path"]): str(row["user_label"]) for row in rows})
+        return labels
 
     def set_user_label(
         self,
@@ -146,6 +150,8 @@ class LumaSiftStateDb:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
+        conn.execute("pragma journal_mode=WAL")
+        conn.execute("pragma busy_timeout=5000")
         return conn
 
     def _normalize_path(self, path: str | Path) -> str:
