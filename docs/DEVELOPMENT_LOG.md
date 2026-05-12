@@ -263,3 +263,10 @@
 - UI smoke now asserts the Chinese editing plan includes color-grading/HSL parameter sections and does not leak raw English Lightroom keys.
 - 220 private local RAW/JPG stability validation under ignored `outputs/raw200-ls020/`: first run processed 220/220 in 42.14s with 35 groups and max group size 17; manifest reuse processed 220/220 in 5.22s with 220 reused records. Tightened moment-risk gating estimates 95 group winners/risk alternates for Qwen, 125 non-best skips, and 56.82% call savings versus reviewing all 220 records.
 - Verification: `python -m pytest -q` passed with 62 tests, and `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed.
+
+## 2026-05-13 - Qwen malformed JSON recovery
+- Hardened Qwen story parsing for live gateway/model responses that return fenced JSON, trailing commas, or missing commas between adjacent object fields.
+- Qwen responses are now validated before they are stored in cache; malformed cached responses are deleted and refetched instead of failing repeatedly on cache hit.
+- Malformed live JSON now triggers bounded retry/backoff with a `malformed_json` client event before the photo is marked failed.
+- Raised the default Qwen response budget from 4096 to 8192 tokens to fit the larger `qwen-story-v4` evidence and Lightroom-parameter schema.
+- Verification: `python -m pytest -q` passed with 64 tests, and `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed.

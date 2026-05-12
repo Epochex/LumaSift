@@ -132,5 +132,12 @@ class QwenResponseCache:
         os.replace(temp_path, path)
         return path
 
+    def delete(self, key: QwenCacheKey) -> None:
+        path = self._entry_path(key)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
     def _entry_path(self, key: QwenCacheKey) -> Path:
         return self.cache_dir / f"{key.digest}.json"

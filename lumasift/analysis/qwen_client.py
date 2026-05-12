@@ -28,7 +28,7 @@ class QwenVisionClient:
         base_url: str,
         model: str,
         keyring: ApiKeyRing,
-        max_tokens: int = 1024,
+        max_tokens: int = 8192,
         timeout_seconds: int = 90,
         response_cache: QwenResponseCache | None = None,
         cache_dir: Path | None = None,
@@ -38,6 +38,7 @@ class QwenVisionClient:
         max_backoff_seconds: float = 30.0,
         sleep: Callable[[float], None] = time.sleep,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
+        response_validator: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -52,6 +53,7 @@ class QwenVisionClient:
         self.max_backoff_seconds = max_backoff_seconds
         self.sleep = sleep
         self.event_callback = event_callback
+        self.response_validator = response_validator
         self.last_cache_hit = False
         self.last_cache_key_digest: str | None = None
 
@@ -74,9 +76,15 @@ class QwenVisionClient:
             self.last_cache_key_digest = cache_key.digest
             cached = cache.load(cache_key)
             if cached is not None:
-                self.last_cache_hit = True
-                self._event("cache_hit", image=str(image_path), model=self.model)
-                return cached
+                try:
+                    self._validate_response(cached)
+                except ValueError as exc:
+                    cache.delete(cache_key)
+                    self._event("cache_invalid", image=str(image_path), model=self.model, error=str(exc)[:240])
+                else:
+                    self.last_cache_hit = True
+                    self._event("cache_hit", image=str(image_path), model=self.model)
+                    return cached
 
         if not self.keyring.has_keys():
             raise RuntimeError("No Qwen API keys configured")
@@ -131,9 +139,18 @@ class QwenVisionClient:
                     continue
                 response.raise_for_status()
                 response_data = scrub_secrets(response.json())
+                self._validate_response(response_data)
                 if cache is not None and cache_key is not None:
                     cache.store(cache_key, image_identity, response_data)
                 return response_data
+            except ValueError as exc:
+                last_error = exc
+                if retry_count < self.max_retries:
+                    self._event("retrying", reason="malformed_json", retry=retry_count + 1)
+                    self._backoff(retry_count)
+                    retry_count += 1
+                    continue
+                break
             except requests.HTTPError as exc:
                 last_error = exc
                 break
@@ -150,6 +167,10 @@ class QwenVisionClient:
                     continue
                 break
         raise RuntimeError(f"Qwen vision request failed after key rotation: {last_error}")
+
+    def _validate_response(self, response: dict[str, Any]) -> None:
+        if self.response_validator is not None:
+            self.response_validator(response)
 
     def _cache_for(self, image_path: Path) -> QwenResponseCache | None:
         if not self.cache_enabled:

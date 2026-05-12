@@ -177,22 +177,93 @@ def _extract_message(response: dict[str, Any]) -> str:
     return extract_qwen_response_text(response)
 
 
+def parse_qwen_story_response(response: Mapping[str, Any]) -> dict[str, Any]:
+    return _parse_json_object(extract_qwen_response_text(response))
+
+
 def _parse_json_object(text: str) -> dict[str, Any]:
-    text = text.strip()
+    text = _strip_code_fence(text.strip())
     if not text:
         raise ValueError("Qwen response did not contain parseable text")
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-        if not match:
-            raise
-        return json.loads(match.group(0))
+    candidates = [text]
+    extracted = _extract_json_object_text(text)
+    if extracted and extracted not in candidates:
+        candidates.append(extracted)
+    errors: list[str] = []
+    for candidate in candidates:
+        for repaired in _json_repair_candidates(candidate):
+            try:
+                data = json.loads(repaired)
+            except json.JSONDecodeError as exc:
+                errors.append(f"{exc.msg}: line {exc.lineno} column {exc.colno}")
+                continue
+            if isinstance(data, dict):
+                return data
+            errors.append(f"parsed JSON root was {type(data).__name__}, not object")
+    detail = "; ".join(dict.fromkeys(errors[-3:])) or "unknown parse error"
+    raise ValueError(f"Qwen response JSON was malformed after repair attempts: {detail}")
+
+
+def _strip_code_fence(text: str) -> str:
+    match = re.fullmatch(r"\s*```(?:json)?\s*(.*?)\s*```\s*", text, flags=re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else text
+
+
+def _extract_json_object_text(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = in_string
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return text[start:].strip()
+
+
+def _json_repair_candidates(text: str) -> list[str]:
+    normalized = text.strip()
+    without_trailing_commas = re.sub(r",(\s*[}\]])", r"\1", normalized)
+    with_member_commas = _insert_missing_member_commas(without_trailing_commas)
+    candidates = [normalized, without_trailing_commas, with_member_commas]
+    unique: list[str] = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _insert_missing_member_commas(text: str) -> str:
+    value_end = r'(?P<value>(?:"(?:[^"\\]|\\.)*"|[}\]\d]|true|false|null))'
+    next_key = r'(?P<space>\s*\n\s*)(?P<key>"[^"\n\r]+?"\s*:)'
+    pattern = re.compile(value_end + next_key)
+    previous = None
+    repaired = text
+    while repaired != previous:
+        previous = repaired
+        repaired = pattern.sub(r"\g<value>,\g<space>\g<key>", repaired)
+    return repaired
 
 
 def merge_qwen_story_analysis(record: dict[str, Any], response: dict[str, Any]) -> None:
-    text = _extract_message(response)
-    data = _parse_json_object(text)
+    data = parse_qwen_story_response(response)
     for key in [
         "storytelling_score",
         "human_documentary_value_score",
