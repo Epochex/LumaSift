@@ -76,6 +76,32 @@ def test_harness_writes_selected_editing_advice(tmp_path: Path) -> None:
     assert "第 1 张" in (output_dir / "selected_editing_advice.md").read_text(encoding="utf-8")
 
 
+def test_qwen_stage_cancels_pending_candidates_without_network(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    events: list[dict] = []
+    settings = Settings(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        ai_mode="qwen_vision",
+        vision_api_keys=["test-key"],
+        top_n_api_analysis=3,
+    )
+    harness = LumaSiftHarness(settings=settings, run_id="cancel-qwen", event_callback=events.append)
+    (output_dir / "STOP_LUMASIFT").write_text("stop", encoding="utf-8")
+    ranked = [
+        {"filename": f"{index}.jpg", "path": str(input_dir / f"{index}.jpg"), "category": "story_candidate", "final_selection_score": 90 - index}
+        for index in range(3)
+    ]
+
+    result = harness._apply_qwen_vision(ranked)
+
+    assert [record["qwen_status"] for record in result] == ["cancelled", "cancelled", "cancelled"]
+    assert all("qwen_vision_cancelled" in record["errors"] for record in result)
+    assert any(event["type"] == "qwen_queue_cancelled" and event["cancelled"] == 3 for event in events)
+
+
 def test_desktop_app_module_imports() -> None:
     from lumasift.app.desktop import LumaSiftWindow
 

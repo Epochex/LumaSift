@@ -1447,6 +1447,8 @@ class LumaSiftWindow(QMainWindow):
             "cache": 0,
             "failed": 0,
             "retrying": 0,
+            "cancelled": 0,
+            "cancelling": False,
         }
         self._render_qwen_queue_state()
 
@@ -1465,6 +1467,8 @@ class LumaSiftWindow(QMainWindow):
                     "cache": 0,
                     "failed": 0,
                     "retrying": 0,
+                    "cancelled": 0,
+                    "cancelling": False,
                 }
             )
         elif event_type == "qwen_candidate_running":
@@ -1480,6 +1484,14 @@ class LumaSiftWindow(QMainWindow):
         elif event_type == "qwen_candidate_failed":
             self.qwen_queue_state["failed"] = int(self.qwen_queue_state.get("failed", 0) or 0) + 1
             self.qwen_queue_state["running"] = ""
+        elif event_type == "qwen_candidate_cancelled":
+            self.qwen_queue_state["queued"] = max(0, int(self.qwen_queue_state.get("queued", 0) or 0) - 1)
+            self.qwen_queue_state["cancelled"] = int(self.qwen_queue_state.get("cancelled", 0) or 0) + 1
+            self.qwen_queue_state["running"] = ""
+            self.qwen_queue_state["cancelling"] = True
+        elif event_type == "qwen_queue_cancelled":
+            self.qwen_queue_state["queued"] = 0
+            self.qwen_queue_state["cancelling"] = False
         elif event_type == "qwen_client_event":
             client_event = event.get("client_event", {})
             if isinstance(client_event, dict) and str(client_event.get("type", "")) == "retrying":
@@ -1504,12 +1516,15 @@ class LumaSiftWindow(QMainWindow):
             "cache": "缓存" if self.language == "zh" else "Cache",
             "failed": "失败" if self.language == "zh" else "Failed",
             "retry": "重试" if self.language == "zh" else "Retry",
+            "cancelled": "取消" if self.language == "zh" else "Cancelled",
         }
         queued = self.qwen_queue_state.get("queued", 0)
         done = self.qwen_queue_state.get("done", 0)
         cache = self.qwen_queue_state.get("cache", 0)
         failed = self.qwen_queue_state.get("failed", 0)
         retrying = self.qwen_queue_state.get("retrying", 0)
+        cancelled = self.qwen_queue_state.get("cancelled", 0)
+        cancelling = bool(self.qwen_queue_state.get("cancelling"))
         text = (
             "<span style='font-weight:900; color:#f8fafc;'>Qwen</span>"
             f"&nbsp;&nbsp;<span style='color:#9fb0c2;'>{self._escape(str(model))}</span>"
@@ -1519,10 +1534,14 @@ class LumaSiftWindow(QMainWindow):
             f"&nbsp;&nbsp;<span title='{labels['cache']}' style='color:#61d394;'>⚡ <b>{cache}</b></span>"
             f"&nbsp;&nbsp;<span title='{labels['failed']}' style='color:#ff3b30;'>! <b>{failed}</b></span>"
             f"&nbsp;&nbsp;<span title='{labels['retry']}' style='color:#ff9f1c;'>↻ <b>{retrying}</b></span>"
+            f"&nbsp;&nbsp;<span title='{labels['cancelled']}' style='color:#a78bfa;'>- <b>{cancelled}</b></span>"
         )
+        if cancelling:
+            text += "&nbsp;&nbsp;<span style='color:#a78bfa;'>...</span>"
         self.qwen_queue_label.setToolTip(
             f"Qwen {model}: {labels['queued']} {queued}, {labels['running']} {running or '0'}, "
-            f"{labels['done']} {done}, {labels['cache']} {cache}, {labels['failed']} {failed}, {labels['retry']} {retrying}"
+            f"{labels['done']} {done}, {labels['cache']} {cache}, {labels['failed']} {failed}, "
+            f"{labels['retry']} {retrying}, {labels['cancelled']} {cancelled}"
         )
         self.qwen_queue_label.setText(text)
         self.qwen_queue_label.setVisible(True)
@@ -1955,6 +1974,9 @@ class LumaSiftWindow(QMainWindow):
     def _cancel_analysis(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         (self.output_dir / "STOP_LUMASIFT").write_text("stop", encoding="utf-8")
+        if self.qwen_queue_state.get("enabled"):
+            self.qwen_queue_state["cancelling"] = True
+            self._render_qwen_queue_state()
         self.status_label.setText(self._t("closing") if self.pending_close else self._t("cancel"))
         self.cancel_button.setEnabled(False)
 

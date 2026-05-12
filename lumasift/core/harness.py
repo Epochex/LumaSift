@@ -198,6 +198,9 @@ class LumaSiftHarness:
         for qwen_index, record in enumerate(candidates, start=1):
             if record.get("category") == "failed":
                 continue
+            if self._qwen_cancel_requested():
+                self._cancel_pending_qwen_candidates(candidates[qwen_index - 1 :], qwen_index, len(candidates))
+                break
             try:
                 self._progress("qwen", qwen_index - 1, len(candidates))
                 record["qwen_status"] = "running"
@@ -241,3 +244,25 @@ class LumaSiftHarness:
             finally:
                 self._progress("qwen", qwen_index, len(candidates))
         return rank_records(updated)
+
+    def _qwen_cancel_requested(self) -> bool:
+        return (self.settings.output_dir / "STOP_LUMASIFT").exists()
+
+    def _cancel_pending_qwen_candidates(self, pending: list[dict], start_index: int, total: int) -> None:
+        cancelled = 0
+        for offset, record in enumerate(pending):
+            if record.get("category") == "failed":
+                continue
+            record["qwen_status"] = "cancelled"
+            record.setdefault("errors", []).append("qwen_vision_cancelled")
+            index = start_index + offset
+            cancelled += 1
+            self.state.append_event("qwen_cancelled", path=record.get("path"), index=index, total=total)
+            self._event(
+                "qwen_candidate_cancelled",
+                index=index,
+                total=total,
+                path=record.get("path"),
+                filename=record.get("filename"),
+            )
+        self._event("qwen_queue_cancelled", cancelled=cancelled, total=total)

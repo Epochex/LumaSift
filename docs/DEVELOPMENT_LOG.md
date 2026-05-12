@@ -146,3 +146,10 @@
 - Reduced the large preview image label minimum size so Fit mode is less likely to force scrollbars on smaller windows.
 - Completed the Chinese-first friend-test workflow rehearsal gate by combining fresh Chinese smoke screenshots, the 200 RAW GUI run, review/label/advice checks, large preview verification, and output artifact checks.
 - Rebuilt the Windows app directory and Inno installer, then confirmed `dist/LumaSift/LumaSift.exe` starts from the packaged build and `dist/installer/LumaSiftSetup.exe` exists.
+
+## 2026-05-12 - Qwen cancellation and graceful downgrade
+- Added Qwen-stage cancellation handling: when `STOP_LUMASIFT` exists during Qwen review, pending candidates are marked `cancelled`, keep their local ranking data, and are still written into the final report.
+- The GUI queue strip now tracks cancelled Qwen items separately from queued, running, done, cache-hit, failed, and retry states.
+- The cancel button marks the Qwen queue as cancelling immediately while allowing any in-flight request to finish safely rather than corrupting cache/report state.
+- Extended UI smoke to cover the cancelled queue state without requiring live API access.
+- Added regression coverage so pending Qwen candidates can be cancelled without making a network request.

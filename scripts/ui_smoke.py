@@ -65,6 +65,8 @@ def main() -> int:
     window._analysis_qwen_event({"type": "qwen_candidate_finished", "status": "cache-hit"})
     window._analysis_qwen_event({"type": "qwen_candidate_failed"})
     window._analysis_qwen_event({"type": "qwen_client_event", "client_event": {"type": "retrying"}})
+    window._analysis_qwen_event({"type": "qwen_candidate_cancelled", "filename": "smoke_004.jpg"})
+    window._analysis_qwen_event({"type": "qwen_queue_cancelled", "cancelled": 1})
     app.processEvents()
     snapshots.append(capture(window, args.output, "qwen_queue_status", qwen_queue_checks(window)))
     window.qwen_queue_label.setVisible(False)
@@ -290,6 +292,7 @@ def qwen_queue_checks(window: Any) -> list[dict[str, Any]]:
         check_value("⚡" in plain_text, "qwen_queue_cache_icon_visible", plain_text),
         check_value("!" in plain_text, "qwen_queue_failed_icon_visible", plain_text),
         check_value("↻" in plain_text, "qwen_queue_retry_icon_visible", plain_text),
+        check_value("-" in plain_text, "qwen_queue_cancelled_icon_visible", plain_text),
     ]
 
 
