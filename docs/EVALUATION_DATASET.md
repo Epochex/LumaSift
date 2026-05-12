@@ -35,3 +35,13 @@ Use `--db` to export from a non-default SQLite file.
 4. Edit `gold_label`, `story_rank`, and `notes` in the exported metadata if the first-pass labels need refinement.
 5. Keep the dataset under `outputs/` or another ignored private folder. Do not commit exported labels if paths are sensitive.
 6. Use the exported metadata to compare local-only and Qwen prompt versions with ranking metrics.
+
+## Metrics
+
+Evaluate one or more `report.json` files against the exported labels:
+
+```powershell
+python scripts\evaluate_ranking.py --eval outputs\eval\labels.json --report outputs\local\report.json --report outputs\qwen\report.json --k 20 --output-json outputs\eval\metrics.json --output-md outputs\eval\metrics.md
+```
+
+The metrics output includes Precision@K, Recall@K, NDCG@K, MRR, label distribution, AI mode, prompt version, and observed Qwen model versions for each report.

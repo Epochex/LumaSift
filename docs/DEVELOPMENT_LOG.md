@@ -179,3 +179,8 @@
 - Added `scripts/export_eval_dataset.py` to export labeled SQLite rows as JSON or CSV with `photo_id`, path, user/gold label, story rank, notes, split, prompt version, run context, score, and category.
 - Documented a 100-300 photo evaluation workflow in `docs/EVALUATION_DATASET.md`.
 - Added tests for JSON/CSV dataset writing and the command-line export script.
+
+## 2026-05-12 - Ranking evaluation metrics
+- Added `scripts/evaluate_ranking.py` and `lumasift.ranking_metrics.v1` metrics output for comparing one or more `report.json` files against exported evaluation labels.
+- Metrics now include Precision@K, Recall@K, NDCG@K, MRR, label distribution, AI mode, prompt version, and observed Qwen model versions.
+- Added Markdown summary output so local-only and Qwen/prompt-version comparisons can be inspected without opening raw JSON.

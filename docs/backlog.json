@@ -186,7 +186,7 @@
       "id": "LS-009",
       "title": "Ranking evaluation metrics tool",
       "priority": 1,
-      "status": "todo",
+      "status": "done",
       "dependencies": [
         "LS-008"
       ],
