@@ -386,6 +386,25 @@
         "Record known limitations and safe recovery steps."
       ],
       "risk": "Users can fail the product through unclear onboarding even when the core code works."
+    },
+    {
+      "id": "LS-033",
+      "title": "Constructivist review cockpit and Chinese local fallback",
+      "priority": 0,
+      "status": "done",
+      "dependencies": [
+        "LS-030"
+      ],
+      "area": "uiux",
+      "source": "user_feedback",
+      "rationale": "The right review panel was visually unbalanced and still exposed English fallback text in a Chinese-first product.",
+      "acceptance": [
+        "Review cockpit has a wider stable panel and no horizontal text overflow.",
+        "Chinese local-only detail output does not show English fallback strings.",
+        "Constructivist visual guidance is introduced through high-contrast rails and color hierarchy.",
+        "UI smoke checks the review/detail panel width and local fallback language."
+      ],
+      "risk": "Aggressive visual language can reduce readability unless it is constrained to rails, emphasis, and action hierarchy."
     }
   ]
 }

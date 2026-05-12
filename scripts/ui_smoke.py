@@ -181,15 +181,18 @@ def setup_expanded_checks(window: Any) -> list[dict[str, Any]]:
 
 
 def review_checks(window: Any) -> list[dict[str, Any]]:
+    plain_text = window.detail_text.toPlainText()
     return [
         check_visible(window.review_bar, "review_bar_visible"),
         check_not_visible(window.header_frame, "header_hidden_in_review"),
         check_not_visible(window.workflow_frame, "workflow_hidden_in_review"),
         check_not_visible(window.controls_frame, "setup_controls_hidden_in_review"),
         check_min_size(window.photo_list, "photo_grid_size", min_width=520, min_height=320),
-        check_min_size(window.detail_panel, "detail_panel_size", min_width=400, min_height=320),
+        check_min_size(window.detail_panel, "detail_panel_size", min_width=540, min_height=320),
         check_min_size(window.generate_advice_button, "editing_plan_button_size", min_width=120, min_height=34),
         check_value(window.photo_model.rowCount() >= 1, "records_rendered", f"row_count={window.photo_model.rowCount()}"),
+        check_value("Not available in local_only mode" not in plain_text, "review_no_english_local_fallback", "local fallback localized"),
+        check_value("Run qwen_vision mode" not in plain_text, "review_no_english_qwen_fallback", "qwen fallback localized"),
     ]
 
 
@@ -198,7 +201,7 @@ def editing_plan_checks(window: Any) -> list[dict[str, Any]]:
     expected_title = "照片的修图方案" if window.language == "zh" else "Editing plan"
     forbidden_default = "# Selected Editing Advice" if window.language == "zh" else "选中照片修图方案"
     return [
-        check_min_size(window.detail_panel, "editing_plan_panel_size", min_width=400, min_height=320),
+        check_min_size(window.detail_panel, "editing_plan_panel_size", min_width=540, min_height=320),
         check_value(expected_title in plain_text, "editing_plan_language", f"contains={expected_title!r}"),
         check_value(forbidden_default not in plain_text, "editing_plan_not_wrong_language", f"forbidden={forbidden_default!r}"),
         check_value("Lightroom" in plain_text, "editing_plan_parameters_visible", "Lightroom section visible"),

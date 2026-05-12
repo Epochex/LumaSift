@@ -112,3 +112,9 @@
 - Kept English output available when the UI language is switched to English before generating the editing plan.
 - Replaced the right-side editing-plan preview from raw Markdown/code-block rendering with structured cards, parameter tables, and readable sections.
 - Extended `scripts/ui_smoke.py` with an editing-plan screenshot and language checks so wrong-language or compressed advice panels are caught automatically.
+
+## 2026-05-12 - Constructivist review cockpit pass
+- Widened the right review cockpit and shifted the splitter balance so review/advice content is no longer cramped against the action buttons.
+- Added constructivist visual guide rails and stronger cyan/yellow/red hierarchy for selection, decision, and rejection actions while keeping the photo grid readable.
+- Removed English local-mode fallback strings from the Chinese review detail path and mapped categories, styles, labels, and local-only guidance to Chinese.
+- Tightened `scripts/ui_smoke.py` so review/detail width and localized fallback text are checked automatically.

@@ -785,11 +785,23 @@ class LumaSiftWindow(QMainWindow):
 
         self.detail_panel = QFrame()
         self.detail_panel.setObjectName("detailPanel")
-        self.detail_panel.setMinimumWidth(420)
+        self.detail_panel.setMinimumWidth(540)
         self._apply_shadow(self.detail_panel, blur=22, y=8, alpha=24)
         detail_layout = QVBoxLayout(self.detail_panel)
-        detail_layout.setContentsMargins(12, 12, 12, 12)
-        detail_layout.setSpacing(8)
+        detail_layout.setContentsMargins(10, 10, 10, 10)
+        detail_layout.setSpacing(7)
+        guide_strip = QFrame()
+        guide_strip.setObjectName("constructGuide")
+        guide_layout = QHBoxLayout(guide_strip)
+        guide_layout.setContentsMargins(0, 0, 0, 0)
+        guide_layout.setSpacing(6)
+        for name, width in [("guideCyan", 90), ("guideYellow", 46), ("guideRed", 28)]:
+            segment = QFrame()
+            segment.setObjectName(name)
+            segment.setFixedSize(width, 6)
+            guide_layout.addWidget(segment)
+        guide_layout.addStretch(1)
+        detail_layout.addWidget(guide_strip)
         detail_title = QLabel("")
         detail_title.setObjectName("sectionTitle")
         self.static_labels["review_cockpit"] = detail_title
@@ -805,6 +817,8 @@ class LumaSiftWindow(QMainWindow):
         self.detail_text.setMinimumHeight(120)
         self.detail_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.detail_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.detail_text.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.detail_text.document().setDocumentMargin(0)
         self.detail_text.setHtml(self._empty_detail_html())
         detail_layout.addWidget(self.detail_text, stretch=1)
 
@@ -852,7 +866,7 @@ class LumaSiftWindow(QMainWindow):
         action_grid.addWidget(self.open_contact_button, 1, 2)
         detail_layout.addWidget(action_bar, stretch=0)
         splitter.addWidget(self.detail_panel)
-        splitter.setSizes([900, 520])
+        splitter.setSizes([780, 660])
         root.addWidget(splitter, stretch=1)
 
         self.setCentralWidget(central)
@@ -1531,30 +1545,104 @@ class LumaSiftWindow(QMainWindow):
         self._update_dashboard()
         self._fade_in(self.detail_text, duration=180)
 
+    def _first_score(self, record: dict[str, Any], *keys: str) -> float:
+        for key in keys:
+            try:
+                value = float(record.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value:
+                return value
+        return 0.0
+
+    def _display_category(self, value: Any) -> str:
+        raw = str(value or "")
+        if self.language != "zh":
+            return raw.replace("_", " ")
+        return {
+            "portfolio_candidate": "作品候选",
+            "strong_edit_candidate": "强修图候选",
+            "story_candidate": "故事候选",
+            "technically_weak_but_interesting": "技术弱但有趣",
+            "ordinary_record": "普通记录",
+            "reject_candidate": "淘汰候选",
+            "failed": "处理失败",
+        }.get(raw, raw.replace("_", " "))
+
+    def _display_style(self, value: Any) -> str:
+        raw = str(value or "")
+        if self.language != "zh":
+            return raw.replace("_", " ")
+        return {
+            "pending_vision_review": "等待深评",
+            "high_contrast_bw_documentary": "高反差黑白纪实",
+            "low_key_noir_street": "低调黑色街头",
+            "cinematic_urban_color": "电影感城市彩色",
+            "muted_humanistic_color": "克制人文彩色",
+            "gritty_flash_street": "粗粝闪光街头",
+            "soft_editorial_documentary": "柔和编辑纪实",
+            "cold_metropolitan": "冷调都市",
+            "warm_memory_tone": "暖调记忆感",
+            "do_not_overedit": "克制轻修",
+        }.get(raw, raw.replace("_", " "))
+
+    def _display_user_label(self, value: Any) -> str:
+        raw = str(value or "unlabeled")
+        if self.language != "zh":
+            return raw.replace("_", " ")
+        return {"keep": "保留", "maybe": "待定", "reject": "淘汰", "unlabeled": "未标记"}.get(raw, raw)
+
+    def _display_story(self, record: dict[str, Any]) -> str:
+        raw = str(record.get("story_interpretation", "") or "").strip()
+        if self.language == "zh" and (not raw or raw == "Not available in local_only mode."):
+            return "本地模式已完成技术与可修潜力预筛；故事性、人物关系和决定性瞬间建议对 Top-N 启用 Qwen 深评。"
+        return raw or ("Qwen review has not been run yet." if self.language != "zh" else "等待深度评审。")
+
+    def _display_direction(self, record: dict[str, Any]) -> str:
+        raw = str(record.get("best_editing_direction", "") or "").strip()
+        if self.language == "zh" and (not raw or raw == "Run qwen_vision mode for concrete artistic editing guidance."):
+            return "先点击「修图方案」生成中文参数建议；如果要判断主体关系、街拍瞬间和画面故事，再启用 Qwen 深评。"
+        return raw or ("Use the selected-photo editing plan for detailed parameters." if self.language != "zh" else "生成修图方案后查看具体参数。")
+
+    def _localized_reasons(self, values: list[Any], *, positive: bool) -> list[str]:
+        result: list[str] = []
+        for item in values:
+            text = str(item)
+            if self.language == "zh":
+                replacements = {
+                    "Local proxy detected workable tonal/detail structure.": "本地指标显示画面仍有可用的明暗和细节结构。",
+                    "Semantic story and human-documentary value require Qwen vision review.": "故事感、人物关系和人文价值需要 Qwen 视觉深评确认。",
+                    "pending vision review": "等待视觉深评",
+                }
+                text = replacements.get(text, text)
+            result.append(text)
+        if not result and self.language == "zh":
+            result.append("本地指标显示仍有可修空间。" if positive else "暂无明显风险。")
+        return result
+
     def _format_record_detail_html(self, record: dict[str, Any], selected_count: int) -> str:
         score = float(record.get("final_selection_score", 0) or 0)
-        category = self._escape(str(record.get("category", ""))).replace("_", " ")
-        style = self._escape(str(record.get("recommended_style", ""))).replace("_", " ")
-        user_label = self._escape(str(record.get("user_label", "") or "unlabeled"))
+        category = self._escape(self._display_category(record.get("category", "")))
+        style = self._escape(self._display_style(record.get("recommended_style", "")))
+        user_label = self._escape(self._display_user_label(record.get("user_label", "") or "unlabeled"))
         filename = self._escape(str(record.get("filename", "")))
-        story = self._escape(str(record.get("story_interpretation", "") or "Qwen review has not been run yet."))
-        direction = self._escape(str(record.get("best_editing_direction", "") or "Use the selected-photo editing plan for detailed parameters."))
-        crop = self._escape(str(record.get("crop_strategy", "") or "No crop instruction recorded."))
-        positives = self._html_list(record.get("positive_reasons", [])[:4], "pending vision review")
-        negatives = self._html_list(record.get("negative_reasons", [])[:4], "none recorded")
+        story = self._escape(self._display_story(record))
+        direction = self._escape(self._display_direction(record))
+        crop = self._escape(str(record.get("crop_strategy", "") or ("先不裁切；进入修图方案后再给具体比例。" if self.language == "zh" else "No crop instruction recorded.")))
+        positives = self._html_list(self._localized_reasons(record.get("positive_reasons", [])[:4], positive=True), "本地指标显示仍有可修空间" if self.language == "zh" else "pending vision review")
+        negatives = self._html_list(self._localized_reasons(record.get("negative_reasons", [])[:4], positive=False), "暂无明显风险" if self.language == "zh" else "none recorded")
         params = record.get("specific_edit_parameters", {}) or {}
         params_rows = "".join(
             f"<tr><td>{self._escape(str(key)).replace('_', ' ')}</td><td>{self._escape(str(value))}</td></tr>"
             for key, value in params.items()
         )
         if not params_rows:
-            params_rows = f"<tr><td>{'参数' if self.language == 'zh' else 'Parameters'}</td><td>{'点击修图方案生成' if self.language == 'zh' else 'Generate an editing plan.'}</td></tr>"
+            params_rows = f"<tr><td>{'参数' if self.language == 'zh' else 'Parameters'}</td><td>{'点击「修图方案」生成具体参数' if self.language == 'zh' else 'Generate an editing plan.'}</td></tr>"
         labels = {
             "selected": "已选" if self.language == "zh" else "Selected",
             "user_label": "标记" if self.language == "zh" else "Mark",
-            "final": "总分" if self.language == "zh" else "Final",
             "story": "故事" if self.language == "zh" else "Story",
-            "composition": "构图" if self.language == "zh" else "Composition",
+            "human": "人文" if self.language == "zh" else "Human",
             "editability": "可修" if self.language == "zh" else "Edit",
             "story_read": "判断" if self.language == "zh" else "Read",
             "why": "亮点" if self.language == "zh" else "Signals",
@@ -1563,9 +1651,9 @@ class LumaSiftWindow(QMainWindow):
             "crop": "裁切" if self.language == "zh" else "Crop",
             "params": "参数" if self.language == "zh" else "Parameters",
         }
-        story_score = float(record.get("street_documentary_potential_score", 0) or 0)
-        composition_score = float(record.get("composition_score", 0) or 0)
-        editability_score = float(record.get("editability_score", 0) or 0)
+        story_score = self._first_score(record, "street_documentary_potential_score", "storytelling_score")
+        human_score = self._first_score(record, "human_documentary_value_score", "decisive_moment_score", "composition_score")
+        editability_score = self._first_score(record, "editability_score", "editing_potential_score")
         return f"""
         <html><head>{self._detail_html_style()}</head><body>
         <div class="detail-shell">
@@ -1576,7 +1664,7 @@ class LumaSiftWindow(QMainWindow):
             <p class="meta">{labels["selected"]} {selected_count} | {category} | {style} | {labels["user_label"]}: {user_label}</p>
             <div class="metrics">
               <div><b>{story_score:.0f}</b><span>{labels["story"]}</span></div>
-              <div><b>{composition_score:.0f}</b><span>{labels["composition"]}</span></div>
+              <div><b>{human_score:.0f}</b><span>{labels["human"]}</span></div>
               <div><b>{editability_score:.0f}</b><span>{labels["editability"]}</span></div>
             </div>
           </div>
@@ -1934,32 +2022,32 @@ class LumaSiftWindow(QMainWindow):
     def _detail_html_style(self) -> str:
         return """
         <style>
-        body { color: #dbe7f3; font-family: Segoe UI, Microsoft YaHei; font-size: 12px; background: #101419; }
-        h2 { margin: 0 0 4px 0; font-size: 20px; color: #f8fafc; }
-        h3 { margin: 14px 0 6px 0; font-size: 12px; color: #8fd3ff; text-transform: uppercase; letter-spacing: 0px; }
+        body { color: #dbe7f3; font-family: Segoe UI, Microsoft YaHei; font-size: 12px; background: #090d12; margin: 0; }
+        h2 { margin: 0 0 4px 0; font-size: 19px; color: #f8fafc; }
+        h3 { margin: 12px 0 6px 0; font-size: 12px; color: #00a6ff; text-transform: uppercase; letter-spacing: 0px; border-left: 5px solid #ffd400; padding-left: 7px; }
         p { line-height: 1.45; margin: 4px 0 8px 0; color: #c8d4e0; }
         ul { margin: 4px 0 8px 18px; padding: 0; }
         li { margin-bottom: 5px; }
         table { border-collapse: collapse; width: 100%; margin-top: 8px; }
         td { border-bottom: 1px solid #26313d; padding: 6px; vertical-align: top; color: #dbe7f3; }
         pre { white-space: pre-wrap; background: #0b0f14; border: 1px solid #26313d; border-radius: 8px; padding: 10px; color: #dbe7f3; }
-        .summary-card { background: #141b23; border: 1px solid #293646; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
-        .advice-card { background: #111820; border: 1px solid #293646; border-radius: 10px; padding: 12px; margin: 10px 0 14px 0; }
+        .summary-card { background: #101820; border: 1px solid #293646; border-left: 6px solid #ff3b30; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+        .advice-card { background: #0d131a; border: 1px solid #293646; border-left: 6px solid #00a6ff; border-radius: 8px; padding: 10px; margin: 8px 0 12px 0; }
         .advice-head h2 { margin-top: 5px; }
         .pill { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 8px; background: #17324a; color: #8fd3ff; font-weight: 800; }
-        .rank { color: #8fd3ff; font-weight: 800; }
+        .rank { color: #ffd400; font-weight: 900; }
         .score { float: right; color: #f8fafc; font-size: 32px; font-weight: 900; }
         .small-score { font-size: 24px; }
         .meta { color: #93a4b8; }
         .metrics { display: table; width: 100%; margin-top: 10px; border-spacing: 6px 0; }
         .metrics div { display: table-cell; background: #0c1117; border: 1px solid #26313d; border-radius: 8px; padding: 8px; text-align: center; }
-        .metrics b { display: block; color: #f5b84b; font-size: 18px; }
+        .metrics b { display: block; color: #ffd400; font-size: 18px; }
         .metrics span { color: #9fb0c2; font-size: 11px; }
         .score-row { margin: 8px 0 10px 0; }
         .score-row span { font-weight: 700; color: #c8d4e0; }
         .score-row b { float: right; color: #f8fafc; }
         .bar { margin-top: 4px; height: 8px; background: #26313d; border-radius: 4px; }
-        .bar div { height: 8px; background: #2ea8ff; border-radius: 4px; }
+        .bar div { height: 8px; background: #00a6ff; border-radius: 4px; }
         .param-table td:nth-child(1) { width: 42%; color: #9fb0c2; }
         .param-table td:nth-child(2) { width: 58%; color: #f8fafc; }
         </style>
@@ -1969,7 +2057,7 @@ class LumaSiftWindow(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow, QWidget {
-                background: #101419;
+                background: #090d12;
                 color: #dbe7f3;
                 font-family: Segoe UI, Microsoft YaHei;
                 font-size: 12px;
@@ -1981,13 +2069,23 @@ class LumaSiftWindow(QMainWindow):
             QLabel#sectionTitle { font-size: 14px; font-weight: 900; color: #f8fafc; }
             QLabel#fieldLabel { color: #c8d4e0; font-weight: 800; }
             QLabel#miniLabel { color: #9fb0c2; font-weight: 800; }
-            QFrame#hero, QFrame#controlCard, QFrame#toolbar, QFrame#detailPanel, QFrame#reviewBar {
-                background: #151b22;
+            QFrame#hero, QFrame#controlCard, QFrame#toolbar, QFrame#reviewBar {
+                background: #111820;
                 border: 1px solid #26313d;
                 border-radius: 8px;
             }
+            QFrame#detailPanel {
+                background: #0d1218;
+                border: 2px solid #26313d;
+                border-left: 6px solid #ff3b30;
+                border-radius: 8px;
+            }
+            QFrame#constructGuide { background: transparent; border: none; }
+            QFrame#guideCyan { background: #00a6ff; border: none; }
+            QFrame#guideYellow { background: #ffd400; border: none; }
+            QFrame#guideRed { background: #ff3b30; border: none; }
             QFrame#actionBar {
-                background: #101419;
+                background: #0a0f15;
                 border: 1px solid #26313d;
                 border-radius: 8px;
             }
@@ -2018,11 +2116,11 @@ class LumaSiftWindow(QMainWindow):
             }
             QFrame#stepCard[state="active"] {
                 background: #172232;
-                border: 2px solid #2ea8ff;
+                border: 2px solid #ffd400;
             }
             QFrame#stepCard[state="done"] {
                 background: #14231e;
-                border: 1px solid #35c486;
+                border: 1px solid #00a6ff;
             }
             QLabel#stepTitle { font-weight: 900; color: #f8fafc; }
             QLineEdit, QSpinBox, QComboBox, QTextEdit, QListView {
@@ -2034,7 +2132,7 @@ class LumaSiftWindow(QMainWindow):
                 selection-background-color: #245d82;
             }
             QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QTextEdit:focus {
-                border: 2px solid #2ea8ff;
+                border: 2px solid #ffd400;
             }
             QSpinBox {
                 font-size: 14px;
@@ -2058,18 +2156,18 @@ class LumaSiftWindow(QMainWindow):
                 padding: 9px 13px;
                 font-weight: 800;
             }
-            QPushButton#primaryButton { background: #2ea8ff; color: #061019; }
-            QPushButton#primaryButton:hover { background: #62c2ff; }
+            QPushButton#primaryButton { background: #00a6ff; color: #061019; }
+            QPushButton#primaryButton:hover { background: #45c0ff; }
             QPushButton#secondaryButton { background: #233044; color: #f8fafc; }
             QPushButton#secondaryButton:hover { background: #334155; }
-            QPushButton#ghostButton { background: transparent; color: #8fd3ff; border: 1px solid #2a3645; }
+            QPushButton#ghostButton { background: transparent; color: #ffd400; border: 1px solid #334155; }
             QPushButton#ghostButton:hover { background: #172232; }
-            QPushButton#markKeepButton { background: #143b2b; color: #86efac; }
-            QPushButton#markKeepButton:hover { background: #1f5b41; }
-            QPushButton#markMaybeButton { background: #46330f; color: #f5d57a; }
-            QPushButton#markMaybeButton:hover { background: #624716; }
-            QPushButton#markRejectButton { background: #4a1c22; color: #fca5a5; }
-            QPushButton#markRejectButton:hover { background: #65252e; }
+            QPushButton#markKeepButton { background: #00a6ff; color: #061019; }
+            QPushButton#markKeepButton:hover { background: #45c0ff; }
+            QPushButton#markMaybeButton { background: #ffd400; color: #111827; }
+            QPushButton#markMaybeButton:hover { background: #ffe45c; }
+            QPushButton#markRejectButton { background: #ff3b30; color: #ffffff; }
+            QPushButton#markRejectButton:hover { background: #ff625a; }
             QPushButton:disabled { background: #26313d; color: #66778a; }
             QListView#photoGrid {
                 background: #0c1117;
@@ -2100,10 +2198,10 @@ class LumaSiftWindow(QMainWindow):
                 font-weight: 800;
             }
             QTextEdit#detailText {
-                background: #101419;
+                background: #090d12;
                 border: 1px solid #26313d;
                 border-radius: 8px;
-                padding: 10px;
+                padding: 8px;
                 color: #dbe7f3;
             }
             QProgressBar {
@@ -2115,7 +2213,7 @@ class LumaSiftWindow(QMainWindow):
                 height: 18px;
                 font-weight: 700;
             }
-            QProgressBar::chunk { background: #2ea8ff; border-radius: 5px; }
+            QProgressBar::chunk { background: #00a6ff; border-radius: 5px; }
             """
         )
 
