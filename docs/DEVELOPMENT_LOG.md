@@ -218,3 +218,10 @@
 - UI smoke now checks that advice output includes visible evidence, crop reasoning, do-not-overedit guidance, and does not reintroduce the generic phrase about protecting valuable moments and relationships.
 - Verification: `python -m pytest -q` passed with 51 tests, and `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed.
 - Live Qwen v3 smoke on 4 private local RAW files with Top-1 deep review completed in 86.81 seconds, processed 4/4 with 0 failures, and returned `analysis_quality=concrete` with concrete inventory, `moment_status=weak`, a `maybe` editorial verdict, 16:9 crop guidance, and local mask actions tied to the DB/Juten Tach sign and the left foreground passenger.
+
+## 2026-05-12 - Qwen activation guardrails
+- Diagnosed a GUI run where Qwen API keys were configured but the saved run still used `ai_mode=local_only`, so no deep-review queue was created and selected advice correctly remained a technical draft.
+- Kept the API key field editable in local mode, switched to Qwen mode automatically when the user types or pastes a key, and added a visible Qwen warning strip when keys exist but the current mode is still local.
+- Added a start-run confirmation when keys are configured but the mode is local, preventing silent local-only runs when the user expected Qwen deep visual review.
+- Added desktop regression tests for key-entry mode promotion and local-mode Qwen warning visibility.
+- Verification: `python -m pytest -q` passed with 53 tests, and `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed.

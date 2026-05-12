@@ -130,6 +130,11 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "missing_input_title": "目录不存在",
         "missing_key_title": "缺少 Qwen 密钥",
         "missing_key_body": "Qwen 模式需要 API key。请填入密钥或配置 .env。",
+        "qwen_key_local_title": "检测到 Qwen 密钥",
+        "qwen_key_local_body": "当前仍是本地初筛模式，不会进行 Qwen 深度视觉分析。要切换到 Qwen 深评并只分析 Top-N 候选吗？",
+        "qwen_key_local_hint": "已检测到 Qwen 密钥，但当前是本地模式；本次不会深评。切到 Qwen 或点击第 3 步深评。",
+        "qwen_key_promoted": "已切换到 Qwen 深评：只上传 Top-N 压缩预览。",
+        "qwen_not_run_local": "本次是本地初筛，未运行 Qwen 深评。",
         "no_selection": "未选择照片",
         "select_first": "请先选择一张或多张照片。",
         "no_records": "没有结果",
@@ -208,6 +213,11 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "missing_input_title": "Input folder missing",
         "missing_key_title": "Qwen API key missing",
         "missing_key_body": "Qwen mode requires API keys. Enter keys or configure .env.",
+        "qwen_key_local_title": "Qwen key detected",
+        "qwen_key_local_body": "The current mode is still local pre-score, so Qwen deep visual review will not run. Switch to Qwen review for Top-N candidates?",
+        "qwen_key_local_hint": "Qwen key detected, but the current mode is Local. This run will not deep-review; switch to Qwen or click step 3.",
+        "qwen_key_promoted": "Switched to Qwen review. Only Top-N compressed previews will be uploaded.",
+        "qwen_not_run_local": "This was a local pre-score run. Qwen deep review did not run.",
         "no_selection": "No selection",
         "select_first": "Select one or more photos first.",
         "no_records": "No records",
@@ -878,7 +888,6 @@ class LumaSiftWindow(QMainWindow):
             self.api_key_edit.setPlaceholderText(self._t("api_placeholder"))
             self.show_key_checkbox.setText(self._t("show"))
             self.save_keys_checkbox.setText(self._t("save_keys"))
-            self.cache_note.setText(self._t("cache_note"))
             self.run_button.setText(self._t("analyze"))
             self.cancel_button.setText(self._t("cancel"))
             self.advanced_button.setText(self._t("hide_advanced") if self.advanced_panel.isVisible() else self._t("advanced_settings"))
@@ -1361,6 +1370,7 @@ class LumaSiftWindow(QMainWindow):
         self.api_key_edit.setPlaceholderText("Optional: comma-separated Qwen keys. Leave empty to use .env.")
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key_edit.setMinimumHeight(34)
+        self.api_key_edit.textEdited.connect(self._api_key_text_edited)
         self.show_key_checkbox = QCheckBox("Show")
         self.show_key_checkbox.setMinimumHeight(24)
         self.show_key_checkbox.toggled.connect(self._toggle_key_visibility)
@@ -1526,6 +1536,20 @@ class LumaSiftWindow(QMainWindow):
         keys_text = self.api_key_edit.text().strip()
         if keys_text:
             settings.vision_api_keys = [key.strip() for key in keys_text.split(",") if key.strip()]
+        if settings.ai_mode != "qwen_vision" and settings.vision_api_keys:
+            reply = QMessageBox.question(
+                self,
+                self._t("qwen_key_local_title"),
+                self._t("qwen_key_local_body"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._set_qwen_mode()
+                settings.ai_mode = "qwen_vision"
+                self.status_label.setText(self._t("qwen_key_promoted"))
+            else:
+                self.status_label.setText(self._t("qwen_not_run_local"))
         if settings.ai_mode == "qwen_vision" and not settings.vision_api_keys:
             QMessageBox.warning(
                 self,
@@ -1687,8 +1711,21 @@ class LumaSiftWindow(QMainWindow):
         if not hasattr(self, "qwen_queue_label"):
             return
         if not self.qwen_queue_state.get("enabled"):
-            self.qwen_queue_label.setVisible(False)
-            self.qwen_queue_label.setText("")
+            if (
+                hasattr(self, "mode_combo")
+                and (self.mode_combo.currentData() or self.mode_combo.currentText()) != "qwen_vision"
+                and self._has_configured_qwen_keys()
+            ):
+                hint = self._t("qwen_key_local_hint")
+                self.qwen_queue_label.setToolTip(hint)
+                self.qwen_queue_label.setText(
+                    "<span style='font-weight:900; color:#f8fafc;'>Qwen</span>"
+                    f"&nbsp;&nbsp;<span style='color:#ffd400;'>! {self._escape(hint)}</span>"
+                )
+                self.qwen_queue_label.setVisible(True)
+            else:
+                self.qwen_queue_label.setVisible(False)
+                self.qwen_queue_label.setText("")
             return
         model = self.qwen_queue_state.get("model", "Qwen")
         running = str(self.qwen_queue_state.get("running", "") or "")
@@ -2254,14 +2291,38 @@ class LumaSiftWindow(QMainWindow):
     def _toggle_key_visibility(self, enabled: bool) -> None:
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Normal if enabled else QLineEdit.EchoMode.Password)
 
+    def _api_key_text_edited(self, text: str) -> None:
+        if text.strip():
+            self._set_qwen_mode()
+            self.status_label.setText(self._t("qwen_key_promoted"))
+        self._render_qwen_queue_state()
+
+    def _set_qwen_mode(self) -> None:
+        mode_index = self.mode_combo.findData("qwen_vision")
+        if mode_index >= 0 and self.mode_combo.currentIndex() != mode_index:
+            self.mode_combo.setCurrentIndex(mode_index)
+        else:
+            self._sync_mode_controls()
+
+    def _has_configured_qwen_keys(self) -> bool:
+        if hasattr(self, "api_key_edit") and self.api_key_edit.text().strip():
+            return True
+        try:
+            return bool(Settings.from_env().vision_api_keys)
+        except Exception:  # noqa: BLE001 - this is only a UI hint.
+            return False
+
     def _sync_mode_controls(self) -> None:
         qwen_enabled = (self.mode_combo.currentData() or self.mode_combo.currentText()) == "qwen_vision"
         self.top_n_spin.setEnabled(qwen_enabled)
-        self.api_key_edit.setEnabled(qwen_enabled)
-        self.show_key_checkbox.setEnabled(qwen_enabled)
-        self.save_keys_checkbox.setEnabled(qwen_enabled)
+        self.api_key_edit.setEnabled(True)
+        self.show_key_checkbox.setEnabled(True)
+        self.save_keys_checkbox.setEnabled(True)
+        if hasattr(self, "cache_note"):
+            self.cache_note.setText(self._t("cache_note") if qwen_enabled else self._t("qwen_key_local_hint"))
         self.stat_labels.get("mode", QLabel()).setText(self._t("qwen") if qwen_enabled else self._t("local"))
         self._update_workflow("qwen" if qwen_enabled else "import")
+        self._render_qwen_queue_state()
 
     def _load_preferences(self) -> None:
         self.input_edit.setText(str(self.settings_store.value("input_dir", "D:/DCIM")))

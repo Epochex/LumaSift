@@ -500,6 +500,27 @@
         "A live Qwen v3 smoke on private local RAW files returns concrete evidence and structured editing actions rather than generic review text."
       ],
       "risk": "Top-N runs must include enough Qwen-reviewed records; local-only review is now intentionally framed as pre-screening, not final photographic judgment."
+    },
+    {
+      "id": "LS-038",
+      "title": "Qwen activation guardrails and no-silent-local fallback",
+      "priority": 0,
+      "status": "done",
+      "dependencies": [
+        "LS-033",
+        "LS-037"
+      ],
+      "area": "ai-workflow",
+      "source": "user_feedback",
+      "rationale": "A user can configure Qwen keys but still accidentally run local-only mode, producing no deep analysis without a clear explanation.",
+      "acceptance": [
+        "Typing or pasting a Qwen key in the GUI switches the mode to Qwen review.",
+        "The key field remains editable even while the mode is local.",
+        "When keys exist but mode is local, the GUI shows a visible warning that the current run will not perform deep review.",
+        "Starting a local run with configured keys asks whether to switch to Qwen Top-N review instead of silently running local-only.",
+        "Desktop tests cover key-entry promotion and local-mode warning visibility."
+      ],
+      "risk": "The confirmation dialog should prevent accidental API spend while still making Qwen activation obvious."
     }
   ]
 }

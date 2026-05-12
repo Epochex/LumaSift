@@ -80,3 +80,38 @@ def test_detail_html_renders_qwen_story_evidence() -> None:
     assert "这一帧的人车间距" in html
     assert "float:" not in html
     window.close()
+
+
+def test_api_key_entry_switches_to_qwen_review_mode() -> None:
+    app = QApplication.instance() or QApplication([])
+    _ = app
+    window = LumaSiftWindow()
+    window.language = "en"
+    local_index = window.mode_combo.findData("local_only")
+    window.mode_combo.setCurrentIndex(local_index)
+
+    window._api_key_text_edited("sk-test")
+
+    assert window.mode_combo.currentData() == "qwen_vision"
+    assert window.top_n_spin.isEnabled()
+    assert "Qwen" in window.status_label.text()
+    window.close()
+
+
+def test_local_mode_with_configured_qwen_key_shows_deep_review_hint() -> None:
+    app = QApplication.instance() or QApplication([])
+    _ = app
+    window = LumaSiftWindow()
+    window.language = "en"
+    window._retranslate_ui()
+    local_index = window.mode_combo.findData("local_only")
+    window.mode_combo.setCurrentIndex(local_index)
+    window.api_key_edit.setText("sk-test")
+    window.qwen_queue_state = {"enabled": False}
+
+    window._render_qwen_queue_state()
+
+    assert not window.qwen_queue_label.isHidden()
+    assert "Local" in window.qwen_queue_label.toolTip()
+    assert "deep-review" in window.qwen_queue_label.toolTip()
+    window.close()
