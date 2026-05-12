@@ -259,6 +259,7 @@ class LumaSiftHarness:
                 merge_qwen_story_analysis(record, response)
                 status = "cache-hit" if client.last_cache_hit else "done"
                 record["qwen_status"] = status
+                record["qwen_prompt_version"] = QWEN_STORY_PROMPT_VERSION
                 if client.last_cache_key_digest:
                     record["qwen_cache_key"] = client.last_cache_key_digest
                 self.state.append_event("qwen_analyzed", path=record["path"])

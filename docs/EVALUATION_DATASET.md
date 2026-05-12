@@ -44,4 +44,4 @@ Evaluate one or more `report.json` files against the exported labels:
 python scripts\evaluate_ranking.py --eval outputs\eval\labels.json --report outputs\local\report.json --report outputs\qwen\report.json --k 20 --output-json outputs\eval\metrics.json --output-md outputs\eval\metrics.md
 ```
 
-The metrics output includes Precision@K, Recall@K, NDCG@K, MRR, label distribution, AI mode, prompt version, and observed Qwen model versions for each report.
+The metrics output includes Precision@K, Recall@K, NDCG@K, MRR, label distribution, AI mode, prompt version, observed Qwen model versions, and false negatives for technically weak but story-valuable photos that fell outside the chosen K.

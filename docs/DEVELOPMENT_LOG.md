@@ -184,3 +184,8 @@
 - Added `scripts/evaluate_ranking.py` and `lumasift.ranking_metrics.v1` metrics output for comparing one or more `report.json` files against exported evaluation labels.
 - Metrics now include Precision@K, Recall@K, NDCG@K, MRR, label distribution, AI mode, prompt version, and observed Qwen model versions.
 - Added Markdown summary output so local-only and Qwen/prompt-version comparisons can be inspected without opening raw JSON.
+
+## 2026-05-12 - Qwen prompt-version evaluation loop
+- Qwen-reviewed records now carry `qwen_prompt_version` in JSON/CSV reports, while the Qwen cache key continues to include prompt version and model identity.
+- Ranking metrics now surface prompt version and Qwen model versions for each compared report, enabling local-only vs Qwen and prompt A/B comparisons.
+- Metrics Markdown now lists false negatives: relevant keep/maybe photos outside the chosen K that look technically weak or were categorized as technically weak but interesting.

@@ -24,7 +24,14 @@ def test_ranking_metrics_compute_precision_recall_ndcg_mrr(tmp_path: Path) -> No
         "records": [
             {"rank": 1, "path": "b.jpg", "qwen_model": "qwen-test"},
             {"rank": 2, "path": "a.jpg", "qwen_model": "qwen-test"},
-            {"rank": 3, "path": "c.jpg", "qwen_model": "qwen-test"},
+            {
+                "rank": 3,
+                "path": "c.jpg",
+                "qwen_model": "qwen-test",
+                "filename": "c.jpg",
+                "technical_quality_score": 40,
+                "category": "technically_weak_but_interesting",
+            },
         ],
     }
 
@@ -39,13 +46,16 @@ def test_ranking_metrics_compute_precision_recall_ndcg_mrr(tmp_path: Path) -> No
     assert result["metrics"]["ndcg@2"] > 0
     assert result["prompt_version"] == "qwen-story-v1"
     assert result["model_versions"] == ["qwen-test"]
+    assert result["false_negatives"][0]["filename"] == "c.jpg"
 
     json_path = tmp_path / "metrics.json"
     md_path = tmp_path / "metrics.md"
     write_metrics_json(json_path, payload)
     write_metrics_markdown(md_path, payload)
     assert json.loads(json_path.read_text(encoding="utf-8"))["schema"] == METRICS_SCHEMA
-    assert "precision@2" in md_path.read_text(encoding="utf-8")
+    md_text = md_path.read_text(encoding="utf-8")
+    assert "precision@2" in md_text
+    assert "False negatives" in md_text
 
 
 def test_evaluate_ranking_script(tmp_path: Path) -> None:

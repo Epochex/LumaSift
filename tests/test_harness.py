@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from PySide6.QtWidgets import QApplication
 from PIL import Image
 
@@ -216,6 +217,45 @@ def test_qwen_stage_skips_rejected_user_labels_by_default(tmp_path: Path) -> Non
     assert result[0]["qwen_status"] == "skipped_user_reject"
     assert result[0]["qwen_skip_reason"] == "user_label_reject"
     assert any(event["type"] == "qwen_queue_prepared" and event["total"] == 0 for event in events)
+
+
+def test_qwen_stage_writes_prompt_version_and_cache_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    photo = input_dir / "candidate.jpg"
+    Image.new("RGB", (32, 32), color=(200, 40, 40)).save(photo)
+
+    class FakeQwenClient:
+        last_cache_hit = False
+        last_cache_key_digest = "cache-digest"
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def analyze_image(self, *args: object, **kwargs: object) -> dict:
+            return {
+                "model": "qwen-test",
+                "choices": [{"message": {"content": '{"final_selection_score": 91, "category": "strong_edit_candidate"}'}}],
+            }
+
+    monkeypatch.setattr("lumasift.core.harness.QwenVisionClient", FakeQwenClient)
+    settings = Settings(input_dir=input_dir, output_dir=output_dir, ai_mode="qwen_vision", vision_api_keys=["test-key"])
+    harness = LumaSiftHarness(settings=settings, run_id="prompt-version")
+
+    result = harness._apply_qwen_vision(
+        [
+            {
+                "filename": "candidate.jpg",
+                "path": str(photo),
+                "category": "story_candidate",
+                "final_selection_score": 80,
+            }
+        ]
+    )
+
+    assert result[0]["qwen_prompt_version"] == "qwen-story-v1"
+    assert result[0]["qwen_cache_key"] == "cache-digest"
 
 
 def test_desktop_app_module_imports() -> None:

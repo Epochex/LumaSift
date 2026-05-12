@@ -27,6 +27,8 @@ CSV_FIELDS = [
     "user_feedback_priority",
     "user_feedback_action",
     "qwen_skip_reason",
+    "qwen_prompt_version",
+    "qwen_model",
     "recommended_style",
     "positive_reasons",
     "negative_reasons",

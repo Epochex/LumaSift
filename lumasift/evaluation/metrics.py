@@ -39,6 +39,7 @@ def evaluate_report(eval_dataset: dict[str, Any], report: dict[str, Any], *, k: 
         "judged_count": len(judged),
         "relevant_count": relevant_total,
         "label_distribution": dict(Counter(item["gold_label"] for item in judged)),
+        "false_negatives": _false_negatives(judged, k=k),
         "metrics": {
             f"precision@{k}": round(relevant_at_k / k, 6) if k else 0.0,
             f"recall@{k}": round(relevant_at_k / relevant_total, 6) if relevant_total else 0.0,
@@ -83,6 +84,15 @@ def write_metrics_markdown(path: Path, payload: dict[str, Any]) -> None:
         )
         for key, value in metrics.items():
             lines.append(f"| {key} | {value:.6f} |")
+        false_negatives = result.get("false_negatives", [])
+        if false_negatives:
+            lines.extend(["", "### False negatives", ""])
+            for item in false_negatives[:10]:
+                lines.append(
+                    f"- rank {item.get('rank')}: `{item.get('filename') or item.get('path')}` "
+                    f"gold=`{item.get('gold_label')}` score={item.get('score')} "
+                    f"technical={item.get('technical_quality_score')} category=`{item.get('category')}`"
+                )
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -134,3 +144,35 @@ def _prompt_version(eval_dataset: dict[str, Any], ranked: list[dict[str, Any]]) 
     versions = {str(row.get("prompt_version")) for row in eval_dataset.get("records", []) if isinstance(row, dict) and row.get("prompt_version")}
     versions.update(str(record.get("qwen_prompt_version")) for record in ranked if record.get("qwen_prompt_version"))
     return ",".join(sorted(versions))
+
+
+def _false_negatives(judged: list[dict[str, Any]], *, k: int) -> list[dict[str, Any]]:
+    misses: list[dict[str, Any]] = []
+    for index, item in enumerate(judged, start=1):
+        if item["relevance"] <= 0 or index <= k:
+            continue
+        record = item["record"]
+        technical = _float(record.get("technical_quality_score"))
+        category = str(record.get("category") or "")
+        story_strong_technical_weak = technical < 55.0 or category == "technically_weak_but_interesting"
+        if not story_strong_technical_weak:
+            continue
+        misses.append(
+            {
+                "rank": record.get("rank", index),
+                "path": record.get("path", ""),
+                "filename": record.get("filename", ""),
+                "gold_label": item["gold_label"],
+                "score": record.get("final_selection_score", ""),
+                "technical_quality_score": record.get("technical_quality_score", ""),
+                "category": category,
+            }
+        )
+    return misses
+
+
+def _float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
