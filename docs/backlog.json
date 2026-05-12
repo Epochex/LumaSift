@@ -565,6 +565,28 @@
         "Desktop regression tests and UI smoke cover the always-expanded settings workspace and compact review action strip."
       ],
       "risk": "Icon-only controls rely on stable tooltips and recognizable symbols; friend testing should confirm the glyph vocabulary is understood."
+    },
+    {
+      "id": "LS-041",
+      "title": "Independent workbench/settings pages and Qwen progress feedback",
+      "priority": 0,
+      "status": "done",
+      "dependencies": [
+        "LS-039",
+        "LS-040"
+      ],
+      "area": "uiux",
+      "source": "user_feedback",
+      "rationale": "The nav still mixed commands with pages, settings overlapped the review surface, Qwen deep review lacked a clear progress affordance, and cancel reused close handling in a way that could make the app appear to exit.",
+      "acceptance": [
+        "The top nav exposes independent View, Settings, History, and Help pages, with View placed before Settings.",
+        "Run and Cancel are workbench controls, while Run and Output are removed from the navigation bar.",
+        "The Settings page is independent and fully expanded instead of sharing space with the review board.",
+        "Qwen deep review shows a determinate progress bar, model name, queue counts, current file state, and a short observable pipeline status.",
+        "Cancel writes the stop file and pauses analysis without setting the window into pending-close mode.",
+        "UI smoke captures the main page, settings page, Qwen progress panel, review board, scrolled cockpit, and editing plan."
+      ],
+      "risk": "The current Qwen status can expose only observable pipeline phases, not hidden model chain-of-thought; live API cancellation still stops between candidates unless the provider request returns earlier."
     }
   ]
 }

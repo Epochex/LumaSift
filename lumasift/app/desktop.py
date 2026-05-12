@@ -121,6 +121,7 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "show_setup": "展开设置",
         "new_scan": "重新分析",
         "run_history": "历史",
+        "nav_main": "视图",
         "settings": "设置",
         "hide_settings": "收起设置",
         "nav_run": "运行",
@@ -215,6 +216,7 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "show_setup": "Show Setup",
         "new_scan": "Analyze Again",
         "run_history": "History",
+        "nav_main": "View",
         "settings": "Settings",
         "hide_settings": "Hide Settings",
         "nav_run": "Run",
@@ -848,6 +850,8 @@ class LumaSiftWindow(QMainWindow):
         self.pending_close = False
         self.allow_close = False
         self.review_mode = False
+        self.current_nav_page = "main"
+        self.nav_buttons: dict[str, QPushButton] = {}
         self.qwen_queue_state: dict[str, Any] = {}
         self.preview_dialogs: list[LargePreviewDialog] = []
         self._build_ui()
@@ -895,20 +899,20 @@ class LumaSiftWindow(QMainWindow):
             ("review_board", self.static_labels.get("review_board")),
             ("review_cockpit", self.static_labels.get("review_cockpit")),
             ("review_mode", self.static_labels.get("review_mode")),
+            ("run_history", self.static_labels.get("history_page_title")),
+            ("nav_help", self.static_labels.get("help_page_title")),
         ]:
             if label:
                 label.setText(self._t(key))
         if hasattr(self, "browse_input_button"):
             self.browse_input_button.setText(self._t("browse"))
             self.browse_output_button.setText(self._t("browse"))
-        if hasattr(self, "history_button"):
-            self.history_button.setText(self._t("run_history"))
-        if hasattr(self, "settings_nav_button"):
-            self._sync_setup_nav_button()
-        for text_key in ("nav_run", "nav_output", "nav_view", "nav_help"):
-            button = self.static_labels.get(f"nav_{text_key}")
+        for page, text_key in [("main", "nav_main"), ("settings", "settings"), ("history", "run_history"), ("help", "nav_help")]:
+            button = self.nav_buttons.get(page)
             if button:
                 button.setText(self._t(text_key))
+        if hasattr(self, "settings_nav_button"):
+            self._sync_setup_nav_button()
         mini_map = {
             "mini_Mode": "mode",
             "mini_Scan": "scan",
@@ -935,6 +939,11 @@ class LumaSiftWindow(QMainWindow):
             self.save_keys_checkbox.setText(self._t("save_keys"))
             self.run_button.setText(self._t("analyze"))
             self.cancel_button.setText(self._t("cancel"))
+            self.main_run_button.setText(self._t("analyze"))
+            self.main_cancel_button.setText(self._t("cancel"))
+            self.history_open_button.setText(self._t("open_output"))
+            self.history_load_button.setText(self._t("load_run"))
+            self.help_text.setHtml(self._help_page_html())
             self.review_setup_button.setText(self._t("show_setup"))
             self.review_history_button.setText(self._t("run_history"))
             self.review_new_scan_button.setText(self._t("new_scan"))
@@ -1027,17 +1036,25 @@ class LumaSiftWindow(QMainWindow):
 
         self.header_frame = self._build_header()
         self.workflow_frame = self._build_workflow()
-        self.controls_frame = self._build_controls()
         self.review_bar = self._build_review_bar()
         root.addWidget(self.header_frame)
-        root.addWidget(self.workflow_frame)
-        root.addWidget(self.controls_frame)
-        root.addWidget(self.review_bar)
+
+        self.main_page = QFrame()
+        self.main_page.setObjectName("navPage")
+        main_layout = QVBoxLayout(self.main_page)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(6)
+        main_layout.addWidget(self.workflow_frame)
+        main_layout.addWidget(self.review_bar)
         self.review_bar.setVisible(False)
-        root.addWidget(self._build_result_toolbar())
+        self.qwen_status_frame = self._build_qwen_status_panel()
+        main_layout.addWidget(self.qwen_status_frame)
+        self.toolbar_frame = self._build_result_toolbar()
+        main_layout.addWidget(self.toolbar_frame)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("mainSplitter")
+        self.main_splitter = splitter
         self.photo_list = QListView()
         self.photo_list.setObjectName("photoGrid")
         self.photo_list.setViewMode(QListView.ViewMode.IconMode)
@@ -1153,9 +1170,25 @@ class LumaSiftWindow(QMainWindow):
         detail_layout.addWidget(action_bar, stretch=0)
         splitter.addWidget(self.detail_panel)
         splitter.setSizes([760, 700])
-        root.addWidget(splitter, stretch=1)
+        main_layout.addWidget(splitter, stretch=1)
+        root.addWidget(self.main_page, stretch=1)
+
+        self.settings_page = QFrame()
+        self.settings_page.setObjectName("navPage")
+        settings_layout = QVBoxLayout(self.settings_page)
+        settings_layout.setContentsMargins(0, 0, 0, 0)
+        settings_layout.setSpacing(0)
+        self.controls_frame = self._build_controls()
+        settings_layout.addWidget(self.controls_frame, stretch=1)
+        root.addWidget(self.settings_page, stretch=1)
+
+        self.history_page = self._build_history_page()
+        root.addWidget(self.history_page, stretch=1)
+        self.help_page = self._build_help_page()
+        root.addWidget(self.help_page, stretch=1)
 
         self.setCentralWidget(central)
+        self._show_nav_page("main")
 
     def _build_header(self) -> QFrame:
         frame = QFrame()
@@ -1175,28 +1208,21 @@ class LumaSiftWindow(QMainWindow):
         self.subtitle_label = subtitle
         layout.addWidget(title)
 
-        self.settings_nav_button = QPushButton("")
-        self.settings_nav_button.setObjectName("navButton")
-        self.settings_nav_button.clicked.connect(self._toggle_setup_panel)
-        layout.addWidget(self.settings_nav_button)
-
-        self.history_button = QPushButton("")
-        self.history_button.setObjectName("navButton")
-        self.history_button.clicked.connect(self._open_run_history)
-        layout.addWidget(self.history_button)
-
-        for text_key, handler in [
-            ("nav_run", self._start_analysis),
-            ("nav_output", lambda: self._open_path(self.output_dir)),
-            ("nav_view", lambda: self._toggle_setup_panel()),
-            ("nav_help", lambda: self.status_label.setText(self._t("ready")) if hasattr(self, "status_label") else None),
+        for page, text_key, handler in [
+            ("main", "nav_main", lambda: self._show_nav_page("main")),
+            ("settings", "settings", lambda: self._show_nav_page("settings")),
+            ("history", "run_history", lambda: self._show_nav_page("history")),
+            ("help", "nav_help", lambda: self._show_nav_page("help")),
         ]:
             button = QPushButton("")
             button.setObjectName("navButton")
             button.setText(self._t(text_key))
             button.clicked.connect(handler)
+            self.nav_buttons[page] = button
             self.static_labels[f"nav_{text_key}"] = button
             layout.addWidget(button)
+        self.settings_nav_button = self.nav_buttons["settings"]
+        self.history_button = self.nav_buttons["history"]
 
         layout.addStretch(1)
 
@@ -1269,9 +1295,81 @@ class LumaSiftWindow(QMainWindow):
         layout.addWidget(self.review_new_scan_button)
         return frame
 
+    def _build_qwen_status_panel(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("qwenStatusPanel")
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(10)
+        self.qwen_queue_label = QLabel("")
+        self.qwen_queue_label.setObjectName("qwenQueueLabel")
+        self.qwen_queue_label.setTextFormat(Qt.TextFormat.RichText)
+        self.qwen_queue_label.setMinimumHeight(32)
+        self.qwen_queue_label.setWordWrap(False)
+        self.qwen_progress = QProgressBar()
+        self.qwen_progress.setObjectName("qwenProgress")
+        self.qwen_progress.setRange(0, 1)
+        self.qwen_progress.setValue(0)
+        self.qwen_progress.setFixedWidth(220)
+        self.qwen_stage_label = QLabel("")
+        self.qwen_stage_label.setObjectName("muted")
+        self.qwen_stage_label.setMinimumWidth(260)
+        layout.addWidget(self.qwen_queue_label, stretch=1)
+        layout.addWidget(self.qwen_progress)
+        layout.addWidget(self.qwen_stage_label)
+        frame.setVisible(False)
+        return frame
+
+    def _build_history_page(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("navPage")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+        title = QLabel("")
+        title.setObjectName("sectionTitle")
+        self.static_labels["history_page_title"] = title
+        self.history_table = QTableWidget(0, 7)
+        self.history_table.setObjectName("historyTable")
+        self.history_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.history_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.history_table.verticalHeader().setVisible(False)
+        self.history_table.setAlternatingRowColors(True)
+        self.history_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self.history_open_button = QPushButton("")
+        self.history_open_button.setObjectName("secondaryButton")
+        self.history_open_button.clicked.connect(self._open_selected_history_output)
+        self.history_load_button = QPushButton("")
+        self.history_load_button.setObjectName("primaryButton")
+        self.history_load_button.clicked.connect(self._load_selected_history_run)
+        actions.addWidget(self.history_open_button)
+        actions.addWidget(self.history_load_button)
+        layout.addWidget(title)
+        layout.addWidget(self.history_table, stretch=1)
+        layout.addLayout(actions)
+        return frame
+
+    def _build_help_page(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("navPage")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(12, 12, 12, 12)
+        title = QLabel("")
+        title.setObjectName("sectionTitle")
+        self.static_labels["help_page_title"] = title
+        self.help_text = QTextEdit()
+        self.help_text.setObjectName("detailText")
+        self.help_text.setReadOnly(True)
+        layout.addWidget(title)
+        layout.addWidget(self.help_text, stretch=1)
+        return frame
+
     def _build_controls(self) -> QFrame:
         group = QFrame()
         group.setObjectName("controlCard")
+        group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._apply_shadow(group, blur=24, y=8, alpha=20)
         layout = QVBoxLayout(group)
         layout.setContentsMargins(14, 14, 14, 14)
@@ -1316,7 +1414,7 @@ class LumaSiftWindow(QMainWindow):
         self.cancel_button.setObjectName("secondaryButton")
         self.cancel_button.setMinimumHeight(48)
         self.cancel_button.setMinimumWidth(74)
-        self.cancel_button.clicked.connect(self._cancel_analysis)
+        self.cancel_button.clicked.connect(lambda: self._cancel_analysis())
         self.cancel_button.setEnabled(False)
         main_row.addWidget(self.run_button, 0, 3, 2, 1)
         main_row.addWidget(self.cancel_button, 0, 4, 2, 1)
@@ -1335,13 +1433,6 @@ class LumaSiftWindow(QMainWindow):
         progress_row.addWidget(self.progress, stretch=1)
         progress_row.addWidget(self.status_label, stretch=0)
         layout.addLayout(progress_row)
-        self.qwen_queue_label = QLabel("")
-        self.qwen_queue_label.setObjectName("qwenQueueLabel")
-        self.qwen_queue_label.setTextFormat(Qt.TextFormat.RichText)
-        self.qwen_queue_label.setMinimumHeight(36)
-        self.qwen_queue_label.setWordWrap(False)
-        self.qwen_queue_label.setVisible(False)
-        layout.addWidget(self.qwen_queue_label)
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("local_only", "local_only")
@@ -1447,6 +1538,7 @@ class LumaSiftWindow(QMainWindow):
         advanced_layout.addLayout(key_grid)
         self.advanced_panel.setVisible(True)
         layout.addWidget(self.advanced_panel)
+        layout.addStretch(1)
         return group
 
     def _build_result_toolbar(self) -> QFrame:
@@ -1485,6 +1577,17 @@ class LumaSiftWindow(QMainWindow):
         self.sort_combo.currentTextChanged.connect(self._populate_records)
         self.result_count_label = QLabel("")
         self.result_count_label.setObjectName("resultCount")
+        self.main_run_button = QPushButton("")
+        self.main_run_button.setObjectName("primaryButton")
+        self.main_run_button.setMinimumHeight(34)
+        self.main_run_button.setMinimumWidth(96)
+        self.main_run_button.clicked.connect(self._start_analysis)
+        self.main_cancel_button = QPushButton("")
+        self.main_cancel_button.setObjectName("secondaryButton")
+        self.main_cancel_button.setMinimumHeight(34)
+        self.main_cancel_button.setMinimumWidth(58)
+        self.main_cancel_button.clicked.connect(lambda: self._cancel_analysis())
+        self.main_cancel_button.setEnabled(False)
 
         filter_label = QLabel("")
         filter_label.setObjectName("sectionTitle")
@@ -1496,6 +1599,8 @@ class LumaSiftWindow(QMainWindow):
         layout.addWidget(self.group_filter)
         layout.addWidget(self.sort_combo)
         layout.addWidget(self.result_count_label)
+        layout.addWidget(self.main_run_button)
+        layout.addWidget(self.main_cancel_button)
         return frame
 
     def _choose_input(self) -> None:
@@ -1518,26 +1623,45 @@ class LumaSiftWindow(QMainWindow):
         self._sync_setup_nav_button()
 
     def _toggle_setup_panel(self) -> None:
-        if self.review_mode:
-            self._exit_review_mode(show_advanced=False)
+        if self.current_nav_page == "settings":
+            self._show_nav_page("main")
             return
-        self.controls_frame.setVisible(not self.controls_frame.isVisible())
-        self._sync_setup_nav_button()
+        self._show_nav_page("settings")
+
+    def _show_nav_page(self, page: str) -> None:
+        page = page if page in {"main", "settings", "history", "help"} else "main"
+        self.current_nav_page = page
+        if hasattr(self, "main_page"):
+            self.main_page.setVisible(page == "main")
+        if hasattr(self, "settings_page"):
+            self.settings_page.setVisible(page == "settings")
+        if hasattr(self, "history_page"):
+            self.history_page.setVisible(page == "history")
+        if hasattr(self, "help_page"):
+            self.help_page.setVisible(page == "help")
+        if page == "history":
+            self._refresh_history_page()
+        if page == "settings" and hasattr(self, "advanced_panel"):
+            self.controls_frame.setVisible(True)
+            self.advanced_panel.setVisible(True)
+        for key, button in self.nav_buttons.items():
+            button.setProperty("active", key == page)
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def _sync_setup_nav_button(self) -> None:
         if not hasattr(self, "settings_nav_button"):
             return
         self.settings_nav_button.setText(self._t("settings"))
-        self.settings_nav_button.setProperty("active", self.controls_frame.isVisible() if hasattr(self, "controls_frame") else True)
+        self.settings_nav_button.setProperty("active", self.current_nav_page == "settings")
         self.settings_nav_button.style().unpolish(self.settings_nav_button)
         self.settings_nav_button.style().polish(self.settings_nav_button)
 
     def _focus_workflow_step(self, step: str) -> None:
         if self.review_mode:
             self._exit_review_mode(show_advanced=step in {"local", "qwen"})
-        if step in {"import", "local", "qwen"} and not self.controls_frame.isVisible():
-            self.controls_frame.setVisible(True)
-            self._sync_setup_nav_button()
+        if step in {"import", "local", "qwen"}:
+            self._show_nav_page("settings")
         self._update_workflow(step)
         if step == "import":
             self.input_edit.setFocus()
@@ -1557,9 +1681,8 @@ class LumaSiftWindow(QMainWindow):
         self.review_mode = True
         self.header_frame.setVisible(True)
         self.workflow_frame.setVisible(False)
-        self.controls_frame.setVisible(False)
-        self.advanced_panel.setVisible(True)
         self.review_bar.setVisible(True)
+        self._show_nav_page("main")
         processed = summary.get("processed", len(self.records)) if summary else len(self.records)
         failed = summary.get("failed", 0) if summary else 0
         visible = len(self.visible_records)
@@ -1570,14 +1693,14 @@ class LumaSiftWindow(QMainWindow):
         self.review_mode = False
         self.header_frame.setVisible(True)
         self.workflow_frame.setVisible(True)
-        self.controls_frame.setVisible(True)
         self.review_bar.setVisible(False)
         self.advanced_panel.setVisible(True)
-        self._sync_setup_nav_button()
+        self._show_nav_page("settings" if show_advanced else "main")
 
     def _start_analysis(self) -> None:
         if self.review_mode:
             self._exit_review_mode(show_advanced=False)
+        self._show_nav_page("main")
         input_dir = Path(self.input_edit.text()).expanduser()
         output_dir = Path(self.output_edit.text()).expanduser()
         if not input_dir.exists():
@@ -1623,7 +1746,9 @@ class LumaSiftWindow(QMainWindow):
         stop_file.unlink(missing_ok=True)
 
         self.run_button.setEnabled(False)
+        self.main_run_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
+        self.main_cancel_button.setEnabled(True)
         self.advanced_panel.setVisible(True)
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -1664,11 +1789,18 @@ class LumaSiftWindow(QMainWindow):
             summary=payload["summary"],
         )
         self._write_current_reports()
-        self.status_label.setText(f"{self._t('done')}: {payload['summary']['processed']} / {payload['summary']['failed']}")
+        was_cancelled = (self.output_dir / "STOP_LUMASIFT").exists()
+        self.status_label.setText(
+            f"{self._t('cancel')}: {payload['summary']['processed']} / {payload['summary']['failed']}"
+            if was_cancelled
+            else f"{self._t('done')}: {payload['summary']['processed']} / {payload['summary']['failed']}"
+        )
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
         self.run_button.setEnabled(True)
+        self.main_run_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
+        self.main_cancel_button.setEnabled(False)
         self._refresh_filter_options()
         self._populate_records()
         self._update_workflow("edit")
@@ -1683,7 +1815,9 @@ class LumaSiftWindow(QMainWindow):
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
         self.run_button.setEnabled(True)
+        self.main_run_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
+        self.main_cancel_button.setEnabled(False)
         self._update_workflow("import")
         QMessageBox.critical(self, "Analysis failed", message)
 
@@ -1762,6 +1896,7 @@ class LumaSiftWindow(QMainWindow):
             "retrying": 0,
             "cancelled": 0,
             "cancelling": False,
+            "phase": "等待候选队列" if self.language == "zh" else "Preparing candidate queue",
         }
         self._render_qwen_queue_state()
 
@@ -1783,11 +1918,13 @@ class LumaSiftWindow(QMainWindow):
                     "retrying": 0,
                     "cancelled": 0,
                     "cancelling": False,
+                    "phase": "候选队列已生成" if self.language == "zh" else "Candidate queue ready",
                 }
             )
         elif event_type == "qwen_candidate_running":
             self.qwen_queue_state["queued"] = max(0, int(self.qwen_queue_state.get("queued", 0) or 0) - 1)
             self.qwen_queue_state["running"] = str(event.get("filename") or Path(str(event.get("path", ""))).name)
+            self.qwen_queue_state["phase"] = "压缩预览 / 上传视觉分析 / 等待模型返回" if self.language == "zh" else "Compressing preview / sending vision request / waiting for model"
         elif event_type == "qwen_candidate_finished":
             status = str(event.get("status", "done"))
             if status == "cache-hit":
@@ -1795,24 +1932,29 @@ class LumaSiftWindow(QMainWindow):
             else:
                 self.qwen_queue_state["done"] = int(self.qwen_queue_state.get("done", 0) or 0) + 1
             self.qwen_queue_state["running"] = ""
+            self.qwen_queue_state["phase"] = "解析证据并写入结果" if self.language == "zh" else "Parsing evidence and writing result"
         elif event_type == "qwen_candidate_failed":
             self.qwen_queue_state["failed"] = int(self.qwen_queue_state.get("failed", 0) or 0) + 1
             self.qwen_queue_state["running"] = ""
             error = str(event.get("error", "") or "")
             if error:
                 self.qwen_queue_state["last_error"] = error[:420]
+            self.qwen_queue_state["phase"] = "当前照片失败，继续下一张" if self.language == "zh" else "Current photo failed; continuing"
         elif event_type == "qwen_candidate_cancelled":
             self.qwen_queue_state["queued"] = max(0, int(self.qwen_queue_state.get("queued", 0) or 0) - 1)
             self.qwen_queue_state["cancelled"] = int(self.qwen_queue_state.get("cancelled", 0) or 0) + 1
             self.qwen_queue_state["running"] = ""
             self.qwen_queue_state["cancelling"] = True
+            self.qwen_queue_state["phase"] = "正在暂停深评" if self.language == "zh" else "Pausing deep review"
         elif event_type == "qwen_queue_cancelled":
             self.qwen_queue_state["queued"] = 0
             self.qwen_queue_state["cancelling"] = False
+            self.qwen_queue_state["phase"] = "深评已暂停" if self.language == "zh" else "Deep review paused"
         elif event_type == "qwen_client_event":
             client_event = event.get("client_event", {})
             if isinstance(client_event, dict) and str(client_event.get("type", "")) == "retrying":
                 self.qwen_queue_state["retrying"] = int(self.qwen_queue_state.get("retrying", 0) or 0) + 1
+                self.qwen_queue_state["phase"] = "供应商限流/超时，正在重试" if self.language == "zh" else "Provider timeout/rate limit; retrying"
         self._render_qwen_queue_state()
 
     def _render_qwen_queue_state(self) -> None:
@@ -1831,7 +1973,12 @@ class LumaSiftWindow(QMainWindow):
                     f"&nbsp;&nbsp;<span style='color:#ffd400;'>! {self._escape(hint)}</span>"
                 )
                 self.qwen_queue_label.setVisible(True)
+                self.qwen_status_frame.setVisible(True)
+                self.qwen_progress.setRange(0, 1)
+                self.qwen_progress.setValue(0)
+                self.qwen_stage_label.setText("")
             else:
+                self.qwen_status_frame.setVisible(False)
                 self.qwen_queue_label.setVisible(False)
                 self.qwen_queue_label.setText("")
             return
@@ -1856,6 +2003,8 @@ class LumaSiftWindow(QMainWindow):
         retrying = self.qwen_queue_state.get("retrying", 0)
         cancelled = self.qwen_queue_state.get("cancelled", 0)
         cancelling = bool(self.qwen_queue_state.get("cancelling"))
+        total = int(self.qwen_queue_state.get("total", 0) or 0)
+        completed = int(done or 0) + int(cache or 0) + int(failed or 0) + int(cancelled or 0)
         text = (
             "<span style='font-weight:900; color:#f8fafc;'>Qwen</span>"
             f"&nbsp;&nbsp;<span style='color:#9fb0c2;'>{self._escape(str(model))}</span>"
@@ -1867,6 +2016,16 @@ class LumaSiftWindow(QMainWindow):
             f"&nbsp;&nbsp;<span title='{labels['retry']}' style='color:#ff9f1c;'>↻ <b>{retrying}</b></span>"
             f"&nbsp;&nbsp;<span title='{labels['cancelled']}' style='color:#a78bfa;'>- <b>{cancelled}</b></span>"
         )
+        phase = str(self.qwen_queue_state.get("phase", "") or "")
+        if not phase:
+            if cancelling:
+                phase = "正在暂停深评" if self.language == "zh" else "Pausing deep review"
+            elif running:
+                phase = "压缩预览 / 上传视觉分析 / 等待模型返回" if self.language == "zh" else "Compressing preview / sending vision request / waiting for model"
+            elif completed and completed >= total and total:
+                phase = "深评完成，正在汇总结果" if self.language == "zh" else "Deep review complete; consolidating results"
+            else:
+                phase = "等待候选队列" if self.language == "zh" else "Preparing candidate queue"
         if cancelling:
             text += "&nbsp;&nbsp;<span style='color:#a78bfa;'>...</span>"
         if failed and last_error:
@@ -1879,6 +2038,10 @@ class LumaSiftWindow(QMainWindow):
         )
         self.qwen_queue_label.setText(text)
         self.qwen_queue_label.setVisible(True)
+        self.qwen_progress.setRange(0, max(1, total))
+        self.qwen_progress.setValue(max(0, min(max(1, total), completed)))
+        self.qwen_stage_label.setText(phase)
+        self.qwen_status_frame.setVisible(True)
 
     def _populate_records(self) -> None:
         if not hasattr(self, "photo_list"):
@@ -2391,7 +2554,12 @@ class LumaSiftWindow(QMainWindow):
         self._update_dashboard()
         self.status_label.setText(f"{changed} -> {self._t(label)}")
 
-    def _cancel_analysis(self) -> None:
+    def _cancel_analysis(self, *, close_after_stop: bool = False) -> None:
+        if close_after_stop:
+            self.pending_close = True
+        else:
+            self.pending_close = False
+            self.allow_close = False
         self.output_dir.mkdir(parents=True, exist_ok=True)
         (self.output_dir / "STOP_LUMASIFT").write_text("stop", encoding="utf-8")
         if self.qwen_queue_state.get("enabled"):
@@ -2399,6 +2567,7 @@ class LumaSiftWindow(QMainWindow):
             self._render_qwen_queue_state()
         self.status_label.setText(self._t("closing") if self.pending_close else self._t("cancel"))
         self.cancel_button.setEnabled(False)
+        self.main_cancel_button.setEnabled(False)
 
     def _toggle_key_visibility(self, enabled: bool) -> None:
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Normal if enabled else QLineEdit.EchoMode.Password)
@@ -2506,10 +2675,62 @@ class LumaSiftWindow(QMainWindow):
             QMessageBox.warning(self, self._t("failed"), str(exc))
 
     def _open_run_history(self) -> None:
-        dialog = RunHistoryDialog(self.state_db.list_runs(limit=30), self.language, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.selected_run:
+        self._show_nav_page("history")
+
+    def _refresh_history_page(self) -> None:
+        if not hasattr(self, "history_table"):
             return
-        self._restore_history_run(dialog.selected_run)
+        runs = self.state_db.list_runs(limit=50)
+        headers = (
+            ["时间", "模式", "照片", "完成", "失败", "输出", "状态"]
+            if self.language == "zh"
+            else ["Time", "Mode", "Photos", "Done", "Failed", "Output", "State"]
+        )
+        self.history_table.setHorizontalHeaderLabels(headers)
+        self.history_table.setRowCount(len(runs))
+        for row, run in enumerate(runs):
+            output_dir = Path(str(run.get("output_dir", "")))
+            report_path = output_dir / "report.json"
+            available = output_dir.exists() and report_path.exists()
+            values = [
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(int(run.get("created_at", 0) or 0))),
+                str(run.get("ai_mode", "")),
+                str(run.get("scanned", 0)),
+                str(run.get("processed", 0)),
+                str(run.get("failed", 0)),
+                str(output_dir),
+                ("可载入" if self.language == "zh" else "Ready") if available else ("缺失" if self.language == "zh" else "Missing"),
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.ItemDataRole.UserRole, run)
+                if not available:
+                    item.setForeground(QColor("#ff9f1c"))
+                self.history_table.setItem(row, column, item)
+        self.history_table.resizeColumnsToContents()
+        if runs:
+            self.history_table.selectRow(0)
+
+    def _selected_history_run(self) -> dict[str, Any] | None:
+        if not hasattr(self, "history_table"):
+            return None
+        row = self.history_table.currentRow()
+        if row < 0:
+            return None
+        item = self.history_table.item(row, 0)
+        run = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        return run if isinstance(run, dict) else None
+
+    def _load_selected_history_run(self) -> None:
+        run = self._selected_history_run()
+        if run:
+            self._restore_history_run(run)
+
+    def _open_selected_history_output(self) -> None:
+        run = self._selected_history_run()
+        if not run:
+            return
+        self._open_path(Path(str(run.get("output_dir", ""))))
 
     def _restore_history_run(self, run: dict[str, Any]) -> None:
         output_dir = Path(str(run.get("output_dir", "")))
@@ -2609,6 +2830,26 @@ class LumaSiftWindow(QMainWindow):
             step2="本地快速初筛" if self.language == "zh" else "Run local pre-score",
             step3="高价值候选再交给 Qwen" if self.language == "zh" else "Use Qwen for high-value candidates",
         )
+
+    def _help_page_html(self) -> str:
+        if self.language == "zh":
+            title = "工作流"
+            lines = [
+                ("视图", "主界面负责选片板、评审 cockpit、开始分析、暂停分析和输出入口。"),
+                ("设置", "照片目录、输出目录、Qwen Top-N、显示数量、API key 检查全部在这里展开。"),
+                ("深评", "Qwen 只接收 Top-N 压缩预览；主界面会显示队列、当前文件、缓存、失败和深评进度。"),
+                ("暂停", "取消按钮只请求停止当前分析，不再触发关闭应用。已完成的本地结果会保留。"),
+            ]
+        else:
+            title = "Workflow"
+            lines = [
+                ("View", "The main page owns the review board, cockpit, run/pause controls, and output shortcuts."),
+                ("Settings", "Folder paths, Qwen Top-N, display count, API keys, and quota checks are fully expanded here."),
+                ("Deep review", "Qwen receives Top-N compressed previews only; the main page shows queue, current file, cache, failures, and progress."),
+                ("Pause", "Cancel requests analysis stop only. It no longer closes the app, and completed local records remain available."),
+            ]
+        rows = "".join(f"<tr><td>{self._escape(k)}</td><td>{self._escape(v)}</td></tr>" for k, v in lines)
+        return f"<html><head>{self._detail_html_style()}</head><body><div class='advice-card'><h2>{self._escape(title)}</h2><table>{rows}</table></div></body></html>"
 
     def _escape(self, value: str) -> str:
         return html.escape(value, quote=True)
@@ -2869,6 +3110,19 @@ class LumaSiftWindow(QMainWindow):
                 padding: 6px 10px;
                 font-weight: 700;
             }
+            QFrame#qwenStatusPanel, QFrame#navPage {
+                background: #090d12;
+                border: none;
+                border-radius: 0px;
+            }
+            QTableWidget#historyTable {
+                background: #0c1117;
+                alternate-background-color: #101820;
+                border: 1px solid #26313d;
+                border-radius: 0px;
+                color: #dbe7f3;
+                gridline-color: #26313d;
+            }
             QFrame#hero, QFrame#topNav, QFrame#controlCard, QFrame#toolbar, QFrame#reviewBar {
                 background: #111820;
                 border: 1px solid #26313d;
@@ -3068,7 +3322,7 @@ class LumaSiftWindow(QMainWindow):
         return bool(analysis_running or thumbnail_running)
 
     def _request_background_stop(self) -> None:
-        self._cancel_analysis()
+        self._cancel_analysis(close_after_stop=True)
         if self.thumbnail_worker is not None:
             self.thumbnail_worker.stop()
         if self.thumbnail_thread is not None and self.thumbnail_thread.isRunning():

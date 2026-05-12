@@ -54,12 +54,13 @@ def main() -> int:
     app.processEvents()
 
     snapshots: list[Snapshot] = []
-    snapshots.append(capture(window, args.output, "setup_collapsed", setup_collapsed_checks(window, QFontDatabase, QFontMetrics, args.language)))
+    snapshots.append(capture(window, args.output, "main_page", setup_collapsed_checks(window, QFontDatabase, QFontMetrics, args.language)))
 
-    window._exit_review_mode(show_advanced=True)
+    window._show_nav_page("settings")
     app.processEvents()
-    snapshots.append(capture(window, args.output, "setup_expanded", setup_expanded_checks(window)))
+    snapshots.append(capture(window, args.output, "settings_page", setup_expanded_checks(window)))
 
+    window._show_nav_page("main")
     window._analysis_qwen_event({"type": "qwen_queue_prepared", "total": 5, "model": "qwen3.6-plus"})
     window._analysis_qwen_event({"type": "qwen_candidate_running", "filename": "smoke_001.jpg"})
     window._analysis_qwen_event({"type": "qwen_candidate_finished", "status": "cache-hit"})
@@ -69,7 +70,7 @@ def main() -> int:
     window._analysis_qwen_event({"type": "qwen_queue_cancelled", "cancelled": 1})
     app.processEvents()
     snapshots.append(capture(window, args.output, "qwen_queue_status", qwen_queue_checks(window)))
-    window.qwen_queue_label.setVisible(False)
+    window.qwen_status_frame.setVisible(False)
 
     records = make_records(args.output / "synthetic_photos", count=args.records)
     window.records = records
@@ -340,18 +341,21 @@ def setup_collapsed_checks(window: Any, font_database_type: Any, font_metrics_ty
     return [
         check_value(font_ok, "zh_font_available", f"font={font_family}"),
         check_value(glyph_ok, "zh_glyphs_renderable", glyph_detail),
-        check_visible(window.controls_frame, "controls_visible"),
+        check_visible(window.main_page, "main_page_visible"),
+        check_not_visible(window.controls_frame, "settings_hidden_on_main_page"),
         check_visible(window.workflow_frame, "workflow_visible_near_top"),
         check_visible(window.history_button, "history_button_visible"),
         check_visible(window.settings_nav_button, "settings_nav_button_visible"),
-        check_visible(window.advanced_panel, "settings_panel_expanded_by_default"),
-        check_min_size(window.progress, "progress_bar_height", min_height=16),
-        check_min_size(window.run_button, "analyze_button_size", min_width=92, min_height=44),
+        check_min_size(window.main_run_button, "main_analyze_button_size", min_width=92, min_height=32),
+        check_min_size(window.main_cancel_button, "main_cancel_button_size", min_width=54, min_height=32),
     ]
 
 
 def setup_expanded_checks(window: Any) -> list[dict[str, Any]]:
     checks = [
+        check_visible(window.settings_page, "settings_page_visible"),
+        check_not_visible(window.main_page, "main_page_hidden_while_settings_open"),
+        check_visible(window.controls_frame, "controls_visible_on_settings_page"),
         check_visible(window.advanced_panel, "advanced_visible"),
         check_min_size(window.advanced_panel, "advanced_panel_height", min_height=180),
         check_min_size(window.api_key_edit, "api_key_field_height", min_height=32),
@@ -367,8 +371,13 @@ def setup_expanded_checks(window: Any) -> list[dict[str, Any]]:
 def qwen_queue_checks(window: Any) -> list[dict[str, Any]]:
     plain_text = window.qwen_queue_label.text()
     return [
+        check_visible(window.qwen_status_frame, "qwen_status_panel_visible"),
         check_visible(window.qwen_queue_label, "qwen_queue_visible"),
         check_min_size(window.qwen_queue_label, "qwen_queue_compact_height", min_height=30),
+        check_min_size(window.qwen_progress, "qwen_progress_visible", min_width=180, min_height=16),
+        check_value(window.qwen_progress.maximum() == 5, "qwen_progress_total", window.qwen_progress.maximum()),
+        check_value(window.qwen_progress.value() >= 3, "qwen_progress_completed", window.qwen_progress.value()),
+        check_value(bool(window.qwen_stage_label.text()), "qwen_stage_feedback_visible", window.qwen_stage_label.text()),
         check_value("qwen3.6-plus" in plain_text, "qwen_queue_model_visible", plain_text),
         check_value(" | " not in plain_text, "qwen_queue_not_log_sentence", plain_text),
         check_value("⚡" in plain_text, "qwen_queue_cache_icon_visible", plain_text),

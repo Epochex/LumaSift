@@ -125,18 +125,20 @@ def test_top_nav_settings_button_toggles_setup_panel_like_user_click() -> None:
     window.show()
     app.processEvents()
 
-    assert window.controls_frame.isVisible()
-    assert window.advanced_panel.isVisible()
+    assert window.main_page.isVisible()
+    assert not window.controls_frame.isVisible()
     assert window.title_label.text() != "LumaSift"
     QTest.mouseClick(window.settings_nav_button, Qt.MouseButton.LeftButton)
     app.processEvents()
 
-    assert not window.controls_frame.isVisible()
-    QTest.mouseClick(window.settings_nav_button, Qt.MouseButton.LeftButton)
-    app.processEvents()
-
+    assert window.settings_page.isVisible()
     assert window.controls_frame.isVisible()
     assert window.advanced_panel.isVisible()
+    QTest.mouseClick(window.nav_buttons["main"], Qt.MouseButton.LeftButton)
+    app.processEvents()
+
+    assert window.main_page.isVisible()
+    assert not window.controls_frame.isVisible()
     window.close()
 
 
@@ -153,4 +155,40 @@ def test_review_mode_keeps_top_navigation_visible() -> None:
     assert window.header_frame.isVisible()
     assert not window.workflow_frame.isVisible()
     assert not window.controls_frame.isVisible()
+    window.close()
+
+
+def test_cancel_button_does_not_mark_window_for_close(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    _ = app
+    window = LumaSiftWindow()
+    window.output_dir = tmp_path
+    window.pending_close = True
+    window.cancel_button.setEnabled(True)
+    window.main_cancel_button.setEnabled(True)
+
+    window._cancel_analysis()
+
+    assert (tmp_path / "STOP_LUMASIFT").exists()
+    assert not window.pending_close
+    assert not window.allow_close
+    assert not window.cancel_button.isEnabled()
+    assert not window.main_cancel_button.isEnabled()
+    window.close()
+
+
+def test_qwen_progress_panel_tracks_deep_review_events() -> None:
+    app = QApplication.instance() or QApplication([])
+    _ = app
+    window = LumaSiftWindow()
+    window.language = "zh"
+    window._analysis_qwen_event({"type": "qwen_queue_prepared", "total": 3, "model": "qwen3.6-plus"})
+    window._analysis_qwen_event({"type": "qwen_candidate_running", "filename": "frame_001.jpg"})
+    window._analysis_qwen_event({"type": "qwen_candidate_finished", "status": "done"})
+
+    assert not window.qwen_status_frame.isHidden()
+    assert window.qwen_progress.maximum() == 3
+    assert window.qwen_progress.value() == 1
+    assert "qwen3.6-plus" in window.qwen_queue_label.text()
+    assert window.qwen_stage_label.text()
     window.close()

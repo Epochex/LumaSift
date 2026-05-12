@@ -29,5 +29,6 @@ def test_ui_smoke_script_runs(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert (tmp_path / "ui_smoke" / "ui_smoke_report.json").exists()
-    assert (tmp_path / "ui_smoke" / "setup_expanded.png").exists()
+    assert (tmp_path / "ui_smoke" / "settings_page.png").exists()
+    assert (tmp_path / "ui_smoke" / "qwen_queue_status.png").exists()
     assert (tmp_path / "ui_smoke" / "review_with_records.png").exists()

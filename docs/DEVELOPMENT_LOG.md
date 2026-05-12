@@ -243,3 +243,11 @@
 - Replaced text-heavy review decisions with compact geometric glyphs and Qt standard icons with tooltips for keep, maybe, reject, editing advice, output folder, and contact sheet.
 - Updated desktop regression tests and UI smoke so the full settings workspace is visible by default and the review action strip remains compact after cockpit scrolling.
 - Verification: `python -m pytest -q` passed with 57 tests, `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed, `packaging/build_windows.ps1` rebuilt `dist/LumaSift` and `dist/installer/LumaSiftSetup.exe`, and the packaged exe launched successfully in an offscreen smoke.
+
+## 2026-05-12 - Main/settings pages, Qwen progress, and cancel safety
+- Split the top navigation into independent pages: `视图` is now the main workbench and sits before `设置`; the previous `运行` and `输出` navigation entries were removed.
+- Moved run and cancel controls onto the main workbench toolbar while keeping the full run/Qwen/key settings on the independent settings page.
+- Added a main-page Qwen deep-review status panel with queue chips, a determinate progress bar, current model, current file state, retry/failure/cache/cancel counts, and a short observable pipeline status such as preview compression, upload/waiting, parsing, retrying, or paused.
+- Separated user cancellation from close handling so pressing `取消` writes the stop file and pauses analysis without marking the window for close; closing the app while workers run still requests stop and exits only after background tasks finish.
+- Added regression coverage for page navigation, Qwen progress feedback, and cancel-not-close behavior; UI smoke now captures `main_page`, `settings_page`, and Qwen progress states.
+- Verification: `python -m pytest -q` passed with 59 tests, `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed, `packaging/build_windows.ps1` rebuilt the Windows app and installer, and the packaged exe launched successfully in an offscreen smoke.
