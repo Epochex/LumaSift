@@ -266,3 +266,19 @@ def test_default_advice_prefers_qwen_reviewed_records_over_local_top_rank() -> N
 
     assert window._default_advice_ranks(window._filtered_records()) == [2, 3]
     window.close()
+
+
+def test_help_page_documents_full_workflow_and_troubleshooting() -> None:
+    app = QApplication.instance() or QApplication([])
+    _ = app
+    window = LumaSiftWindow()
+    window.language = "zh"
+    html = window._help_page_html()
+
+    assert "LumaSift 使用说明" in html
+    assert "导入照片目录" in html
+    assert "Qwen 深评 Top-N" in html
+    assert "深评状态筛选" in html
+    assert "selected_editing_advice.md" in html
+    assert "常见问题排查" in html
+    window.close()
