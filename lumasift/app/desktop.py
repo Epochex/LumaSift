@@ -826,9 +826,8 @@ class LumaSiftWindow(QMainWindow):
         self.records: list[dict[str, Any]] = []
         self.output_dir = Path("./outputs/gui")
         self.settings_store = QSettings("LumaSift", "LumaSift")
-        self.language = str(self.settings_store.value("language", "zh"))
-        if self.language not in UI_TEXT:
-            self.language = "zh"
+        self.language = "zh"
+        self.settings_store.remove("language")
         self.worker_thread: QThread | None = None
         self.worker: AnalysisWorker | None = None
         self.key_check_thread: QThread | None = None
@@ -867,7 +866,6 @@ class LumaSiftWindow(QMainWindow):
 
     def _change_language(self, label: str) -> None:
         self.language = "en" if label == "English" else "zh"
-        self.settings_store.setValue("language", self.language)
         self._retranslate_ui()
 
     def _retranslate_ui(self) -> None:

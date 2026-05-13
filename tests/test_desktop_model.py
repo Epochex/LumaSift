@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -47,6 +47,18 @@ def test_large_preview_worker_creates_cached_preview(tmp_path) -> None:
 
     assert emitted
     assert emitted[0].endswith(".preview.jpg")
+
+
+def test_window_starts_in_chinese_even_after_saved_english() -> None:
+    app = QApplication.instance() or QApplication([])
+    _ = app
+    settings = QSettings("LumaSift", "LumaSift")
+    settings.setValue("language", "en")
+
+    window = LumaSiftWindow()
+
+    assert window.language == "zh"
+    assert window.language_combo.currentText() == "中文"
 
 
 def test_detail_html_renders_qwen_story_evidence() -> None:

@@ -64,6 +64,7 @@ def test_local_fallback_produces_technical_draft_not_photographic_claim() -> Non
     assert advice["analysis_status"]["level"] == "local_prefilter"
     assert advice["lightroom_parameters"]["exposure"] == "+0.15"
     assert advice["lightroom_parameters"]["shadows"] == "+32"
+    assert advice["advanced_lightroom_parameters"] == {}
     assert "crop" not in advice["crop_strategy"].lower() or advice["crop_strategy"]
     assert len(advice["local_adjustments"]) >= 3
     assert "Subject/gesture mask" not in " ".join(advice["local_adjustments"])
@@ -177,6 +178,7 @@ def test_markdown_report_renders_selected_advice() -> None:
     assert "# Selected Editing Advice" in markdown
     assert "## Rank 1: street.jpg" in markdown
     assert "### Lightroom Parameters" in markdown
+    assert "HSL" not in markdown
     assert "### Photo Read" in markdown
     assert "Local pre-screen only" in markdown
     assert "Exposure" in markdown

@@ -270,3 +270,10 @@
 - Malformed live JSON now triggers bounded retry/backoff with a `malformed_json` client event before the photo is marked failed.
 - Raised the default Qwen response budget from 4096 to 8192 tokens to fit the larger `qwen-story-v4` evidence and Lightroom-parameter schema.
 - Verification: `python -m pytest -q` passed with 64 tests, and `python scripts/ui_smoke.py --output outputs/ui_smoke --language zh --records 24` passed.
+
+## 2026-05-13 - Live Qwen gateway compatibility
+- Live NewCoin probing showed non-stream requests with `max_tokens > 4096` fail with a gateway `BAD_REQUEST` wrapped as HTTP 500, so the client now caps non-stream Qwen requests at 4096 and emits a `max_tokens_capped` event.
+- Replaced the verbose `qwen-story-v4` response schema with compact `qwen-story-v5`: same selection/editing intent, but short strings, small arrays, and only relevant advanced Lightroom sections so responses can finish inside the gateway limit.
+- Treat `finish_reason=length` as a truncated invalid response and retry instead of caching incomplete JSON.
+- Eligible photos outside the Qwen Top-N budget are now marked `qwen_status=not_reviewed` with `qwen_skip_reason=outside_qwen_top_n`, making final reranking easier to interpret when reviewed rejects drop below unreviewed local candidates.
+- Selected editing advice no longer expands advanced Lightroom sections for unreviewed local-only drafts; it keeps the warning and basic technical controls visible without looking like a finished vision-backed plan.

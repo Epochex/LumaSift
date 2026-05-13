@@ -6,37 +6,28 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
-QWEN_STORY_PROMPT_VERSION = "qwen-story-v4"
+QWEN_STORY_PROMPT_VERSION = "qwen-story-v5"
 QWEN_STORY_PROMPT = """
 你是严格但有摄影判断力的街拍/纪实/人文/旅行摄影选片编辑。
 
-先看照片里真实可见的内容，再打分。不要写“画面有故事感”“主体关系清晰”这类空泛句子；
-每个判断都必须指向可见证据：人物、手势、表情、动作方向、空间关系、招牌/车辆/街道环境、
-光线、遮挡、边缘干扰、颜色或明暗结构。技术缺陷只有在破坏可读性时才降权；运动模糊、
-颗粒、阴影、偏色如果增强现场感，可以成为保留理由。
+先看照片里真实可见的内容，再打分。不要写“画面有故事感”“主体关系清晰”这类空泛句子。
+每个判断必须指向可见证据：人物、手势、表情、动作方向、空间关系、招牌/车辆/街道环境、
+光线、遮挡、边缘干扰、颜色或明暗结构。技术缺陷只有在破坏可读性时才降权。
 
 如果照片属于连拍/相似组，要判断这一张是否有更好的身体动作、视线、遮挡关系、街头瞬间或
 环境线索。不要因为“更清楚”就自动胜出；优先决定性瞬间和人文信息。
 
 每条修图动作必须能追溯到可见证据；如果看不清人、手势、表情或空间关系，必须写“不确定/看不清”，不能脑补。
 文字字段用中文，枚举值和 JSON key 保持英文。只返回一个合法 JSON 对象，不要 Markdown。
+
+输出必须短：字符串尽量少于 28 个汉字；数组最多 3 项；不要解释 JSON；不要输出空字段。
+Lightroom 参数只给关键可执行值，不要展开所有颜色通道；`advanced_lightroom_parameters` 只写最相关的 3-5 个小节。
 {
   "analysis_source": "qwen_vision",
   "analysis_quality": "concrete|weak|generic|missing",
-  "analysis_quality_self_check": "一句话说明这次阅读是否具体，如果不具体说明原因",
-  "editorial_verdict": {
-    "action": "keep|maybe|reject",
-    "confidence": 0-100,
-    "one_line_reason": "必须包含具体画面对象"
-  },
-  "visible_inventory": {
-    "main_subject": "主对象；不确定就写不确定",
-    "secondary_subjects": ["次要对象"],
-    "setting_context": ["地点、招牌、车辆、街道、室内空间等"],
-    "gesture_expression_motion": ["动作、表情、视线、运动方向；看不清就写看不清"],
-    "light_color_structure": ["光线、颜色、明暗结构"],
-    "edge_obstructions": ["边缘干扰、遮挡、裁切风险"]
-  },
+  "analysis_quality_self_check": "是否具体",
+  "editorial_verdict": {"action": "keep|maybe|reject", "confidence": 0-100, "one_line_reason": "具体对象+理由"},
+  "visible_inventory": {"main_subject": "主对象", "setting_context": ["环境"], "gesture_expression_motion": ["动作/看不清"]},
   "storytelling_score": 0-100,
   "human_documentary_value_score": 0-100,
   "decisive_moment_score": 0-100,
@@ -46,29 +37,29 @@ QWEN_STORY_PROMPT = """
   "technical_quality_score": 0-100,
   "final_selection_score": 0-100,
   "category": "portfolio_candidate|strong_edit_candidate|story_candidate|technically_weak_but_interesting|ordinary_record|reject_candidate",
-  "visible_evidence": ["3-6条具体可见证据，不要泛泛而谈"],
+  "visible_evidence": ["3条具体可见证据"],
   "score_rationales": {
-    "storytelling_score": {"reason": "具体理由", "evidence_ids": [0]},
-    "human_documentary_value_score": {"reason": "具体理由", "evidence_ids": [0]},
-    "decisive_moment_score": {"reason": "具体理由", "evidence_ids": [0]},
-    "editing_potential_score": {"reason": "具体理由", "evidence_ids": [0]}
+    "storytelling_score": {"reason": "短理由", "evidence_ids": [0]},
+    "human_documentary_value_score": {"reason": "短理由", "evidence_ids": [0]},
+    "decisive_moment_score": {"reason": "短理由", "evidence_ids": [0]},
+    "editing_potential_score": {"reason": "短理由", "evidence_ids": [0]}
   },
-  "subject_relationship": "主体、人物/物件、环境之间的关系；如果看不清就明确说不确定",
-  "decisive_moment_read": "这个瞬间是否成立，以及成立/不成立的原因",
+  "subject_relationship": "主体与环境关系",
+  "decisive_moment_read": "瞬间是否成立",
   "moment_status": "strong|weak|missed|ambiguous",
-  "sequence_comparison": "如果这张来自相似组，说明它相对邻近帧在人、动作、遮挡、空间线索和情绪上的胜负；如果看不到邻近帧，只根据本帧写不确定",
-  "decisive_moment_factors": ["人物动作", "视线/姿态", "遮挡关系", "空间张力", "环境信息"],
-  "subject_identity_uncertainty": "主体、人物身份或动作看不清时必须明确写不确定，不能补故事",
-  "selection_risk": "保留/待定/淘汰这张的最大风险，尤其说明是否可能误伤决定性瞬间",
-  "edit_vs_select_warning": "哪些问题只能靠选择更好一帧解决，不能靠修图解决",
-  "reject_only_if": "只有在画面内容、瞬间和可修空间都不足时才建议淘汰；不要因为轻微模糊/偏色/噪点直接淘汰",
-  "why_this_frame": "为什么这张值得保留、待定或淘汰；相似组里要说明和邻近帧相比的判断依据",
-  "frame_failure_reasons": ["具体失败点；没有就空数组"],
-  "story_interpretation": "2-4句具体照片阅读：发生了什么、张力在哪里、观者为什么会停留",
-  "why_keep": ["具体保留理由"],
-  "why_deprioritize": ["具体风险或淘汰理由"],
+  "sequence_comparison": "相似组胜负/不确定",
+  "decisive_moment_factors": ["动作", "视线", "遮挡"],
+  "subject_identity_uncertainty": "看不清处",
+  "selection_risk": "最大选择风险",
+  "edit_vs_select_warning": "不能靠修图解决的问题",
+  "reject_only_if": "淘汰条件",
+  "why_this_frame": "为什么留/待定/淘汰",
+  "frame_failure_reasons": ["失败点"],
+  "story_interpretation": "1-2句照片阅读",
+  "why_keep": ["保留理由"],
+  "why_deprioritize": ["风险"],
   "recommended_style": "high_contrast_bw_documentary|low_key_noir_street|cinematic_urban_color|muted_humanistic_color|gritty_flash_street|soft_editorial_documentary|cold_metropolitan|warm_memory_tone|do_not_overedit",
-  "best_editing_direction": "围绕内容的修图意图，不只是参数说明",
+  "best_editing_direction": "修图意图",
   "specific_edit_parameters": {
     "exposure": "-0.20",
     "contrast": "+25",
@@ -85,35 +76,21 @@ QWEN_STORY_PROMPT = """
     "tint": "+4"
   },
   "advanced_lightroom_parameters": {
-    "tone_curve": {"point_curve": "medium_contrast", "highlights": "-6", "lights": "+4", "darks": "-6", "shadows": "+4"},
-    "hsl_color_mixer": {"red": {"hue": "-4", "saturation": "-8", "luminance": "+2"}, "orange": {"hue": "-2", "saturation": "+2", "luminance": "+4"}, "yellow": {"hue": "-10", "saturation": "-16", "luminance": "-4"}, "green": {"hue": "+8", "saturation": "-20", "luminance": "-6"}, "aqua": {"hue": "-6", "saturation": "-14", "luminance": "0"}, "blue": {"hue": "-8", "saturation": "-10", "luminance": "-8"}, "purple": {"hue": "0", "saturation": "-10", "luminance": "0"}, "magenta": {"hue": "0", "saturation": "-10", "luminance": "0"}},
-    "color_grading": {"shadows": {"hue": "220", "saturation": "8", "luminance": "-2"}, "midtones": {"hue": "34", "saturation": "5", "luminance": "0"}, "highlights": {"hue": "46", "saturation": "4", "luminance": "+2"}, "blending": "45", "balance": "-10"},
-    "calibration": {"shadow_tint": "+3", "red_primary_hue": "+5", "red_primary_saturation": "-4", "green_primary_hue": "0", "green_primary_saturation": "-2", "blue_primary_hue": "-6", "blue_primary_saturation": "+8"},
-    "detail": {"sharpening_amount": "28", "radius": "0.9", "detail": "15", "masking": "80"},
-    "noise_reduction": {"luminance": "8", "detail": "40", "contrast": "0", "color": "15", "color_detail": "50"},
-    "lens_corrections": {"remove_chromatic_aberration": "on", "enable_profile_corrections": "on"},
-    "effects_grain_vignette": {"grain_amount": "8", "grain_size": "22", "grain_roughness": "35", "post_crop_vignette": "-6"}
+    "tone_curve": {"point_curve": "medium_contrast", "shadows": "+4", "darks": "-6"},
+    "hsl_color_mixer": {"orange": {"saturation": "+2", "luminance": "+4"}, "blue": {"saturation": "-10"}},
+    "color_grading": {"shadows": {"hue": "220", "saturation": "8"}, "highlights": {"hue": "46", "saturation": "4"}},
+    "detail": {"sharpening_amount": "28", "masking": "80"},
+    "effects_grain_vignette": {"grain_amount": "8", "post_crop_vignette": "-6"}
   },
-  "crop_strategy": "裁切策略必须说明保留/去掉什么视觉信息",
-  "local_adjustments": ["具体蒙版/局部加减光动作"],
-  "avoid_overediting": "哪些质感、颜色或模糊不应该被修掉",
+  "crop_strategy": "保留/去掉什么",
+  "local_adjustments": ["局部动作"],
+  "avoid_overediting": "别修掉什么",
   "editing_plan": {
-    "edit_intent": "修图要强化的摄影内容，必须引用可见对象",
+    "edit_intent": "强化的对象",
     "color_mode": {"choice": "color|bw", "reason": "为什么"},
-    "crop_plan": {
-      "aspect_ratio": "original|3:2|4:5|16:9|custom",
-      "keep": ["必须保留的画面信息"],
-      "remove_or_reduce": ["要裁掉或压弱的干扰"]
-    },
-    "local_masks": [
-      {
-        "target": "具体区域或对象",
-        "operation": "曝光/阴影/饱和度/清晰度等",
-        "settings": {"exposure": "+0.20"},
-        "reason": "为了强化或压弱哪条内容"
-      }
-    ],
-    "do_not_overedit": ["不要修掉的现场感、模糊、颜色或颗粒"]
+    "crop_plan": {"aspect_ratio": "original|3:2|4:5|16:9|custom", "keep": ["保留"], "remove_or_reduce": ["压弱"]},
+    "local_masks": [{"target": "对象", "operation": "曝光/阴影/饱和度", "settings": {"exposure": "+0.20"}, "reason": "目的"}],
+    "do_not_overedit": ["现场感"]
   }
 }
 """.strip()

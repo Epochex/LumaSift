@@ -38,7 +38,7 @@ class Settings:
     vision_api_base_url: str = "https://api.newcoin.top/v1"
     vision_model: str = "qwen3.6-plus"
     vision_api_keys: list[str] = field(default_factory=list)
-    vision_max_tokens: int = 8192
+    vision_max_tokens: int = 4096
     request_timeout_seconds: int = 90
     qwen_include_rejected: bool = False
     qwen_group_winners_only: bool = True
@@ -58,7 +58,7 @@ class Settings:
             vision_api_base_url=os.getenv("LUMASIFT_VISION_API_BASE_URL", "https://api.newcoin.top/v1"),
             vision_model=os.getenv("LUMASIFT_VISION_MODEL", "qwen3.6-plus"),
             vision_api_keys=_split_keys(os.getenv("LUMASIFT_VISION_API_KEYS")),
-            vision_max_tokens=int(os.getenv("LUMASIFT_VISION_MAX_TOKENS", "8192")),
+            vision_max_tokens=int(os.getenv("LUMASIFT_VISION_MAX_TOKENS", "4096")),
             qwen_include_rejected=_optional_bool(os.getenv("LUMASIFT_QWEN_INCLUDE_REJECTED")),
             qwen_group_winners_only=not _optional_bool(os.getenv("LUMASIFT_QWEN_INCLUDE_GROUP_NON_WINNERS")),
         )

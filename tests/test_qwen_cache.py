@@ -153,6 +153,47 @@ def test_qwen_client_retries_malformed_json_and_skips_bad_cache(tmp_path: Path, 
     assert any(event["type"] == "retrying" and event["reason"] == "malformed_json" for event in events)
 
 
+def test_qwen_client_caps_non_stream_tokens_and_retries_truncated_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    image_path = tmp_path / "image.jpg"
+    image_path.write_bytes(b"truncated response image bytes")
+    requests_payloads: list[dict] = []
+    responses = [
+        FakeResponse(
+            200,
+            payload={
+                "model": "qwen-test",
+                "choices": [{"finish_reason": "length", "message": {"content": '{"final_selection_score": 92}'}}],
+            },
+        ),
+        FakeResponse(200, payload={"model": "qwen-test", "choices": [{"message": {"content": '{"final_selection_score": 93}'}}]}),
+    ]
+    events: list[dict] = []
+
+    def fake_post(*args: object, **kwargs: object) -> FakeResponse:
+        requests_payloads.append(kwargs["json"])
+        return responses.pop(0)
+
+    monkeypatch.setattr(qwen_client.requests, "post", fake_post)
+    monkeypatch.setattr(qwen_client.random, "uniform", lambda start, stop: 0.0)
+    client = QwenVisionClient(
+        base_url="https://example.test/v1",
+        model="qwen-test",
+        keyring=ApiKeyRing(["live-key"]),
+        cache_dir=tmp_path / "cache",
+        max_tokens=8192,
+        sleep=lambda _: None,
+        event_callback=events.append,
+        response_validator=lambda response: parse_qwen_story_response(response),
+    )
+
+    response = client.analyze_image(image_path, "prompt", prompt_version="story-v1")
+
+    assert parse_qwen_story_response(response)["final_selection_score"] == 93
+    assert [payload["max_tokens"] for payload in requests_payloads] == [4096, 4096]
+    assert any(event["type"] == "max_tokens_capped" and event["used"] == 4096 for event in events)
+    assert any(event["type"] == "retrying" and event["reason"] == "malformed_json" for event in events)
+
+
 def test_extract_qwen_response_text_handles_multimodal_content() -> None:
     response = {
         "choices": [
