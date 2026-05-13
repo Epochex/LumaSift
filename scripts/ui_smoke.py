@@ -60,6 +60,10 @@ def main() -> int:
     app.processEvents()
     snapshots.append(capture(window, args.output, "settings_page", setup_expanded_checks(window)))
 
+    window._show_nav_page("help")
+    app.processEvents()
+    snapshots.append(capture(window, args.output, "help_page", help_page_checks(window, args.language)))
+
     window._show_nav_page("main")
     window._analysis_qwen_event({"type": "qwen_queue_prepared", "total": 5, "model": "qwen3.6-plus"})
     window._analysis_qwen_event({"type": "qwen_candidate_running", "filename": "smoke_001.jpg"})
@@ -383,6 +387,20 @@ def setup_expanded_checks(window: Any) -> list[dict[str, Any]]:
     for name in ("mode_combo", "limit_spin", "top_n_spin", "selected_top_spin", "display_limit_spin"):
         checks.append(check_min_size(getattr(window, name), f"{name}_readable", min_width=110, min_height=32))
     return checks
+
+
+def help_page_checks(window: Any, language: str) -> list[dict[str, Any]]:
+    plain_text = window.help_text.toPlainText()
+    if language == "zh":
+        required = ["LumaSift 使用说明", "导入照片目录", "Qwen 深评", "深评状态筛选", "常见问题排查"]
+    else:
+        required = ["LumaSift User Guide", "Import folder", "Qwen Top-N review", "Filtering and Marking", "Edit Plans"]
+    return [
+        check_visible(window.help_page, "help_page_visible"),
+        check_min_size(window.help_text, "help_text_readable", min_width=900, min_height=500),
+        check_value(all(item in plain_text for item in required), "help_manual_core_sections", plain_text[:1200]),
+        check_value("->" in plain_text or "→" in plain_text, "help_flow_diagram_visible", plain_text[:500]),
+    ]
 
 
 def qwen_queue_checks(window: Any) -> list[dict[str, Any]]:

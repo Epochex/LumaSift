@@ -2938,23 +2938,175 @@ class LumaSiftWindow(QMainWindow):
 
     def _help_page_html(self) -> str:
         if self.language == "zh":
-            title = "工作流"
-            lines = [
-                ("视图", "主界面负责选片板、评审 cockpit、开始分析、暂停分析和输出入口。"),
-                ("设置", "照片目录、输出目录、Qwen Top-N、显示数量、API key 检查全部在这里展开。"),
-                ("深评", "Qwen 只接收 Top-N 压缩预览；主界面会显示队列、当前文件、缓存、失败和深评进度。"),
-                ("暂停", "取消按钮只请求停止当前分析，不再触发关闭应用。已完成的本地结果会保留。"),
-            ]
+            return f"""
+            <html><head>{self._detail_html_style()}</head><body>
+            <div class="detail-shell">
+              <div class="summary-card">
+                <div class="manual-title">LumaSift 使用说明</div>
+                <p class="manual-subtitle">面向街头、纪实、人文和旅行摄影的本地优先选片与修图潜力评估流程。</p>
+                <table class="flow">
+                  <tr>
+                    <td>1 导入照片目录</td><td class="arrow">-&gt;</td>
+                    <td>2 本地初筛</td><td class="arrow">-&gt;</td>
+                    <td>3 Qwen 深评 Top-N</td><td class="arrow">-&gt;</td>
+                    <td>4 人工标记与筛选</td><td class="arrow">-&gt;</td>
+                    <td>5 生成修图方案</td>
+                  </tr>
+                </table>
+                <p><span class="warn">核心原则：</span>本地模型先做便宜、快速、隐私友好的技术与结构预筛；真正涉及人物关系、决定性瞬间、故事价值和可编辑方向的判断，优先看 Qwen 深评或人工看图。</p>
+              </div>
+
+              <div class="advice-card">
+                <h2>首次使用：从一组照片跑到可交付结果</h2>
+                <table>
+                  <tr><td><b>1. 进入设置</b></td><td>点击顶部 <span class="kbd">设置</span>，选择照片目录和输出目录。照片目录可以是 JPG、PNG、常见 RAW 文件混合目录；RAW 原片不会上传。</td></tr>
+                  <tr><td><b>2. 选择模式</b></td><td><span class="kbd">本地</span> 只做本机初筛；<span class="kbd">Qwen</span> 会先本地筛，再把 Top-N 压缩预览交给视觉模型深评。要判断故事、人文和瞬间，建议使用 Qwen 模式。</td></tr>
+                  <tr><td><b>3. 设置数量</b></td><td><span class="kbd">扫描</span> 控制最多处理多少张；<span class="kbd">Qwen Top-N</span> 控制深评候选数量；<span class="kbd">修图 Top-N</span> 控制没手动选图时默认生成多少张修图方案。</td></tr>
+                  <tr><td><b>4. 填 key 并检查</b></td><td>填入 Qwen / NewCoin API key 后点 <span class="kbd">检查</span>。界面会显示余额与可用视觉模型。密钥只应保存在本机设置或环境变量，不要写入项目文件。</td></tr>
+                  <tr><td><b>5. 开始分析</b></td><td>回到 <span class="kbd">视图</span>，点 <span class="kbd">开始分析</span>。分析中可以点 <span class="kbd">取消</span> 请求停止，已完成结果会保留。</td></tr>
+                </table>
+              </div>
+
+              <div class="advice-card">
+                <h2>界面区域怎么读</h2>
+                <table class="mini-grid">
+                  <tr><td><b>顶部导航</b><br>视图、设置、历史、帮助。筛片模式下顶部仍可见，便于返回设置或加载历史。</td><td><b>流程条</b><br>导入、初筛、深评、修图四步。点击步骤可快速展开对应配置或回到主评审视图。</td></tr>
+                  <tr><td><b>选片板</b><br>左侧照片网格显示排名、分数、人工标记、相似组信息。双击照片可打开大图预览。</td><td><b>评审面板</b><br>右侧显示故事判断、可见证据、人物关系、瞬间判断、风险、裁切和修图参数。</td></tr>
+                  <tr><td><b>Qwen 状态条</b><br>显示排队、运行、完成、缓存、失败、重试和取消数量。鼠标悬停可看失败原因。</td><td><b>输出入口</b><br>底部图标按钮可打开输出目录、联系表和生成修图方案。</td></tr>
+                </table>
+              </div>
+
+              <div class="advice-card">
+                <h2>筛选和人工标记</h2>
+                <ul>
+                  <li><b>搜索框：</b>按文件名、路径、分类、风格和标记搜索。</li>
+                  <li><b>分类筛选：</b>查看作品候选、强修图候选、故事候选、技术弱但有趣、普通记录、淘汰候选等。</li>
+                  <li><b>标记筛选：</b>查看保留、待定、淘汰、未标记。使用右侧三个图标按钮给选中的多张照片批量标记。</li>
+                  <li><b>相似组筛选：</b>只看组最佳、只看成组照片或只看单张。组内最佳只是系统建议，仍应结合人的内容判断。</li>
+                  <li><b>深评状态筛选：</b>查看已深评、完整证据、未深评、失败/重试、已跳过。做最终修图方案前，建议先切到 <span class="kbd">已深评</span> 或 <span class="kbd">完整证据</span>。</li>
+                  <li><b>排序：</b>高分优先、标记优先、低分优先、排名、文件名。人工标记会影响“标记优先”排序。</li>
+                </ul>
+              </div>
+
+              <div class="advice-card">
+                <h2>Qwen 深评怎么工作</h2>
+                <table>
+                  <tr><td><b>上传内容</b></td><td>只上传 Top-N 候选的压缩 JPEG 预览，不上传 RAW 原片。预览用于视觉理解和修图建议。</td></tr>
+                  <tr><td><b>缓存</b></td><td>同一张预览和同一提示版本命中缓存时不会重复扣费；状态条会显示缓存数量。</td></tr>
+                  <tr><td><b>失败与重试</b></td><td>网络、中转站或模型返回截断时会重试。最终失败会保留本地初筛结果，并在深评状态中显示失败。</td></tr>
+                  <tr><td><b>未深评</b></td><td>Top-N 之外、被人工淘汰、或相似组非最佳的照片可能标记为未深评/跳过。这类照片的修图建议会更保守，不会伪装成完整视觉判断。</td></tr>
+                  <tr><td><b>判断可信度</b></td><td>“完整证据”表示模型返回了较具体的可见证据、人物关系、瞬间和修图计划；“已深评”表示有视觉结果但证据可能较弱。</td></tr>
+                </table>
+              </div>
+
+              <div class="advice-card">
+                <h2>生成修图方案</h2>
+                <ul>
+                  <li>手动多选照片后点右下角修图方案按钮，会严格按你选中的照片生成。</li>
+                  <li>如果没有手动选择，系统会在当前筛选范围内优先选择已 Qwen 深评的照片，再按修图 Top-N 数量生成。</li>
+                  <li>建议先用 <span class="kbd">深评状态 = 已深评</span> 或 <span class="kbd">完整证据</span> 过滤，再生成最终方案。</li>
+                  <li>输出会写入 <span class="kbd">selected_editing_advice.md</span> 和 <span class="kbd">selected_editing_advice.json</span>。Markdown 适合阅读，JSON 适合后续自动化处理。</li>
+                  <li>未深评照片只给保守技术草稿；高级 HSL、色彩分级、局部遮罩等细节只在视觉证据足够时输出。</li>
+                </ul>
+              </div>
+
+              <div class="advice-card">
+                <h2>输出文件</h2>
+                <table>
+                  <tr><td><b>report.csv</b></td><td>表格报告，适合快速排序、筛选、人工复盘。</td></tr>
+                  <tr><td><b>report.json</b></td><td>完整结构化结果，包含本地分数、Qwen 深评、相似组、标记和错误信息。</td></tr>
+                  <tr><td><b>selected_editing_advice.md / .json</b></td><td>当前选择或默认 Top-N 的修图建议。</td></tr>
+                  <tr><td><b>contact sheet</b></td><td>联系表图像，用于快速浏览候选照片。</td></tr>
+                  <tr><td><b>previews</b></td><td>本地生成的压缩预览和缩略图缓存，可重新生成，不应当成原片备份。</td></tr>
+                </table>
+              </div>
+
+              <div class="advice-card">
+                <h2>常见问题排查</h2>
+                <ul>
+                  <li><b>提示 Qwen 失败：</b>先点“检查”确认 key、余额和模型可用；再看状态条悬停提示。若是中转站超时，降低 Qwen Top-N 后重跑通常更稳。</li>
+                  <li><b>生成的建议像草稿：</b>检查深评状态。如果照片未深评或证据不足，系统会故意保守，避免编造人物关系和修图细节。</li>
+                  <li><b>好照片被本地低分：</b>本地初筛只看技术和结构代理。街头摄影里轻微虚焦、噪点、高反差不应自动淘汰；把这类照片标为“待定”或增加 Qwen Top-N。</li>
+                  <li><b>相似组只显示一张：</b>切换“相似组”筛选为“成组”，可查看同组其它帧并人工比较决定性瞬间。</li>
+                  <li><b>想恢复历史结果：</b>进入“历史”，选择一次运行后点“载入”。如果输出目录已移动或删除，历史项会显示缺失。</li>
+                </ul>
+              </div>
+            </div>
+            </body></html>
+            """
         else:
-            title = "Workflow"
-            lines = [
-                ("View", "The main page owns the review board, cockpit, run/pause controls, and output shortcuts."),
-                ("Settings", "Folder paths, Qwen Top-N, display count, API keys, and quota checks are fully expanded here."),
-                ("Deep review", "Qwen receives Top-N compressed previews only; the main page shows queue, current file, cache, failures, and progress."),
-                ("Pause", "Cancel requests analysis stop only. It no longer closes the app, and completed local records remain available."),
-            ]
-        rows = "".join(f"<tr><td>{self._escape(k)}</td><td>{self._escape(v)}</td></tr>" for k, v in lines)
-        return f"<html><head>{self._detail_html_style()}</head><body><div class='advice-card'><h2>{self._escape(title)}</h2><table>{rows}</table></div></body></html>"
+            return f"""
+            <html><head>{self._detail_html_style()}</head><body>
+            <div class="detail-shell">
+              <div class="summary-card">
+                <div class="manual-title">LumaSift User Guide</div>
+                <p class="manual-subtitle">A local-first curation and editing-potential workflow for street, documentary, humanistic, and travel photography.</p>
+                <table class="flow">
+                  <tr>
+                    <td>1 Import folder</td><td class="arrow">-&gt;</td>
+                    <td>2 Local pre-score</td><td class="arrow">-&gt;</td>
+                    <td>3 Qwen Top-N review</td><td class="arrow">-&gt;</td>
+                    <td>4 Mark and filter</td><td class="arrow">-&gt;</td>
+                    <td>5 Generate edit plans</td>
+                  </tr>
+                </table>
+                <p><span class="warn">Principle:</span> local analysis is fast, private, and cheap; story, human relationship, decisive moment, and concrete editing direction should come from Qwen review or human inspection.</p>
+              </div>
+
+              <div class="advice-card">
+                <h2>First Run</h2>
+                <table>
+                  <tr><td><b>1. Open Settings</b></td><td>Choose the photo folder and output folder. JPG, PNG, and common RAW formats can be mixed. RAW files are not uploaded.</td></tr>
+                  <tr><td><b>2. Pick a mode</b></td><td><span class="kbd">Local</span> runs only on-device pre-scoring. <span class="kbd">Qwen</span> runs local pre-score first, then sends Top-N compressed previews for visual review.</td></tr>
+                  <tr><td><b>3. Set counts</b></td><td>Scan limit controls how many files are processed. Qwen Top-N controls deep-review cost. Advice Top-N controls the default edit-plan count when nothing is manually selected.</td></tr>
+                  <tr><td><b>4. Check the key</b></td><td>Enter the API key and click <span class="kbd">Check</span> to verify quota and the active vision model. Keep keys in local settings or environment variables only.</td></tr>
+                  <tr><td><b>5. Analyze</b></td><td>Return to View and click <span class="kbd">Analyze</span>. Cancel requests a stop; completed records remain available.</td></tr>
+                </table>
+              </div>
+
+              <div class="advice-card">
+                <h2>Reading the App</h2>
+                <table class="mini-grid">
+                  <tr><td><b>Top navigation</b><br>View, Settings, History, Help remain reachable during review.</td><td><b>Workflow strip</b><br>Import, pre-score, deep review, and edit-plan stages.</td></tr>
+                  <tr><td><b>Review board</b><br>Left grid with rank, score, label, and similar-group badges. Double-click opens the large preview.</td><td><b>Review panel</b><br>Story read, evidence, relationships, moment, risks, crop, and parameters.</td></tr>
+                  <tr><td><b>Qwen status</b><br>Queued, running, done, cache, failed, retry, and cancelled counts.</td><td><b>Output actions</b><br>Open output, contact sheet, and selected-photo editing plan.</td></tr>
+                </table>
+              </div>
+
+              <div class="advice-card">
+                <h2>Filtering and Marking</h2>
+                <ul>
+                  <li>Search by filename, path, category, style, or label.</li>
+                  <li>Filter by category, user label, similar group role, and Qwen review status.</li>
+                  <li>Before final edit-plan generation, prefer <span class="kbd">Qwen reviewed</span> or <span class="kbd">Concrete read</span>.</li>
+                  <li>Use the keep, maybe, and reject buttons to batch-mark selected photos.</li>
+                </ul>
+              </div>
+
+              <div class="advice-card">
+                <h2>Qwen Review</h2>
+                <table>
+                  <tr><td><b>Uploads</b></td><td>Only Top-N compressed JPEG previews are uploaded. RAW files stay local.</td></tr>
+                  <tr><td><b>Cache</b></td><td>Identical preview and prompt-version hits avoid repeated cost.</td></tr>
+                  <tr><td><b>Failures</b></td><td>Network, relay, or truncated model output failures are retried. Final failures keep local pre-score records.</td></tr>
+                  <tr><td><b>Not reviewed</b></td><td>Outside Top-N, rejected, or similar non-best frames may be marked not reviewed or skipped.</td></tr>
+                  <tr><td><b>Confidence</b></td><td>Concrete read means specific visible evidence and an editing plan are present; Qwen reviewed means visual output exists but may be weaker.</td></tr>
+                </table>
+              </div>
+
+              <div class="advice-card">
+                <h2>Edit Plans and Outputs</h2>
+                <ul>
+                  <li>Manual selection is always respected.</li>
+                  <li>With no manual selection, the app defaults to Qwen-reviewed records within the active filter, then Advice Top-N.</li>
+                  <li>Advice is written to <span class="kbd">selected_editing_advice.md</span> and <span class="kbd">selected_editing_advice.json</span>.</li>
+                  <li>Unreviewed photos receive conservative technical drafts; advanced color and mask detail requires enough visual evidence.</li>
+                  <li>Main reports are <span class="kbd">report.csv</span>, <span class="kbd">report.json</span>, contact sheets, and preview caches.</li>
+                </ul>
+              </div>
+            </div>
+            </body></html>
+            """
 
     def _escape(self, value: str) -> str:
         return html.escape(value, quote=True)
@@ -3297,6 +3449,14 @@ class LumaSiftWindow(QMainWindow):
         .bar div { height: 8px; background: #00a6ff; border-radius: 4px; }
         .param-table td:nth-child(1) { width: 42%; color: #9fb0c2; }
         .param-table td:nth-child(2) { width: 58%; color: #f8fafc; }
+        .manual-title { color: #f8fafc; font-size: 22px; font-weight: 900; margin: 0 0 6px 0; }
+        .manual-subtitle { color: #9fb0c2; font-size: 12px; margin-bottom: 10px; }
+        .flow { margin: 10px 0 14px 0; }
+        .flow td { border: 1px solid #26313d; background: #101820; text-align: center; font-weight: 800; }
+        .flow .arrow { width: 30px; color: #ffd400; background: #0b0f14; border: 0; }
+        .mini-grid td { width: 50%; background: #0b0f14; border: 1px solid #26313d; }
+        .kbd { background: #17212b; border: 1px solid #344457; border-radius: 4px; padding: 1px 5px; color: #f8fafc; font-weight: 800; }
+        .warn { color: #ffd400; font-weight: 800; }
         </style>
         """
 
