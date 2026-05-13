@@ -204,3 +204,65 @@ def test_qwen_progress_panel_tracks_deep_review_events() -> None:
     assert "qwen3.6-plus" in window.qwen_queue_label.text()
     assert window.qwen_stage_label.text()
     window.close()
+
+
+def test_review_status_filter_shows_qwen_reviewed_records() -> None:
+    app = QApplication.instance() or QApplication([])
+    _ = app
+    window = LumaSiftWindow()
+    window.language = "en"
+    window.records = [
+        {"rank": 1, "filename": "local.jpg", "path": "C:/tmp/local.jpg", "analysis_source": "local_proxy", "final_selection_score": 92},
+        {
+            "rank": 2,
+            "filename": "reviewed.jpg",
+            "path": "C:/tmp/reviewed.jpg",
+            "analysis_source": "qwen_vision",
+            "analysis_quality": "concrete",
+            "qwen_status": "done",
+            "final_selection_score": 88,
+        },
+        {"rank": 3, "filename": "failed.jpg", "path": "C:/tmp/failed.jpg", "qwen_status": "failed", "final_selection_score": 80},
+    ]
+    window._refresh_filter_options()
+
+    window.review_filter.setCurrentIndex(window.review_filter.findData("reviewed"))
+    reviewed = window._filtered_records()
+    assert [record["filename"] for record in reviewed] == ["reviewed.jpg"]
+
+    window.review_filter.setCurrentIndex(window.review_filter.findData("failed"))
+    failed = window._filtered_records()
+    assert [record["filename"] for record in failed] == ["failed.jpg"]
+    window.close()
+
+
+def test_default_advice_prefers_qwen_reviewed_records_over_local_top_rank() -> None:
+    app = QApplication.instance() or QApplication([])
+    _ = app
+    window = LumaSiftWindow()
+    window.records = [
+        {"rank": 1, "filename": "local-top.jpg", "path": "C:/tmp/local-top.jpg", "analysis_source": "local_proxy", "final_selection_score": 98},
+        {
+            "rank": 2,
+            "filename": "qwen-concrete.jpg",
+            "path": "C:/tmp/qwen-concrete.jpg",
+            "analysis_source": "qwen_vision",
+            "analysis_quality": "concrete",
+            "qwen_status": "done",
+            "final_selection_score": 87,
+        },
+        {
+            "rank": 3,
+            "filename": "qwen-partial.jpg",
+            "path": "C:/tmp/qwen-partial.jpg",
+            "analysis_source": "qwen_vision",
+            "analysis_quality": "weak",
+            "qwen_status": "cache-hit",
+            "final_selection_score": 93,
+        },
+    ]
+    window.selected_top_spin.setValue(2)
+    window._refresh_filter_options()
+
+    assert window._default_advice_ranks(window._filtered_records()) == [2, 3]
+    window.close()

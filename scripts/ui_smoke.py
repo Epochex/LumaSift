@@ -237,6 +237,10 @@ def exercise_label_workflow(window: Any, selection_model_type: Any) -> list[dict
     window._populate_records()
     checks.append(check_value(count_visible_grouped(window) >= 1, "grouped_filter_visible", visible_group_detail(window)))
     set_combo_data(window.group_filter, "all")
+    set_combo_data(window.review_filter, "reviewed")
+    window._populate_records()
+    checks.append(check_value(all_visible_reviewed(window), "reviewed_filter_clean", visible_review_detail(window)))
+    set_combo_data(window.review_filter, "all")
     set_combo_data(window.sort_combo, "user_priority")
     window._populate_records()
     sorted_labels = [record.get("user_label") or "unlabeled" for record in getattr(window.photo_model, "records", [])[:4]]
@@ -307,6 +311,19 @@ def visible_group_detail(window: Any) -> str:
         for record in getattr(window.photo_model, "records", [])[:8]
     ]
     return f"groups={groups}"
+
+
+def all_visible_reviewed(window: Any) -> bool:
+    records = getattr(window.photo_model, "records", [])
+    return bool(records) and all(window._qwen_review_bucket(record) in {"concrete", "reviewed"} for record in records)
+
+
+def visible_review_detail(window: Any) -> str:
+    statuses = [
+        (record.get("filename"), record.get("analysis_source"), record.get("analysis_quality"), record.get("qwen_status"))
+        for record in getattr(window.photo_model, "records", [])[:8]
+    ]
+    return f"review={statuses}"
 
 
 def capture(window: Any, output_dir: Path, name: str, checks: list[dict[str, Any]]) -> Snapshot:
