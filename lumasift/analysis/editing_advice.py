@@ -246,12 +246,12 @@ def _advice_for_record(record: dict[str, Any], *, language: str) -> dict[str, An
     style = _recommended_style(record)
     parameters = _lightroom_parameters(record, style)
     tone = _tone_recommendation(record, style, language=language)
-    advanced_parameters = _advanced_lightroom_parameters(record, style, tone["recommendation"], parameters)
     score = _float(record.get("final_selection_score"))
     photo_reading = _photo_reading(record, language=language)
     content_decision = _content_decision(record, language=language)
     editing_intent = _editing_intent(record, style, tone["recommendation"], language=language)
     has_vision = _has_vision_read(record)
+    advanced_parameters = _advanced_lightroom_parameters(record, style, tone["recommendation"], parameters) if has_vision else {}
     adjustments = _local_adjustments(record, style, tone["recommendation"], language=language) if has_vision else _technical_adjustments(record, language=language)
     local_masks = _local_masks(record, adjustments, language=language) if has_vision else []
     crop_plan = _crop_plan(record, language=language)

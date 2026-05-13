@@ -248,6 +248,11 @@ class LumaSiftHarness:
             )
         ]
         candidates = eligible[: self.settings.top_n_api_analysis]
+        candidate_ids = {id(record) for record in candidates}
+        for record in eligible:
+            if id(record) not in candidate_ids and not record.get("qwen_status"):
+                record["qwen_status"] = "not_reviewed"
+                record["qwen_skip_reason"] = "outside_qwen_top_n"
         self._event(
             "qwen_queue_prepared",
             total=len(candidates),

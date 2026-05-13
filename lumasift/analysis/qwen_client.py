@@ -20,6 +20,7 @@ from lumasift.storage.qwen_cache import (
 
 
 TRANSIENT_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+NON_STREAM_MAX_TOKENS = 4096
 
 
 class QwenVisionClient:
@@ -28,7 +29,7 @@ class QwenVisionClient:
         base_url: str,
         model: str,
         keyring: ApiKeyRing,
-        max_tokens: int = 8192,
+        max_tokens: int = 4096,
         timeout_seconds: int = 90,
         response_cache: QwenResponseCache | None = None,
         cache_dir: Path | None = None,
@@ -90,6 +91,9 @@ class QwenVisionClient:
             raise RuntimeError("No Qwen API keys configured")
 
         data_url = self._image_data_url(image_path)
+        max_tokens = min(self.max_tokens, NON_STREAM_MAX_TOKENS)
+        if max_tokens != self.max_tokens:
+            self._event("max_tokens_capped", requested=self.max_tokens, used=max_tokens)
         payload = {
             "model": self.model,
             "messages": [
@@ -102,7 +106,7 @@ class QwenVisionClient:
                 }
             ],
             "temperature": 0.2,
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens,
             "response_format": {"type": "json_object"},
         }
         last_error: Exception | None = None
@@ -169,8 +173,18 @@ class QwenVisionClient:
         raise RuntimeError(f"Qwen vision request failed after key rotation: {last_error}")
 
     def _validate_response(self, response: dict[str, Any]) -> None:
+        self._raise_if_truncated(response)
         if self.response_validator is not None:
             self.response_validator(response)
+
+    @staticmethod
+    def _raise_if_truncated(response: dict[str, Any]) -> None:
+        choices = response.get("choices")
+        if not isinstance(choices, list):
+            return
+        for choice in choices:
+            if isinstance(choice, dict) and choice.get("finish_reason") == "length":
+                raise ValueError("Qwen response was truncated before valid JSON completed")
 
     def _cache_for(self, image_path: Path) -> QwenResponseCache | None:
         if not self.cache_enabled:

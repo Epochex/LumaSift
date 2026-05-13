@@ -346,6 +346,38 @@ def test_qwen_stage_keeps_moment_risk_group_members_eligible(tmp_path: Path) -> 
     assert any(event["type"] == "qwen_queue_prepared" and event["total"] == 2 for event in events)
 
 
+def test_qwen_stage_marks_eligible_records_outside_top_n_as_not_reviewed(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    settings = Settings(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        ai_mode="qwen_vision",
+        vision_api_keys=["test-key"],
+        top_n_api_analysis=1,
+    )
+    harness = LumaSiftHarness(settings=settings, run_id="outside-top-n")
+    ranked = [
+        {
+            "filename": f"{index}.jpg",
+            "path": str(input_dir / f"{index}.jpg"),
+            "category": "story_candidate",
+            "final_selection_score": 90 - index,
+        }
+        for index in range(3)
+    ]
+    (output_dir / "STOP_LUMASIFT").write_text("stop", encoding="utf-8")
+
+    result = harness._apply_qwen_vision(ranked)
+
+    by_name = {record["filename"]: record for record in result}
+    assert by_name["0.jpg"]["qwen_status"] == "cancelled"
+    assert by_name["1.jpg"]["qwen_status"] == "not_reviewed"
+    assert by_name["1.jpg"]["qwen_skip_reason"] == "outside_qwen_top_n"
+    assert by_name["2.jpg"]["qwen_status"] == "not_reviewed"
+
+
 def test_qwen_stage_writes_prompt_version_and_cache_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
@@ -382,7 +414,7 @@ def test_qwen_stage_writes_prompt_version_and_cache_key(tmp_path: Path, monkeypa
         ]
     )
 
-    assert result[0]["qwen_prompt_version"] == "qwen-story-v4"
+    assert result[0]["qwen_prompt_version"] == "qwen-story-v5"
     assert result[0]["qwen_cache_key"] == "cache-digest"
 
 
