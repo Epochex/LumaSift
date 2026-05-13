@@ -99,6 +99,12 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "group_best": "组最佳",
         "grouped_only": "成组",
         "singletons": "单张",
+        "all_review_status": "全部深评",
+        "reviewed_qwen": "已深评",
+        "reviewed_concrete": "完整证据",
+        "not_reviewed": "未深评",
+        "review_failed": "失败/重试",
+        "review_skipped": "已跳过",
         "sort_high": "高分优先",
         "sort_low": "低分优先",
         "sort_rank": "排名",
@@ -194,6 +200,12 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "group_best": "Group best",
         "grouped_only": "Grouped",
         "singletons": "Singles",
+        "all_review_status": "All review",
+        "reviewed_qwen": "Qwen reviewed",
+        "reviewed_concrete": "Concrete read",
+        "not_reviewed": "Not reviewed",
+        "review_failed": "Failed/retry",
+        "review_skipped": "Skipped",
         "sort_high": "Score high to low",
         "sort_low": "Score low to high",
         "sort_rank": "Rank",
@@ -975,6 +987,7 @@ class LumaSiftWindow(QMainWindow):
         category = self.category_filter.currentData() or self.category_filter.currentText()
         label_value = self.label_filter.currentData() or "all"
         group_value = self.group_filter.currentData() if hasattr(self, "group_filter") else "all"
+        review_value = self.review_filter.currentData() if hasattr(self, "review_filter") else "all"
         sort_value = self.sort_combo.currentData() or "score_desc"
         self.category_filter.blockSignals(True)
         self.category_filter.clear()
@@ -1012,6 +1025,21 @@ class LumaSiftWindow(QMainWindow):
         group_index = self.group_filter.findData(group_value)
         self.group_filter.setCurrentIndex(group_index if group_index >= 0 else 0)
         self.group_filter.blockSignals(False)
+
+        self.review_filter.blockSignals(True)
+        self.review_filter.clear()
+        for text_key, data in [
+            ("all_review_status", "all"),
+            ("reviewed_qwen", "reviewed"),
+            ("reviewed_concrete", "concrete"),
+            ("not_reviewed", "not_reviewed"),
+            ("review_failed", "failed"),
+            ("review_skipped", "skipped"),
+        ]:
+            self.review_filter.addItem(self._t(text_key), data)
+        review_index = self.review_filter.findData(review_value)
+        self.review_filter.setCurrentIndex(review_index if review_index >= 0 else 0)
+        self.review_filter.blockSignals(False)
 
         self.sort_combo.blockSignals(True)
         self.sort_combo.clear()
@@ -1571,6 +1599,9 @@ class LumaSiftWindow(QMainWindow):
         self.group_filter = QComboBox()
         self.group_filter.addItems(["All groups", "Group best", "Grouped", "Singles"])
         self.group_filter.currentTextChanged.connect(self._populate_records)
+        self.review_filter = QComboBox()
+        self.review_filter.addItems(["All review", "Qwen reviewed", "Concrete read", "Not reviewed", "Failed/retry", "Skipped"])
+        self.review_filter.currentIndexChanged.connect(self._populate_records)
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["Score high to low", "Label priority", "Score low to high", "Rank", "Filename A-Z"])
         self.sort_combo.currentTextChanged.connect(self._populate_records)
@@ -1596,6 +1627,7 @@ class LumaSiftWindow(QMainWindow):
         layout.addWidget(self.category_filter)
         layout.addWidget(self.label_filter)
         layout.addWidget(self.group_filter)
+        layout.addWidget(self.review_filter)
         layout.addWidget(self.sort_combo)
         layout.addWidget(self.result_count_label)
         layout.addWidget(self.main_run_button)
@@ -2129,6 +2161,7 @@ class LumaSiftWindow(QMainWindow):
         category = self.category_filter.currentData() if hasattr(self, "category_filter") else "all"
         label_filter = self.label_filter.currentData() if hasattr(self, "label_filter") else "all"
         group_filter = self.group_filter.currentData() if hasattr(self, "group_filter") else "all"
+        review_filter = self.review_filter.currentData() if hasattr(self, "review_filter") else "all"
         if category and category != "all":
             records = [record for record in records if str(record.get("category", "")) == category]
         if label_filter and label_filter != "all":
@@ -2143,6 +2176,8 @@ class LumaSiftWindow(QMainWindow):
                 records = [record for record in records if int(record.get("group_size", 1) or 1) > 1]
             elif group_filter == "singletons":
                 records = [record for record in records if int(record.get("group_size", 1) or 1) <= 1]
+        if review_filter and review_filter != "all":
+            records = [record for record in records if self._record_matches_review_filter(record, str(review_filter))]
         if query:
             records = [
                 record
@@ -2177,6 +2212,24 @@ class LumaSiftWindow(QMainWindow):
         else:
             records.sort(key=lambda item: float(item.get("final_selection_score", 0) or 0), reverse=True)
         return records
+
+    def _record_matches_review_filter(self, record: dict[str, Any], review_filter: str) -> bool:
+        bucket = self._qwen_review_bucket(record)
+        if review_filter == "reviewed":
+            return bucket in {"concrete", "reviewed"}
+        return bucket == review_filter
+
+    def _qwen_review_bucket(self, record: dict[str, Any]) -> str:
+        status = str(record.get("qwen_status") or "").strip().lower()
+        source = str(record.get("analysis_source") or "").strip().lower()
+        quality = str(record.get("analysis_quality") or "").strip().lower()
+        if status in {"done", "cache-hit"} or source == "qwen_vision":
+            return "concrete" if quality == "concrete" else "reviewed"
+        if status == "failed" or status.startswith("retry"):
+            return "failed"
+        if status == "cancelled" or status.startswith("skipped"):
+            return "skipped"
+        return "not_reviewed"
 
     def _refresh_filter_options(self) -> None:
         self._reset_filter_combos()
@@ -2503,16 +2556,31 @@ class LumaSiftWindow(QMainWindow):
         """
 
     def _generate_selected_advice(self) -> None:
-        selected_indexes = self._selected_record_indexes()
-        if selected_indexes:
-            selected_ranks = [index.data(Qt.ItemDataRole.UserRole).get("rank") for index in selected_indexes]
-        else:
-            selected_ranks = list(range(1, min(self.selected_top_spin.value(), len(self.records)) + 1))
-
         if not self.records:
             QMessageBox.information(self, self._t("no_records"), self._t("run_first"))
             return
-        payload = build_selected_editing_advice(self.records, selected_ranks=selected_ranks, language=self.language)
+
+        records_for_advice = self.records
+        selected_indexes = self._selected_record_indexes()
+        if selected_indexes:
+            selected_ranks = []
+            for index in selected_indexes:
+                record = index.data(Qt.ItemDataRole.UserRole)
+                if isinstance(record, dict):
+                    rank = self._rank_for_advice(record)
+                    if rank is not None:
+                        selected_ranks.append(rank)
+        else:
+            records_for_advice = self._filtered_records()
+            if not records_for_advice:
+                QMessageBox.information(self, self._t("no_records"), self._t("empty_filtered"))
+                return
+            selected_ranks = self._default_advice_ranks(records_for_advice)
+
+        if not selected_ranks:
+            QMessageBox.information(self, self._t("no_selection"), self._t("select_first"))
+            return
+        payload = build_selected_editing_advice(records_for_advice, selected_ranks=selected_ranks, language=self.language)
         json_path = self.output_dir / "selected_editing_advice.json"
         md_path = self.output_dir / "selected_editing_advice.md"
         write_json_report(json_path, payload)
@@ -2674,6 +2742,33 @@ class LumaSiftWindow(QMainWindow):
             return []
         indexes = self.photo_list.selectionModel().selectedIndexes()
         return [index for index in indexes if index.isValid() and index.data(Qt.ItemDataRole.UserRole)]
+
+    def _rank_for_advice(self, record: dict[str, Any]) -> int | None:
+        try:
+            rank = int(record.get("rank", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        return rank if rank > 0 else None
+
+    def _has_qwen_review(self, record: dict[str, Any]) -> bool:
+        return self._qwen_review_bucket(record) in {"concrete", "reviewed"}
+
+    def _default_advice_ranks(self, pool: list[dict[str, Any]] | None = None) -> list[int]:
+        candidates = list(pool if pool is not None else self._filtered_records())
+        if not candidates:
+            candidates = list(self.records)
+        limit = max(1, min(self.selected_top_spin.value(), len(candidates))) if candidates else 0
+        if limit <= 0:
+            return []
+
+        reviewed = [record for record in candidates if self._has_qwen_review(record)]
+        if reviewed:
+            concrete = [record for record in reviewed if self._qwen_review_bucket(record) == "concrete"]
+            partial = [record for record in reviewed if self._qwen_review_bucket(record) != "concrete"]
+            ranked = [self._rank_for_advice(record) for record in (concrete + partial)[:limit]]
+        else:
+            ranked = [self._rank_for_advice(record) for record in candidates[:limit]]
+        return [rank for rank in ranked if rank is not None]
 
     def _open_path(self, path: Path) -> None:
         try:
