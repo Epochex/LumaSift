@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LumaSift | 本地 AI 选片工作台</title>
+    <meta
+      name="description"
+      content="LumaSift 是面向街头、纪实、人文与旅行摄影的本地优先 AI 选片和修图潜力工作台。"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-candidate="keep">
+    <header class="topbar" aria-label="LumaSift navigation">
+      <a class="brand" href="#top" aria-label="LumaSift 首页">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>LumaSift</span>
+      </a>
+      <nav>
+        <a href="#workflow">工作</a>
+        <a href="#ranking">选片</a>
+        <a href="#editing">修图</a>
+      </nav>
+      <span class="lang-chip">中文优先</span>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="kicker">LOCAL-FIRST PHOTO CURATION</p>
+          <h1 id="hero-title">LumaSift</h1>
+          <p class="lead">故事优先的本地 AI 选片工作台：把街头瞬间、人文关系、画面张力和可修潜力放在技术完美之前。</p>
+          <div class="hero-actions" aria-label="主要操作">
+            <a class="primary-link" href="#workflow">查看 AI 选片报告</a>
+            <a class="secondary-link" href="#editing">生成修图方案</a>
+          </div>
+        </div>
+
+        <div class="construct-stage" aria-label="LumaSift 工作台视觉预览">
+          <div class="axis axis-red"><span>硬风险淘汰线</span></div>
+          <div class="axis axis-cyan"><span>故事关系路径</span></div>
+          <div class="photo-stack" data-decision="keep">
+            <figure class="photo-frame frame-a" data-candidate="keep">
+              <img src="./assets/lumasift-candidate-1.jpg" width="1100" height="780" decoding="async" alt="候选 01：两名行人在夜街中形成手势和视线关系" />
+              <figcaption>KEEP · 故事 91 · 关系成立</figcaption>
+            </figure>
+            <figure class="photo-frame frame-b" data-candidate="maybe">
+              <img src="./assets/lumasift-candidate-2.jpg" width="1100" height="780" decoding="async" alt="候选 02：公交车遮挡主体，动作有潜力但时机不稳定" />
+              <figcaption>MAYBE · 瞬间风险 · 需复核</figcaption>
+            </figure>
+            <figure class="photo-frame frame-c" data-candidate="reject">
+              <img src="./assets/lumasift-candidate-3.jpg" width="1100" height="780" loading="lazy" decoding="async" alt="候选 03：主体缺失且高光发灰，缺少可挽回的故事证据" />
+              <figcaption>REJECT · 技术 41 · 主体缺失</figcaption>
+            </figure>
+            <div class="scan-beam" aria-hidden="true"></div>
+            <div class="sequence-index" aria-label="候选序列位置">
+              <span class="is-current"></span>
+              <span></span>
+              <span></span>
+            </div>
+          </div>
+          <aside class="signal-panel">
+            <div class="panel-head">
+              <span>QWEN 样例深评</span>
+              <strong data-panel="count">5 / 24</strong>
+            </div>
+            <div class="queue-line">
+              <span class="chip done" data-panel="done">完成 3</span>
+              <span class="chip cache" data-panel="cache">缓存 1</span>
+              <span class="chip fail" data-panel="fail">失败 0</span>
+            </div>
+            <div class="meter" role="progressbar" aria-label="Qwen 深评进度" aria-valuemin="0" aria-valuemax="24" aria-valuenow="5">
+              <span style="width: 21%"></span>
+            </div>
+            <dl>
+              <div><dt>关系</dt><dd data-panel="relation">手势、视线和街道线索汇到同一动作。</dd></div>
+              <div><dt>瞬间</dt><dd data-panel="moment">动作峰值清楚，遮挡没有切断主体。</dd></div>
+              <div><dt>别修掉</dt><dd data-panel="preserve">保留颗粒、招牌和地面方向线。</dd></div>
+            </dl>
+            <div class="decision-strip" aria-label="照片决策轨道">
+              <button type="button" data-decision="keep" aria-pressed="true">KEEP</button>
+              <button type="button" data-decision="maybe" aria-pressed="false">MAYBE</button>
+              <button type="button" data-decision="reject" aria-pressed="false">REJECT</button>
+            </div>
+            <div class="queue-ticker" aria-label="当前分析状态">
+              <span></span>
+              <b data-panel="ticker">样例状态：压缩预览已完成，深评结论可复核。</b>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="workflow" class="workflow-band" aria-labelledby="workflow-title">
+        <div class="section-head">
+          <p class="kicker">FOUR MOVES</p>
+          <h2 id="workflow-title">本地目录 → 修图方案</h2>
+        </div>
+        <div class="workflow-grid">
+          <article class="step is-active" data-step="1" role="button" tabindex="0" aria-pressed="true">
+            <span>01</span>
+            <h3>导入</h3>
+            <p>选择 RAW / JPG / PNG 目录，原片留在本机。</p>
+          </article>
+          <article class="step" data-step="2" role="button" tabindex="0" aria-pressed="false">
+            <span>02</span>
+            <h3>初筛</h3>
+            <p>本地快速读取结构、亮度、可恢复空间与序列关系。</p>
+          </article>
+          <article class="step" data-step="3" role="button" tabindex="0" aria-pressed="false">
+            <span>03</span>
+            <h3>深评</h3>
+            <p>只把高价值压缩预览交给 Qwen，节省时间和 API 成本。</p>
+          </article>
+          <article class="step" data-step="4" role="button" tabindex="0" aria-pressed="false">
+            <span>04</span>
+            <h3>修图</h3>
+            <p>输出裁切、局部蒙版、HSL、色彩分级和质感参数。</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="ranking" class="ranking-lab" aria-labelledby="ranking-title">
+        <div class="ranking-copy">
+          <p class="kicker">STORY BEFORE SHARPNESS</p>
+          <h2 id="ranking-title">排序不是把技术瑕疵直接判死刑</h2>
+          <p>
+            LumaSift 把人、关系、动作、环境证据、决定性瞬间和后期可塑性放在中心；传统清晰度、曝光和噪点更像便宜过滤器与恢复信号。
+          </p>
+        </div>
+        <div class="score-board" aria-label="排序指标示例">
+          <div class="score-row hot" data-score-key="story" style="--score: 94"><b>人文 / 故事</b><span data-value="94">0</span></div>
+          <div class="score-row" data-score-key="moment" style="--score: 87"><b>决定性瞬间</b><span data-value="87">0</span></div>
+          <div class="score-row" data-score-key="structure" style="--score: 82"><b>画面结构</b><span data-value="82">0</span></div>
+          <div class="score-row cool" data-score-key="risk" style="--score: 41"><b>技术风险</b><span data-value="41">0</span></div>
+          <p class="board-note" data-panel="note">技术风险可见，但不自动压过街头摄影价值。</p>
+        </div>
+        <div class="contact-sheet" aria-label="候选照片接触表">
+          <button class="thumb is-selected" type="button" data-candidate="keep" aria-pressed="true">
+            <img src="./assets/lumasift-candidate-1.jpg" width="1100" height="780" loading="lazy" decoding="async" alt="候选 01 缩略图" />
+            <span>01 KEEP · 关系成立</span>
+          </button>
+          <button class="thumb" type="button" data-candidate="maybe" aria-pressed="false">
+            <img src="./assets/lumasift-candidate-2.jpg" width="1100" height="780" loading="lazy" decoding="async" alt="候选 02 缩略图" />
+            <span>02 MAYBE · 遮挡复核</span>
+          </button>
+          <button class="thumb" type="button" data-candidate="reject" aria-pressed="false">
+            <img src="./assets/lumasift-candidate-3.jpg" width="1100" height="780" loading="lazy" decoding="async" alt="候选 03 缩略图" />
+            <span>03 REJECT · 主体缺失</span>
+          </button>
+        </div>
+      </section>
+
+      <section id="editing" class="editing-band" aria-labelledby="editing-title">
+        <div class="edit-sheet">
+          <div class="sheet-label">SELECTED EDIT PLAN</div>
+          <h2 id="editing-title">选中照片的中文修图方案</h2>
+          <div class="parameter-grid">
+            <div data-param="exposure"><span>曝光</span><b>+0.15</b><small>轻提人物脸部，不洗掉夜色。</small></div>
+            <div data-param="contrast"><span>对比度</span><b>+12</b><small>强化人车边缘和街道压迫感。</small></div>
+            <div data-param="black"><span>黑色色阶</span><b>-8</b><small>保留暗部重量，让环境成立。</small></div>
+            <div data-param="hsl"><span>HSL / 颜色混合</span><b>黄 -10</b><small>压弱招牌溢色，避免抢主体。</small></div>
+            <div data-param="grade"><span>色彩分级</span><b>阴影偏青</b><small>把冷街景和暖标识拉开。</small></div>
+            <div data-param="mask"><span>局部蒙版</span><b>人物 +0.20</b><small>只提关键动作区域，保留颗粒。</small></div>
+          </div>
+        </div>
+        <div class="export-rail" aria-label="输出文件">
+          <span>CSV</span>
+          <span>JSON</span>
+          <span>CONTACT SHEET</span>
+          <span>MARKDOWN</span>
+        </div>
+      </section>
+    </main>
+
+    <script src="./script.js"></script>
+    <script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>
+  </body>
+</html>
