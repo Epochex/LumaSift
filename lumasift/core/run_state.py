@@ -27,15 +27,33 @@ class RunState:
             handle.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
 
     def save_checkpoint(self, data: dict[str, Any]) -> None:
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
         tmp_path = self.checkpoint_path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.write_text(payload, encoding="utf-8")
         try:
             tmp_path.replace(self.checkpoint_path)
         except PermissionError:
-            self.checkpoint_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp_path.unlink(missing_ok=True)
+            return
 
     def load_checkpoint(self) -> dict[str, Any] | None:
-        if not self.checkpoint_path.exists():
-            return None
-        return json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
+        candidates = [
+            self.checkpoint_path,
+            self.checkpoint_path.with_suffix(".tmp"),
+        ]
+        best: tuple[float, dict[str, Any]] | None = None
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                mtime = 0
+            if best is None or mtime > best[0]:
+                best = (mtime, data)
+        return best[1] if best is not None else None
