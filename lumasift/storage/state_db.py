@@ -19,57 +19,17 @@ def default_state_db_path() -> Path:
 
 
 class LumaSiftStateDb:
-    """Small local SQLite store for user labels and run history.
+    """Small local SQLite store for user labels and reusable photo manifests.
 
     The reports remain portable JSON/CSV files, while this database keeps the
-    durable product state needed for review history, evaluation sets, and future
-    personal preference learning.
+    durable product state needed for evaluation sets, preview reuse, API cache
+    linkage, and future personal preference learning.
     """
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or default_state_db_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
-
-    def record_run(self, *, run_id: str, input_dir: str, output_dir: str, ai_mode: str, summary: dict[str, Any]) -> None:
-        now = int(time.time())
-        with self._connect() as conn:
-            conn.execute(
-                """
-                insert into runs(run_id, input_dir, output_dir, ai_mode, scanned, processed, failed, created_at)
-                values(?, ?, ?, ?, ?, ?, ?, ?)
-                on conflict(run_id) do update set
-                    input_dir=excluded.input_dir,
-                    output_dir=excluded.output_dir,
-                    ai_mode=excluded.ai_mode,
-                    scanned=excluded.scanned,
-                    processed=excluded.processed,
-                    failed=excluded.failed
-                """,
-                (
-                    run_id,
-                    input_dir,
-                    output_dir,
-                    ai_mode,
-                    int(summary.get("scanned", 0) or 0),
-                    int(summary.get("processed", 0) or 0),
-                    int(summary.get("failed", 0) or 0),
-                    now,
-                ),
-            )
-
-    def list_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                select run_id, input_dir, output_dir, ai_mode, scanned, processed, failed, created_at
-                from runs
-                order by created_at desc, rowid desc
-                limit ?
-                """,
-                (limit,),
-            ).fetchall()
-        return [dict(row) for row in rows]
 
     def load_labels(self, paths: Iterable[str | Path]) -> dict[str, str]:
         normalized = [self._normalize_path(path) for path in paths]
@@ -273,20 +233,6 @@ class LumaSiftStateDb:
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """
-                create table if not exists runs(
-                    run_id text primary key,
-                    input_dir text not null,
-                    output_dir text not null,
-                    ai_mode text not null,
-                    scanned integer not null default 0,
-                    processed integer not null default 0,
-                    failed integer not null default 0,
-                    created_at integer not null
-                )
-                """
-            )
             conn.execute(
                 """
                 create table if not exists photos(

@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-05-19 - History page removal
+- Removed the desktop History page and review-mode history action so the app stays focused on current photo analysis, marking, and editing advice.
+- Removed run-history recording/listing/restore code from the GUI and SQLite state layer.
+- Kept the SQLite photo manifest, user labels, preview paths, and Qwen cache-key linkage because they directly speed reruns and avoid repeat API spend.
+
 ## 2026-05-12
 
 - Established the first long-running development harness.

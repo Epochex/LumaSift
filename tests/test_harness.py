@@ -5,6 +5,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 from PIL import Image
 
+from lumasift.analysis.qwen_story import QWEN_STORY_PROMPT_VERSION
 from lumasift.core.config import Settings
 from lumasift.core.harness import LumaSiftHarness
 from lumasift.storage.state_db import LumaSiftStateDb
@@ -26,6 +27,8 @@ def test_harness_runs_local_only(tmp_path: Path) -> None:
     record = json.loads(result.report_json.read_text(encoding="utf-8"))["records"][0]
     assert "Local pre-screen only" in record["story_interpretation"]
     assert record["positive_reasons"] != ["Local proxy detected workable tonal/detail structure."]
+    assert record["tone_category"] == "warm_tone"
+    assert record["tone_profile"]["tone_warmth"] > 0
 
 
 def test_local_fallback_reasons_vary_by_image_metrics(tmp_path: Path) -> None:
@@ -102,6 +105,57 @@ def test_harness_does_not_reuse_qwen_record_for_local_only_run(tmp_path: Path) -
 
     assert report["records"][0].get("manifest_status") is None
     assert report["records"][0].get("qwen_model") is None
+
+
+def test_harness_does_not_reuse_qwen_record_missing_current_prompt_version(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    photo = input_dir / "red.jpg"
+    Image.new("RGB", (32, 32), color=(200, 40, 40)).save(photo)
+    stat = photo.stat()
+    db = LumaSiftStateDb(tmp_path / "state.sqlite")
+    db.upsert_photo_manifest(
+        path=photo,
+        size_bytes=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        identity_hash="identity-old-qwen",
+        last_run_id="old-qwen-run",
+        rank=1,
+        score=88.0,
+        category="story_candidate",
+        record={
+            "path": str(photo.resolve()),
+            "filename": photo.name,
+            "final_selection_score": 88.0,
+            "category": "story_candidate",
+            "analysis_source": "qwen_vision",
+            "analysis_quality": "concrete",
+            "qwen_status": "done",
+        },
+    )
+
+    settings = Settings(input_dir=input_dir, output_dir=output_dir, ai_mode="qwen_vision")
+    harness = LumaSiftHarness(settings=settings, run_id="qwen-current", state_db=db)
+
+    assert harness._reusable_manifest_record(photo) is None
+
+    stored = db.load_manifest_record(photo)
+    assert stored is not None
+    stored["qwen_prompt_version"] = QWEN_STORY_PROMPT_VERSION
+    db.upsert_photo_manifest(
+        path=photo,
+        size_bytes=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        identity_hash="identity-current-qwen",
+        last_run_id="current-qwen-run",
+        rank=1,
+        score=88.0,
+        category="story_candidate",
+        record=stored,
+    )
+
+    assert harness._reusable_manifest_record(photo) is not None
 
 
 def test_harness_applies_user_feedback_without_changing_model_score(tmp_path: Path) -> None:
@@ -414,8 +468,49 @@ def test_qwen_stage_writes_prompt_version_and_cache_key(tmp_path: Path, monkeypa
         ]
     )
 
-    assert result[0]["qwen_prompt_version"] == "qwen-story-v5"
+    assert result[0]["qwen_prompt_version"] == QWEN_STORY_PROMPT_VERSION
     assert result[0]["qwen_cache_key"] == "cache-digest"
+
+
+def test_qwen_stage_records_failure_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    photo = input_dir / "candidate.jpg"
+    Image.new("RGB", (32, 32), color=(200, 40, 40)).save(photo)
+
+    class FakeQwenClient:
+        last_cache_hit = False
+        last_cache_key_digest = ""
+        last_failure_kind = "weak_response"
+        last_failure_message = "professional_review too generic"
+        last_invalid_response_excerpt = '{"analysis_quality":"weak"}'
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def analyze_image(self, *args: object, **kwargs: object) -> dict:
+            raise RuntimeError("LLM Deep Analysis request failed after key rotation: professional_review too generic")
+
+    monkeypatch.setattr("lumasift.core.harness.QwenVisionClient", FakeQwenClient)
+    settings = Settings(input_dir=input_dir, output_dir=output_dir, ai_mode="qwen_vision", vision_api_keys=["test-key"])
+    harness = LumaSiftHarness(settings=settings, run_id="qwen-failure-diagnostics")
+
+    result = harness._apply_qwen_vision(
+        [
+            {
+                "filename": "candidate.jpg",
+                "path": str(photo),
+                "category": "story_candidate",
+                "final_selection_score": 80,
+            }
+        ]
+    )
+
+    assert result[0]["qwen_status"] == "failed"
+    assert result[0]["qwen_failure_kind"] == "weak_response"
+    assert result[0]["qwen_failure_detail"] == "professional_review too generic"
+    assert result[0]["qwen_invalid_response_excerpt"] == '{"analysis_quality":"weak"}'
 
 
 def test_desktop_app_module_imports() -> None:
@@ -428,44 +523,4 @@ def test_desktop_app_module_imports() -> None:
     assert "本地" in window.windowTitle()
     window.language_combo.setCurrentText("English")
     assert "Local" in window.windowTitle()
-    window.close()
-
-
-def test_desktop_restores_history_run(tmp_path: Path) -> None:
-    from lumasift.app.desktop import LumaSiftWindow
-
-    app = QApplication.instance() or QApplication([])
-    output_dir = tmp_path / "run-output"
-    output_dir.mkdir()
-    (output_dir / "report.json").write_text(
-        json.dumps(
-            {
-                "records": [
-                    {
-                        "rank": 1,
-                        "path": str(tmp_path / "photo.jpg"),
-                        "filename": "photo.jpg",
-                        "category": "story_candidate",
-                        "final_selection_score": 88.0,
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    window = LumaSiftWindow()
-    window.state_db = LumaSiftStateDb(tmp_path / "state.sqlite")
-    window.state_db.record_run(
-        run_id="history-run",
-        input_dir=str(tmp_path),
-        output_dir=str(output_dir),
-        ai_mode="local_only",
-        summary={"scanned": 1, "processed": 1, "failed": 0},
-    )
-
-    window._restore_history_run(window.state_db.list_runs(limit=1)[0])
-
-    assert window.review_mode
-    assert len(window.records) == 1
-    assert window.output_dir == output_dir
     window.close()

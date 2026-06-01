@@ -34,7 +34,7 @@ where = ["."]
 include = ["lumasift*"]
 
 [tool.setuptools.package-data]
-lumasift = ["resources/*.ico"]
+lumasift = ["resources/*.ico", "resources/*.png", "resources/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

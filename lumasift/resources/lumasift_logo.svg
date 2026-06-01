@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="LumaSift logo">
+  <rect width="1024" height="1024" fill="#080808"/>
+  <path d="M-70 744 1094 276v186L-70 930z" fill="#2d3034"/>
+  <path d="M-70 868 1094 520v138L-70 1006z" fill="#595e63"/>
+  <g fill="#d7d7d7">
+    <rect x="104" y="196" width="114" height="84"/>
+    <rect x="252" y="196" width="114" height="84"/>
+    <rect x="104" y="320" width="114" height="84"/>
+    <rect x="252" y="320" width="114" height="84"/>
+    <rect x="104" y="444" width="114" height="84"/>
+    <rect x="252" y="444" width="114" height="84"/>
+    <rect x="104" y="568" width="114" height="84"/>
+    <rect x="252" y="568" width="114" height="84"/>
+  </g>
+  <path d="M420 142h56v744h-56zM512 142h56v744h-56zM604 142h56v744h-56z" fill="#f2f2f2"/>
+  <g transform="rotate(-7 706 454)">
+    <rect x="536" y="244" width="390" height="300" fill="#f2f2f2"/>
+    <rect x="574" y="282" width="314" height="206" fill="#d7d7d7"/>
+    <path d="M574 488 680 386l82 68 76-92 50 126z" fill="#111318"/>
+    <rect x="536" y="488" width="390" height="56" fill="#111318"/>
+  </g>
+  <circle cx="702" cy="454" r="116" fill="none" stroke="#f2f2f2" stroke-width="42"/>
+  <path d="M718 694h196v78H718z" fill="#f2f2f2"/>
+</svg>

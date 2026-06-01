@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 import random
 import time
@@ -57,22 +58,30 @@ class QwenVisionClient:
         self.response_validator = response_validator
         self.last_cache_hit = False
         self.last_cache_key_digest: str | None = None
+        self.last_failure_kind: str = ""
+        self.last_failure_message: str = ""
+        self.last_invalid_response_excerpt: str = ""
 
     def _event(self, event_type: str, **payload: Any) -> None:
+        payload.setdefault("model", self.model)
         if self.event_callback is not None:
             self.event_callback({"type": event_type, **payload})
 
     def analyze_image(self, image_path: Path, prompt: str, prompt_version: str | None = None) -> dict[str, Any]:
         self.last_cache_hit = False
         self.last_cache_key_digest = None
+        self.last_failure_kind = ""
+        self.last_failure_message = ""
+        self.last_invalid_response_excerpt = ""
         image_identity = identify_image(image_path)
         cache = self._cache_for(image_path)
         cache_key = None
         if cache is not None:
+            cache_prompt_version = f"{prompt_version}:{prompt_fingerprint(prompt)}" if prompt_version else prompt_fingerprint(prompt)
             cache_key = cache.make_key(
                 image=image_identity,
                 model=self.model,
-                prompt_version=prompt_version or prompt_fingerprint(prompt),
+                prompt_version=cache_prompt_version,
             )
             self.last_cache_key_digest = cache_key.digest
             cached = cache.load(cache_key)
@@ -88,7 +97,7 @@ class QwenVisionClient:
                     return cached
 
         if not self.keyring.has_keys():
-            raise RuntimeError("No Qwen API keys configured")
+            raise RuntimeError("No LLM Deep Analysis API keys configured")
 
         data_url = self._image_data_url(image_path)
         max_tokens = min(self.max_tokens, NON_STREAM_MAX_TOKENS)
@@ -111,6 +120,7 @@ class QwenVisionClient:
         }
         last_error: Exception | None = None
         tried_without_response_format = False
+        tried_validation_repair = False
         retry_count = 0
         while True:
             try:
@@ -143,23 +153,51 @@ class QwenVisionClient:
                     continue
                 response.raise_for_status()
                 response_data = scrub_secrets(response.json())
-                self._validate_response(response_data)
+                try:
+                    self._validate_response(response_data)
+                except ValueError:
+                    self.last_invalid_response_excerpt = self._response_excerpt(response_data)
+                    raise
                 if cache is not None and cache_key is not None:
                     cache.store(cache_key, image_identity, response_data)
                 return response_data
             except ValueError as exc:
                 last_error = exc
+                validation_message = str(exc)
+                self.last_failure_message = validation_message
+                reason = (
+                    "response_validation_failed"
+                    if "professional_review" in validation_message or "too generic" in validation_message or "metric-driven" in validation_message
+                    else "malformed_json"
+                )
+                self.last_failure_kind = "weak_response" if reason == "response_validation_failed" else "malformed_json"
                 if retry_count < self.max_retries:
-                    self._event("retrying", reason="malformed_json", retry=retry_count + 1)
+                    self._event(
+                        "retrying",
+                        reason=reason,
+                        retry=retry_count + 1,
+                        message=validation_message[:240],
+                    )
+                    if reason == "response_validation_failed":
+                        if tried_validation_repair:
+                            break
+                        payload["messages"][0]["content"][0]["text"] = self._validation_repair_prompt(prompt, validation_message)
+                        tried_validation_repair = True
+                        retry_count += 1
+                        continue
                     self._backoff(retry_count)
                     retry_count += 1
                     continue
                 break
             except requests.HTTPError as exc:
                 last_error = exc
+                self.last_failure_kind = "http_error"
+                self.last_failure_message = str(exc)
                 break
             except requests.RequestException as exc:
                 last_error = exc
+                self.last_failure_kind = "request_exception"
+                self.last_failure_message = str(exc)
                 if retry_count < self.max_retries:
                     self._event("retrying", reason="request_exception", retry=retry_count + 1)
                     self._backoff(retry_count)
@@ -170,7 +208,7 @@ class QwenVisionClient:
                     self._event("retrying", reason="request_exception_key_rotated")
                     continue
                 break
-        raise RuntimeError(f"Qwen vision request failed after key rotation: {last_error}")
+        raise RuntimeError(f"LLM Deep Analysis request failed after key rotation: {last_error}")
 
     def _validate_response(self, response: dict[str, Any]) -> None:
         self._raise_if_truncated(response)
@@ -184,7 +222,7 @@ class QwenVisionClient:
             return
         for choice in choices:
             if isinstance(choice, dict) and choice.get("finish_reason") == "length":
-                raise ValueError("Qwen response was truncated before valid JSON completed")
+                raise ValueError("LLM Deep Analysis response was truncated before valid JSON completed")
 
     def _cache_for(self, image_path: Path) -> QwenResponseCache | None:
         if not self.cache_enabled:
@@ -203,10 +241,46 @@ class QwenVisionClient:
         body = getattr(response, "text", "")
         if len(body) > 240:
             body = f"{body[:240]}..."
-        return f"Qwen transient HTTP {response.status_code}: {body}"
+        return f"LLM Deep Analysis transient HTTP {response.status_code}: {body}"
 
     @staticmethod
     def _image_data_url(path: Path) -> str:
         mime_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
         encoded = base64.b64encode(path.read_bytes()).decode("ascii")
         return f"data:{mime_type};base64,{encoded}"
+
+    @staticmethod
+    def _response_excerpt(response: dict[str, Any]) -> str:
+        try:
+            text = response.get("output_text")
+            choices = response.get("choices")
+            if not text and isinstance(choices, list) and choices:
+                first = choices[0]
+                if isinstance(first, dict):
+                    message = first.get("message")
+                    if isinstance(message, dict):
+                        text = message.get("content") or message.get("reasoning_content")
+                    text = text or first.get("text") or first.get("content")
+            if not isinstance(text, str):
+                text = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
+        except Exception:  # noqa: BLE001 - diagnostics should never mask the real API failure.
+            text = repr(response)
+        return text[:1200]
+
+    @staticmethod
+    def _validation_repair_prompt(prompt: str, validation_message: str) -> str:
+        return (
+            f"{prompt}\n\n"
+            "上一次返回没有通过专业深评校验，失败原因："
+            f"{validation_message}\n"
+            "请重新看同一张照片并只返回一个完整 JSON。必须修正以下问题：\n"
+            "1. 不要复述本地分数、亮度、对比度或组内排名。\n"
+            "2. 每个 score_rationales.reason 必须写出具体可见对象，并用 evidence_ids 指向 visible_evidence。\n"
+            "3. editing_plan.edit_intent 和 local_masks.reason 必须绑定可见对象，例如标牌文字、人物面部、边缘车辆、天空高光。\n"
+            "4. professional_review 每段都要引用照片里的具体对象或关系。\n"
+            "5. 不要脑补外语、地名、职业或文化含义；只写照片中能看见的文字/符号如何影响画面。\n"
+            "6. 先做事实核查再重写：把所有人物、动作、上下位置、互动、表情、视线声明逐条核对照片；看不清就写入 hallucination_checks.uncertain_objects，不要补成确定事实。\n"
+            "7. 必须输出 visible_inventory.people；只有清楚可见头部/躯干/肢体或人体姿态时 visibility 才能写 clear，否则写 partial/uncertain。\n"
+            "8. keep/maybe 也必须输出至少 2 条不能靠修图解决的 critical_flaws，并且专业深评不能只夸优点。\n"
+            "如果内容不成立，直接给 reject 或 maybe，但仍必须基于可见证据。"
+        )

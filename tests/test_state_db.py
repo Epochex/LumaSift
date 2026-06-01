@@ -31,31 +31,6 @@ def test_state_db_rejects_unknown_labels(tmp_path: Path) -> None:
         db.set_user_label(path=photo, label="great")  # type: ignore[arg-type]
 
 
-def test_state_db_records_run_history(tmp_path: Path) -> None:
-    db = LumaSiftStateDb(tmp_path / "state.sqlite")
-
-    db.record_run(
-        run_id="run-1",
-        input_dir="D:/DCIM",
-        output_dir="./outputs/gui",
-        ai_mode="local_only",
-        summary={"scanned": 10, "processed": 9, "failed": 1},
-    )
-
-    rows = db.path.read_bytes()
-    assert rows
-    db.record_run(
-        run_id="newer-run",
-        input_dir="D:/DCIM2",
-        output_dir="./outputs/gui2",
-        ai_mode="qwen_vision",
-        summary={"scanned": 3, "processed": 3, "failed": 0},
-    )
-    runs = db.list_runs(limit=2)
-    assert [run["run_id"] for run in runs] == ["newer-run", "run-1"]
-    assert runs[0]["processed"] == 3
-
-
 def test_state_db_loads_labels_in_chunks(tmp_path: Path) -> None:
     db = LumaSiftStateDb(tmp_path / "state.sqlite")
     photos = []

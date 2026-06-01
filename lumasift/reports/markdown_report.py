@@ -355,14 +355,31 @@ def _crop_plan_text(item: dict[str, Any], *, language: str) -> str:
     keep = plan.get("keep") if isinstance(plan.get("keep"), list) else []
     remove = plan.get("remove_or_reduce") if isinstance(plan.get("remove_or_reduce"), list) else []
     aspect = str(plan.get("aspect_ratio", "")).strip()
+    crop_box = plan.get("crop_box") if isinstance(plan.get("crop_box"), dict) else None
     if language == "zh":
         lines = [f"- 比例：{aspect}" if aspect else ""]
         lines.extend(f"- 保留：{entry}" for entry in keep if str(entry).strip())
         lines.extend(f"- 压弱/裁掉：{entry}" for entry in remove if str(entry).strip())
+        if crop_box:
+            lines.append(
+                "- 裁切框："
+                f"x={crop_box.get('x')}, y={crop_box.get('y')}, width={crop_box.get('width')}, height={crop_box.get('height')}"
+            )
+            reason = str(crop_box.get("reason") or crop_box.get("composition_goal") or "").strip()
+            if reason:
+                lines.append(f"- 裁切理由：{reason}")
     else:
         lines = [f"- Aspect ratio: {aspect}" if aspect else ""]
         lines.extend(f"- Keep: {entry}" for entry in keep if str(entry).strip())
         lines.extend(f"- Reduce/remove: {entry}" for entry in remove if str(entry).strip())
+        if crop_box:
+            lines.append(
+                "- Crop box: "
+                f"x={crop_box.get('x')}, y={crop_box.get('y')}, width={crop_box.get('width')}, height={crop_box.get('height')}"
+            )
+            reason = str(crop_box.get("reason") or crop_box.get("composition_goal") or "").strip()
+            if reason:
+                lines.append(f"- Crop reason: {reason}")
     return "\n".join(line for line in lines if line)
 
 

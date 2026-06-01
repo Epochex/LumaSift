@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import html
+import ctypes
 import json
 import logging
 import os
+import re
 import sys
 import time
 import traceback
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QAbstractListModel, QEasingCurve, QItemSelectionModel, QModelIndex, QObject, QPropertyAnimation, QSettings, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPixmap
+from PySide6.QtCore import QAbstractListModel, QEasingCurve, QEvent, QItemSelectionModel, QModelIndex, QObject, QPropertyAnimation, QRect, QSettings, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -37,24 +39,248 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStyle,
-    QTableWidget,
-    QTableWidgetItem,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from lumasift.analysis.editing_advice import ADVANCED_LIGHTROOM_SECTION_ORDER, build_selected_editing_advice
-from lumasift.analysis.qwen_account import format_balance_summary, query_newcoin_balances, recommended_qwen_vision_model
+from lumasift.analysis.qwen_account import (
+    VisionModelCapability,
+    format_vision_model_summary,
+    query_vision_model_capabilities,
+    recommended_vision_model,
+)
+from lumasift.analysis.qwen_client import QwenVisionClient
+from lumasift.analysis.qwen_story import (
+    QWEN_STORY_PROMPT_VERSION,
+    build_qwen_story_prompt,
+    clear_qwen_review_fields,
+    is_current_concrete_qwen_review,
+    merge_qwen_story_analysis,
+    validate_qwen_story_response,
+)
+from lumasift.analysis.scoring import rank_records
 from lumasift.analysis.user_feedback import apply_user_feedback_fields, normalized_user_label
 from lumasift.core.config import Settings
 from lumasift.core.harness import LumaSiftHarness
+from lumasift.core.keyring import ApiKeyRing
 from lumasift.core.logging_setup import configure_logging
 from lumasift.io.preview import create_jpeg_preview
 from lumasift.reports.csv_report import write_csv_report
 from lumasift.reports.json_report import write_json_report
 from lumasift.reports.markdown_report import render_selected_editing_advice_markdown, write_markdown_report
 from lumasift.storage.state_db import LumaSiftStateDb
+
+
+DEFAULT_VISION_BASE_URL = "https://api.newcoin.top/v1"
+STALE_VISION_MODEL_VALUES = {"custom-vision-model", "example-vision-model"}
+THEME_VALUES = {"dark", "light"}
+
+
+def _clean_vision_base_url(value: object) -> str:
+    text = str(value or "").strip().rstrip("/")
+    if not text or "example.test" in text:
+        return DEFAULT_VISION_BASE_URL
+    return text
+
+
+def _vision_base_url_override(value: object) -> str:
+    text = str(value or "").strip().rstrip("/")
+    if not text or "example.test" in text or text == DEFAULT_VISION_BASE_URL:
+        return ""
+    return text
+
+
+def _clean_vision_model_override(value: object) -> str:
+    text = str(value or "").strip()
+    if text in STALE_VISION_MODEL_VALUES:
+        return ""
+    return text
+
+
+def lumasift_resource_path(filename: str) -> Path | None:
+    candidates = [
+        Path(__file__).resolve().parents[1] / "resources" / filename,
+        Path(getattr(sys, "_MEIPASS", "")) / "lumasift" / "resources" / filename,
+        Path(sys.executable).resolve().parent / "lumasift" / "resources" / filename,
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
+def lumasift_icon_path() -> Path | None:
+    return lumasift_resource_path("lumasift.ico")
+
+
+def lumasift_app_icon() -> QIcon:
+    path = lumasift_icon_path()
+    return QIcon(str(path)) if path else QIcon()
+
+
+def configure_windows_app_identity() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LumaSift.LumaSift.0.1")
+    except Exception:
+        return
+
+
+def _qt_value(value: Any) -> int:
+    return int(getattr(value, "value", value))
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _record_crop_plan(record: dict[str, Any]) -> dict[str, Any]:
+    editing_plan = record.get("editing_plan")
+    if isinstance(editing_plan, dict) and isinstance(editing_plan.get("crop_plan"), dict):
+        return editing_plan["crop_plan"]
+    crop_plan = record.get("crop_plan")
+    return crop_plan if isinstance(crop_plan, dict) else {}
+
+
+def _record_crop_box(record: dict[str, Any]) -> dict[str, float] | None:
+    crop_plan = _record_crop_plan(record)
+    raw_box = crop_plan.get("crop_box")
+    if not isinstance(raw_box, dict):
+        raw_box = crop_plan.get("box")
+    if not isinstance(raw_box, dict):
+        return None
+
+    x = _float_or_none(raw_box.get("x"))
+    y = _float_or_none(raw_box.get("y"))
+    width = _float_or_none(raw_box.get("width"))
+    height = _float_or_none(raw_box.get("height"))
+    if x is None or y is None or width is None or height is None:
+        return None
+    if width <= 0.02 or height <= 0.02:
+        return None
+
+    x = max(0.0, min(0.98, x))
+    y = max(0.0, min(0.98, y))
+    width = max(0.02, min(1.0 - x, width))
+    height = max(0.02, min(1.0 - y, height))
+    return {"x": x, "y": y, "width": width, "height": height}
+
+
+def _record_crop_reason(record: dict[str, Any]) -> str:
+    crop_plan = _record_crop_plan(record)
+    raw_box = crop_plan.get("crop_box")
+    reason_parts: list[str] = []
+    if isinstance(raw_box, dict):
+        for key in ("reason", "composition_goal"):
+            value = str(raw_box.get(key) or "").strip()
+            if value:
+                reason_parts.append(value)
+    for key in ("reason", "composition_goal"):
+        value = str(crop_plan.get(key) or "").strip()
+        if value and value not in reason_parts:
+            reason_parts.append(value)
+    fallback = str(record.get("crop_strategy") or "").strip()
+    if fallback and fallback not in reason_parts:
+        reason_parts.append(fallback)
+    return "；".join(reason_parts[:3])
+
+
+def _light_theme_stylesheet(css: str) -> str:
+    replacements = {
+        "#090d12": "#f6f8fb",
+        "#0a0f15": "#f8fafc",
+        "#0b0f14": "#f8fafc",
+        "#0c1117": "#ffffff",
+        "#0d1218": "#ffffff",
+        "#0d131a": "#ffffff",
+        "#0f141a": "#ffffff",
+        "#10161d": "#ffffff",
+        "#101820": "#ffffff",
+        "#111820": "#ffffff",
+        "#111827": "#f8fafc",
+        "#121922": "#f8fafc",
+        "#14231e": "#eaf7f1",
+        "#15120a": "#fff7d6",
+        "#151b22": "#eef3f8",
+        "#17212b": "#e2e8f0",
+        "#172232": "#eaf4ff",
+        "#17324a": "#e0f2fe",
+        "#1b1b1b": "#f8fafc",
+        "#1e2b3a": "#e0f2fe",
+        "#20242a": "#e2e8f0",
+        "#233044": "#e2e8f0",
+        "#242424": "#e2e8f0",
+        "#26313d": "#cbd5e1",
+        "#263244": "#cbd5e1",
+        "#26384a": "#cbd5e1",
+        "#293646": "#cbd5e1",
+        "#2a3645": "#cbd5e1",
+        "#2f3640": "#cbd5e1",
+        "#334155": "#94a3b8",
+        "#344457": "#cbd5e1",
+        "#36506a": "#94a3b8",
+        "#66778a": "#94a3b8",
+        "#8fa4b8": "#475569",
+        "#8fd3ff": "#0369a1",
+        "#93a4b8": "#64748b",
+        "#94a3b8": "#64748b",
+        "#9fb0c2": "#64748b",
+        "#a7a7a7": "#475569",
+        "#c8d4e0": "#334155",
+        "#dbe7f3": "#1f2937",
+        "#e5edf7": "#1f2937",
+        "#f8fafc": "#0f172a",
+        "#ffffff": "#ffffff",
+        "#061019": "#ffffff",
+        "#00a6ff": "#5e6ad2",
+        "#45c0ff": "#7170ff",
+        "#2ea8ff": "#5e6ad2",
+        "#ffd400": "#5e6ad2",
+        "#ffe45c": "#8299ff",
+        "#245d82": "#dfe3ff",
+    }
+    pattern = re.compile("|".join(re.escape(color) for color in sorted(replacements, key=len, reverse=True)))
+    return pattern.sub(lambda match: replacements[match.group(0)], css)
+
+
+def _shortcut_code(key: Any, modifiers: Any = 0) -> int:
+    return _qt_value(key) | _qt_value(modifiers)
+
+
+SHORTCUT_ACTIONS = ("keep", "reject", "toggle_mark", "maybe", "select_all", "invert_selection")
+DEFAULT_SHORTCUT_KEYS = {
+    "keep": _shortcut_code(Qt.Key.Key_Up),
+    "reject": _shortcut_code(Qt.Key.Key_Down),
+    "toggle_mark": _shortcut_code(Qt.Key.Key_S),
+    "maybe": _shortcut_code(Qt.Key.Key_D),
+    "select_all": _shortcut_code(Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier),
+    "invert_selection": _shortcut_code(Qt.Key.Key_I, Qt.KeyboardModifier.ControlModifier),
+}
+SHORTCUT_KEY_CHOICES = [
+    ("↑", _shortcut_code(Qt.Key.Key_Up)),
+    ("↓", _shortcut_code(Qt.Key.Key_Down)),
+    ("←", _shortcut_code(Qt.Key.Key_Left)),
+    ("→", _shortcut_code(Qt.Key.Key_Right)),
+    ("S", _shortcut_code(Qt.Key.Key_S)),
+    ("D", _shortcut_code(Qt.Key.Key_D)),
+    ("A", _shortcut_code(Qt.Key.Key_A)),
+    ("W", _shortcut_code(Qt.Key.Key_W)),
+    ("P", _shortcut_code(Qt.Key.Key_P)),
+    ("X", _shortcut_code(Qt.Key.Key_X)),
+    ("U", _shortcut_code(Qt.Key.Key_U)),
+    ("M", _shortcut_code(Qt.Key.Key_M)),
+    ("Space", _shortcut_code(Qt.Key.Key_Space)),
+    ("Ctrl+A", _shortcut_code(Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)),
+    ("Ctrl+I", _shortcut_code(Qt.Key.Key_I, Qt.KeyboardModifier.ControlModifier)),
+]
 
 
 UI_TEXT: dict[str, dict[str, str]] = {
@@ -66,41 +292,61 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "shown": "已显示",
         "selected": "已选择",
         "mode": "模式",
-        "local": "本地",
-        "qwen": "Qwen",
+        "local": "本地模式(不消耗token)",
+        "qwen": "LLM深度分析(需要填入API，消耗token)",
         "step_import": "1. 导入",
         "step_import_caption": "选择本地照片文件夹",
         "step_local": "2. 初筛",
         "step_local_caption": "本地预览与快速评分",
-        "step_qwen": "3. 深评",
-        "step_qwen_caption": "只分析高价值候选",
+        "step_qwen": "3. 深度分析",
+        "step_qwen_caption": "LLM 只分析高价值候选",
         "step_edit": "4. 修图",
         "step_edit_caption": "多选生成参数方案",
         "photo_folder": "照片目录",
-        "output_folder": "输出目录",
+        "output_folder": "结果保存目录（可选）",
         "browse": "浏览",
         "scan": "扫描",
-        "qwen_top": "Qwen",
+        "qwen_top": "深评",
         "advice_top": "修图",
         "show": "显示",
-        "qwen_keys": "密钥",
-        "api_placeholder": "可选：多个 Qwen key 用英文逗号分隔，留空则读取 .env",
+        "qwen_keys": "LLM深度分析 API",
+        "vision_base_url": "接口地址",
+        "vision_model": "模型",
+        "vision_base_url_placeholder": "留空自动使用默认接口",
+        "vision_model_placeholder": "留空自动检测最佳视觉模型",
+        "api_placeholder": "可选：输入一个 LLM API key，留空则读取 .env",
         "save_keys": "本机保存密钥",
-        "cache_note": "仅上传 Top-N 压缩预览，RAW 留在本机。",
+        "cache_note": "深度模式仅上传 Top-N 压缩预览，RAW 留在本机；默认兼容 OpenAI 图像接口。",
         "analyze": "开始分析",
         "cancel": "取消",
         "ready": "就绪",
         "review_board": "选片板",
         "search": "搜索文件名/分类/风格",
         "all_categories": "全部分类",
+        "all_tones": "全部色调",
+        "tone_monochrome_or_near_bw": "近黑白",
+        "tone_high_contrast": "高反差",
+        "tone_low_key": "低调暗部",
+        "tone_high_key": "高调明亮",
+        "tone_warm_tone": "暖调",
+        "tone_cool_tone": "冷调",
+        "tone_vivid_color": "高饱和",
+        "tone_muted_color": "低饱和",
         "all_labels": "全部标记",
         "unlabeled": "未标记",
         "all_groups": "全部组",
         "group_best": "组最佳",
         "grouped_only": "成组",
         "singletons": "单张",
+        "group_time": "时间组",
+        "group_visual": "相似组",
+        "all_pairs": "全部配对",
+        "raw_jpeg_pairs": "RAW+JPG",
+        "raw_only": "仅 RAW",
+        "jpeg_only": "仅 JPG",
+        "other_files": "其他文件",
         "all_review_status": "全部深评",
-        "reviewed_qwen": "已深评",
+        "reviewed_qwen": "LLM已读",
         "reviewed_concrete": "完整证据",
         "not_reviewed": "未深评",
         "review_failed": "失败/重试",
@@ -117,6 +363,15 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "maybe": "待定",
         "reject": "淘汰",
         "editing_plan": "修图方案",
+        "deep_review_selected": "深评选中照片",
+        "deep_review_selected_tooltip": "对当前选中的照片运行 LLM 内容深评：人物、故事、构图、瞬间和修图潜力。",
+        "deep_review_running": "正在深评选中照片...",
+        "deep_review_done": "选中照片深评完成。",
+        "deep_review_failed": "选中照片深评失败",
+        "selected_actions": "选中照片操作",
+        "crop_preview": "裁切预览",
+        "crop_preview_tooltip": "查看选中照片在原图上的推荐裁切框和原因。",
+        "crop_preview_disabled": "这张照片还没有裁切框；先运行 LLM 深度分析或生成修图方案。",
         "open_output": "打开输出",
         "open_contact": "联系表",
         "empty_grid": "选择目录后开始分析",
@@ -126,36 +381,78 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "review_mode": "筛片模式",
         "show_setup": "展开设置",
         "new_scan": "重新分析",
-        "run_history": "历史",
-        "nav_main": "视图",
+        "nav_main": "工作流",
         "settings": "设置",
         "hide_settings": "收起设置",
         "nav_run": "运行",
-        "nav_view": "视图",
+        "nav_view": "工作流",
         "nav_output": "输出",
+        "nav_shortcuts": "快捷键",
         "nav_help": "帮助",
-        "load_run": "载入",
-        "missing_run": "输出不可用",
+        "theme_dark": "暗色",
+        "theme_light": "亮色",
+        "theme_tooltip": "切换暗色/白天主题",
+        "shortcuts_title": "快捷键",
+        "shortcuts_hint": "这些快捷键在选片板和详情页生效；输入框、下拉框和设置项获得焦点时不会触发。",
+        "shortcut_keep": "保留",
+        "shortcut_reject": "淘汰",
+        "shortcut_toggle_mark": "标记 / 取消标记",
+        "shortcut_maybe": "待定",
+        "shortcut_select_all": "全选",
+        "shortcut_invert_selection": "反选",
+        "reset_shortcuts": "恢复默认",
+        "shortcuts_saved": "快捷键已保存。",
+        "shortcuts_reset_done": "快捷键已恢复默认。",
         "running_grid": "正在分析，结果会自动出现。",
         "empty_filtered": "没有匹配结果，调整筛选条件。",
         "done": "完成",
+        "workflow_done": "✓ 已完成",
+        "workflow_active": "正在进行",
+        "workflow_idle": "待开始",
+        "confirm_run_title": "确认本次分析",
+        "confirm_run_start": "开始分析",
+        "confirm_run_settings": "返回设置",
+        "confirm_run_local": "本地初筛",
+        "confirm_run_qwen": "LLM 深度分析 Top-{n}",
+        "confirm_run_body": "读取照片目录：{input_dir}\n保存结果目录：{output_dir}\n模式：{mode}\n\n不会移动、覆盖或上传原始 RAW 文件。",
+        "running_alive_hint": "仍在运行，较大的 RAW 文件或网络请求可能需要更久",
+        "elapsed": "已运行",
         "failed": "失败",
         "closing": "正在等待后台任务安全结束...",
         "missing_input_title": "目录不存在",
-        "missing_key_title": "缺少 Qwen 密钥",
-        "missing_key_body": "Qwen 模式需要 API key。请填入密钥或配置 .env。",
-        "qwen_key_local_title": "检测到 Qwen 密钥",
-        "qwen_key_local_body": "当前仍是本地初筛模式，不会进行 Qwen 深度视觉分析。要切换到 Qwen 深评并只分析 Top-N 候选吗？",
-        "qwen_key_local_hint": "已检测到 Qwen 密钥，但当前是本地模式；本次不会深评。切到 Qwen 或点击第 3 步深评。",
-        "qwen_key_promoted": "已切换到 Qwen 深评：只上传 Top-N 压缩预览。",
-        "qwen_not_run_local": "本次是本地初筛，未运行 Qwen 深评。",
+        "missing_key_title": "缺少 LLM API 密钥",
+        "missing_key_body": "深度分析模式需要 API key。请填入密钥或配置 .env。",
+        "qwen_key_local_title": "检测到 LLM API 密钥",
+        "qwen_key_local_body": "当前仍是本地快速选片模式，不会调用 API。要切换到 LLM深度分析并只分析 Top-N 候选吗？",
+        "qwen_key_local_hint": "已检测到 LLM API 密钥，但当前是本地模式；本次不会调用 API 或深度分析。",
+        "local_mode_hint": "本地模式不消耗 token，只做本地快速筛片、RAW/JPG 配对、技术和故事潜力初筛。",
+        "llm_setup_missing_hint": "LLM深度分析需要 API key；接口地址和模型可留空自动探测，失败时再手动填写。",
+        "input_missing_hint": "请先设置照片目录：选择一个可读取的照片文件夹后再开始分析。",
+        "output_folder_hint": "输出目录只是保存报告、缓存预览和修图建议；留默认即可。",
+        "startup_config_title": "启动前确认配置",
+        "startup_config_body": "请确认本次读取和保存路径：\n读取照片目录：{input_dir}\n保存结果目录：{output_dir}\n\n当前模式：{mode}\n{api_note}\n\n原始 RAW 不会被移动、覆盖；只有选择 LLM 深度分析并配置 API key 时，才会上传 Top-N 压缩预览。",
+        "startup_input_missing": "照片目录不存在或未设置，请先选择正确的输入目录。",
+        "startup_output_note": "输出目录用于保存报告、缓存预览和修图建议。",
+        "startup_api_local_no_key": "你当前没有导入 API key：将按本地模式使用，不会调用 API，也不会深度分析。",
+        "startup_api_local_has_key": "已检测到 API key，但当前是本地模式：本次不会调用 API，除非切换到 LLM 深度分析。",
+        "startup_api_qwen_missing": "当前选择了 LLM 深度分析，但还没有 API key；请配置 key，或确认改用本地模式。",
+        "startup_api_qwen_ready": "LLM 深度分析已配置 API key：只会上传 Top-N 压缩预览，不上传 RAW。",
+        "startup_confirm_paths": "确认路径",
+        "startup_use_local_no_api": "不导入 API，用本地模式",
+        "startup_configure_api": "配置 API",
+        "deep_top_tooltip": "深评：把本地筛出的 Top-N 压缩预览交给视觉 LLM，分析内容、构图、故事和编辑潜力，会消耗 token。",
+        "advice_top_tooltip": "修图：为选中照片或默认 Top-N 生成 Lightroom/裁切/局部调整方案；优先复用已有深评结果。",
+        "qwen_key_promoted": "已切换到 LLM深度分析：只上传 Top-N 压缩预览。",
+        "qwen_not_run_local": "本次是本地快速选片，未调用 API。",
         "check_key": "检查",
-        "checking_key": "正在检查 Qwen key...",
-        "key_check_ok": "Qwen key 检查通过。",
-        "key_check_failed": "Qwen key 检查失败",
-        "qwen_failures_hint": "Qwen 深评失败：把鼠标停在这里查看原因，或先点击密钥检查。",
+        "checking_key": "正在检查 LLM API key...",
+        "key_check_ok": "密钥检查通过。",
+        "key_check_failed": "密钥检查失败",
+        "qwen_failures_hint": "LLM深度分析失败：把鼠标停在这里查看原因，或先点击密钥检查。",
         "no_selection": "未选择照片",
         "select_first": "请先选择一张或多张照片。",
+        "no_crop_box_title": "暂无裁切框",
+        "unmark": "取消标记",
         "no_records": "没有结果",
         "run_first": "请先运行分析。",
     },
@@ -167,41 +464,61 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "shown": "Shown",
         "selected": "Selected",
         "mode": "Mode",
-        "local": "Local",
-        "qwen": "Qwen",
+        "local": "Local mode (no token cost)",
+        "qwen": "LLM Deep Analysis (API required, uses tokens)",
         "step_import": "1. Import",
         "step_import_caption": "Choose local photo folder",
         "step_local": "2. Pre-score",
         "step_local_caption": "Local preview and fast score",
-        "step_qwen": "3. Deep review",
-        "step_qwen_caption": "Only high-value candidates",
+        "step_qwen": "3. Deep Analysis",
+        "step_qwen_caption": "LLM for high-value candidates",
         "step_edit": "4. Edit",
         "step_edit_caption": "Multi-select tuning plan",
         "photo_folder": "Photo folder",
-        "output_folder": "Output folder",
+        "output_folder": "Result folder (optional)",
         "browse": "Browse",
         "scan": "Scan",
-        "qwen_top": "Qwen",
+        "qwen_top": "Deep",
         "advice_top": "Advice",
         "show": "Show",
-        "qwen_keys": "Keys",
-        "api_placeholder": "Optional: comma-separated Qwen keys. Leave empty to use .env.",
+        "qwen_keys": "LLM API",
+        "vision_base_url": "Base URL",
+        "vision_model": "Model",
+        "vision_base_url_placeholder": "Leave empty to use the default endpoint",
+        "vision_model_placeholder": "Leave empty to auto-detect the best vision model",
+        "api_placeholder": "Optional: enter one LLM API key. Leave empty to use .env.",
         "save_keys": "Save keys locally",
-        "cache_note": "Only Top-N compressed previews are uploaded; RAW stays local.",
+        "cache_note": "Deep mode uploads only Top-N compressed previews; RAW stays local. OpenAI-compatible vision endpoints are supported.",
         "analyze": "Analyze",
         "cancel": "Cancel",
         "ready": "Ready",
         "review_board": "Review board",
         "search": "Search filename/category/style",
         "all_categories": "All categories",
+        "all_tones": "All tones",
+        "tone_monochrome_or_near_bw": "Near B&W",
+        "tone_high_contrast": "High contrast",
+        "tone_low_key": "Low key",
+        "tone_high_key": "High key",
+        "tone_warm_tone": "Warm",
+        "tone_cool_tone": "Cool",
+        "tone_vivid_color": "Vivid",
+        "tone_muted_color": "Muted",
         "all_labels": "All labels",
         "unlabeled": "unlabeled",
         "all_groups": "All groups",
         "group_best": "Group best",
         "grouped_only": "Grouped",
         "singletons": "Singles",
+        "group_time": "Time groups",
+        "group_visual": "Similar groups",
+        "all_pairs": "All pairs",
+        "raw_jpeg_pairs": "RAW+JPG",
+        "raw_only": "RAW only",
+        "jpeg_only": "JPG only",
+        "other_files": "Other files",
         "all_review_status": "All review",
-        "reviewed_qwen": "Qwen reviewed",
+        "reviewed_qwen": "LLM-read",
         "reviewed_concrete": "Concrete read",
         "not_reviewed": "Not reviewed",
         "review_failed": "Failed/retry",
@@ -218,6 +535,15 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "maybe": "Maybe",
         "reject": "Reject",
         "editing_plan": "Editing Plan",
+        "deep_review_selected": "Deep Review Selected",
+        "deep_review_selected_tooltip": "Run LLM content analysis for the selected photo: people, story, composition, moment, and editing potential.",
+        "deep_review_running": "Deep-reviewing selected photo...",
+        "deep_review_done": "Selected photo deep review complete.",
+        "deep_review_failed": "Selected photo deep review failed",
+        "selected_actions": "Selected Photo Actions",
+        "crop_preview": "Crop Preview",
+        "crop_preview_tooltip": "Show the recommended crop box and rationale on the original composition.",
+        "crop_preview_disabled": "No crop box yet. Run LLM Deep Analysis or generate an editing plan first.",
         "open_output": "Open Output",
         "open_contact": "Contact Sheet",
         "empty_grid": "Choose a folder, then analyze",
@@ -227,36 +553,78 @@ UI_TEXT: dict[str, dict[str, str]] = {
         "review_mode": "Review Mode",
         "show_setup": "Show Setup",
         "new_scan": "Analyze Again",
-        "run_history": "History",
-        "nav_main": "View",
+        "nav_main": "Workflow",
         "settings": "Settings",
         "hide_settings": "Hide Settings",
         "nav_run": "Run",
-        "nav_view": "View",
+        "nav_view": "Workflow",
         "nav_output": "Output",
+        "nav_shortcuts": "Shortcuts",
         "nav_help": "Help",
-        "load_run": "Load",
-        "missing_run": "Output unavailable",
+        "theme_dark": "Dark",
+        "theme_light": "Light",
+        "theme_tooltip": "Switch dark/light theme",
+        "shortcuts_title": "Shortcuts",
+        "shortcuts_hint": "These shortcuts work on the review board and detail panel. They are ignored while typing or editing settings.",
+        "shortcut_keep": "Keep",
+        "shortcut_reject": "Reject",
+        "shortcut_toggle_mark": "Mark / unmark",
+        "shortcut_maybe": "Maybe",
+        "shortcut_select_all": "Select all",
+        "shortcut_invert_selection": "Invert selection",
+        "reset_shortcuts": "Reset Defaults",
+        "shortcuts_saved": "Shortcuts saved.",
+        "shortcuts_reset_done": "Shortcuts reset to defaults.",
         "running_grid": "Analysis is running. Results will appear here.",
         "empty_filtered": "No matches. Adjust filters.",
         "done": "Done",
+        "workflow_done": "✓ Done",
+        "workflow_active": "Running",
+        "workflow_idle": "Pending",
+        "confirm_run_title": "Confirm This Analysis",
+        "confirm_run_start": "Start Analysis",
+        "confirm_run_settings": "Back to Settings",
+        "confirm_run_local": "Local pre-score",
+        "confirm_run_qwen": "LLM Deep Analysis Top-{n}",
+        "confirm_run_body": "Read photo folder: {input_dir}\nSave results to: {output_dir}\nMode: {mode}\n\nOriginal RAW files will not be moved, overwritten, or uploaded.",
+        "running_alive_hint": "Still running. Large RAW files or network requests can take longer.",
+        "elapsed": "Elapsed",
         "failed": "Failed",
         "closing": "Waiting for background tasks to stop safely...",
         "missing_input_title": "Input folder missing",
-        "missing_key_title": "Qwen API key missing",
-        "missing_key_body": "Qwen mode requires API keys. Enter keys or configure .env.",
-        "qwen_key_local_title": "Qwen key detected",
-        "qwen_key_local_body": "The current mode is still local pre-score, so Qwen deep visual review will not run. Switch to Qwen review for Top-N candidates?",
-        "qwen_key_local_hint": "Qwen key detected, but the current mode is Local. This run will not deep-review; switch to Qwen or click step 3.",
-        "qwen_key_promoted": "Switched to Qwen review. Only Top-N compressed previews will be uploaded.",
-        "qwen_not_run_local": "This was a local pre-score run. Qwen deep review did not run.",
+        "missing_key_title": "LLM API key missing",
+        "missing_key_body": "Deep analysis mode requires API keys. Enter keys or configure .env.",
+        "qwen_key_local_title": "LLM API key detected",
+        "qwen_key_local_body": "The current mode is still local fast culling, so no API call will run. Switch to LLM Deep Analysis for Top-N candidates?",
+        "qwen_key_local_hint": "LLM API key detected, but the current mode is Local. This run will not call APIs or deep-review.",
+        "local_mode_hint": "Local mode does not use tokens. It only runs local fast culling, RAW/JPG pairing, technical checks, and story-potential pre-scoring.",
+        "llm_setup_missing_hint": "LLM Deep Analysis needs an API key. Base URL and model can stay empty for auto-probing; fill them manually only if probing fails.",
+        "input_missing_hint": "Set the photo folder first. Choose a readable folder before analysis.",
+        "output_folder_hint": "The result folder only stores reports, preview cache, and editing advice. The default is fine.",
+        "startup_config_title": "Confirm Setup Before Launch",
+        "startup_config_body": "Confirm the folders for this run:\nRead photo folder: {input_dir}\nSave results to: {output_dir}\n\nCurrent mode: {mode}\n{api_note}\n\nOriginal RAW files will not be moved or overwritten. Top-N compressed previews are uploaded only when LLM Deep Analysis is selected and an API key is configured.",
+        "startup_input_missing": "The photo folder is missing or not set. Choose the correct input folder first.",
+        "startup_output_note": "The result folder stores reports, preview cache, and editing advice.",
+        "startup_api_local_no_key": "No API key is imported: the app will stay in Local mode, with no API calls or deep analysis.",
+        "startup_api_local_has_key": "An API key is detected, but the current mode is Local: no API call will run unless you switch to LLM Deep Analysis.",
+        "startup_api_qwen_missing": "LLM Deep Analysis is selected but no API key is configured. Configure a key, or confirm Local mode.",
+        "startup_api_qwen_ready": "LLM Deep Analysis has an API key configured. Only Top-N compressed previews are uploaded; RAW files stay local.",
+        "startup_confirm_paths": "Confirm Folders",
+        "startup_use_local_no_api": "No API, Use Local",
+        "startup_configure_api": "Configure API",
+        "deep_top_tooltip": "Deep: send Top-N compressed previews to a vision LLM for content, composition, story, and editing-potential analysis. This uses tokens.",
+        "advice_top_tooltip": "Edit: generate Lightroom, crop, and local-adjustment plans for selected photos or the default Top-N, reusing deep-analysis results when available.",
+        "qwen_key_promoted": "Switched to LLM Deep Analysis. Only Top-N compressed previews will be uploaded.",
+        "qwen_not_run_local": "This was a local fast-culling run. No API was called.",
         "check_key": "Check",
-        "checking_key": "Checking Qwen key...",
-        "key_check_ok": "Qwen key check passed.",
-        "key_check_failed": "Qwen key check failed",
-        "qwen_failures_hint": "Qwen review failed. Hover here for the reason, or check the API key first.",
+        "checking_key": "Checking LLM API key...",
+        "key_check_ok": "Key check passed.",
+        "key_check_failed": "Key check failed",
+        "qwen_failures_hint": "LLM Deep Analysis failed. Hover here for the reason, or check the API key first.",
         "no_selection": "No selection",
         "select_first": "Select one or more photos first.",
+        "no_crop_box_title": "No crop box yet",
+        "unmark": "Unmark",
         "no_records": "No records",
         "run_first": "Run an analysis first.",
     },
@@ -340,6 +708,19 @@ class AnalysisWorker(QObject):
     def run(self) -> None:
         try:
             configure_logging(self.settings.output_dir)
+            if self.settings.ai_mode == "qwen_vision":
+                capability = _verified_vision_capability(
+                    self.settings,
+                    timeout_seconds=min(20, max(5, self.settings.request_timeout_seconds)),
+                )
+                _apply_verified_vision_capability(self.settings, capability)
+                self.qwen_event.emit(
+                    {
+                        "type": "qwen_vision_verified",
+                        "model": self.settings.vision_model,
+                        "base_url": self.settings.vision_api_base_url,
+                    }
+                )
             result = LumaSiftHarness(
                 settings=self.settings,
                 run_id=self.run_id,
@@ -354,20 +735,109 @@ class AnalysisWorker(QObject):
             self.failed.emit(str(exc))
 
 
-class QwenKeyCheckWorker(QObject):
-    finished = Signal(str, str)
+class VisionKeyCheckWorker(QObject):
+    finished = Signal(str, str, str)
     failed = Signal(str)
 
-    def __init__(self, api_keys: list[str], language: str) -> None:
+    def __init__(self, api_keys: list[str], language: str, base_url: str, preferred_model: str) -> None:
         super().__init__()
         self.api_keys = api_keys
         self.language = language
+        self.base_url = base_url
+        self.preferred_model = preferred_model
 
     def run(self) -> None:
         try:
-            balances = query_newcoin_balances(self.api_keys, timeout_seconds=20)
-            self.finished.emit(format_balance_summary(balances, language=self.language), recommended_qwen_vision_model(balances))
+            capabilities = query_vision_model_capabilities(
+                self.api_keys,
+                base_url=self.base_url,
+                preferred_model=self.preferred_model,
+                timeout_seconds=20,
+            )
+            detected_base_url = next((capability.base_url for capability in capabilities if capability.base_url), self.base_url)
+            self.finished.emit(
+                format_vision_model_summary(capabilities, language=self.language),
+                recommended_vision_model(capabilities),
+                detected_base_url,
+            )
         except Exception as exc:  # noqa: BLE001 - GUI should surface provider failures.
+            self.failed.emit(str(exc))
+
+
+def _preferred_vision_model(settings: Settings) -> str:
+    model = _clean_vision_model_override(settings.vision_model)
+    if model in {"qwen3.6-plus", "qwen3.5-plus"}:
+        return ""
+    return model if model else ""
+
+
+def _verified_vision_capability(settings: Settings, *, timeout_seconds: int = 20) -> VisionModelCapability:
+    capabilities = query_vision_model_capabilities(
+        settings.vision_api_keys,
+        base_url=_vision_base_url_override(settings.vision_api_base_url),
+        preferred_model=_preferred_vision_model(settings),
+        timeout_seconds=timeout_seconds,
+    )
+    for capability in capabilities:
+        if capability.supports_vision and capability.model:
+            return capability
+    raise RuntimeError("No model passed the live image-vision probe")
+
+
+def _apply_verified_vision_capability(settings: Settings, capability: VisionModelCapability) -> None:
+    settings.vision_api_base_url = _clean_vision_base_url(capability.base_url or settings.vision_api_base_url)
+    settings.vision_model = _clean_vision_model_override(capability.model) or settings.vision_model
+
+
+class SelectedDeepReviewWorker(QObject):
+    finished = Signal(dict)
+    failed = Signal(str)
+    progress = Signal(str)
+
+    def __init__(self, record: dict[str, Any], settings: Settings, output_dir: Path) -> None:
+        super().__init__()
+        self.record = dict(record)
+        self.settings = settings
+        self.output_dir = output_dir
+
+    def run(self) -> None:
+        try:
+            self.progress.emit("vision_check")
+            capability = _verified_vision_capability(
+                self.settings,
+                timeout_seconds=min(20, max(5, self.settings.request_timeout_seconds)),
+            )
+            _apply_verified_vision_capability(self.settings, capability)
+            self.progress.emit("preview")
+            preview_path = create_jpeg_preview(
+                Path(str(self.record["path"])),
+                self.output_dir / "previews",
+                max_side=self.settings.vision_preview_max_side,
+            )
+            self.record["preview_path"] = str(preview_path)
+            client = QwenVisionClient(
+                base_url=self.settings.vision_api_base_url,
+                model=self.settings.vision_model,
+                keyring=ApiKeyRing(self.settings.vision_api_keys),
+                max_tokens=self.settings.vision_max_tokens,
+                timeout_seconds=self.settings.request_timeout_seconds,
+                max_retries=self.settings.vision_max_retries,
+                response_validator=validate_qwen_story_response,
+            )
+            self.progress.emit("deep_review")
+            response = client.analyze_image(
+                preview_path,
+                build_qwen_story_prompt(self.record),
+                prompt_version=QWEN_STORY_PROMPT_VERSION,
+            )
+            merge_qwen_story_analysis(self.record, response)
+            self.record["qwen_status"] = "cache-hit" if client.last_cache_hit else "done"
+            self.record["qwen_prompt_version"] = QWEN_STORY_PROMPT_VERSION
+            if client.last_cache_key_digest:
+                self.record["qwen_cache_key"] = client.last_cache_key_digest
+            self.finished.emit(self.record)
+        except Exception as exc:  # noqa: BLE001 - surface selected-photo failures in the GUI.
+            logging.exception("Selected deep review failed")
             self.failed.emit(str(exc))
 
 
@@ -428,7 +898,10 @@ class LargePreviewDialog(QDialog):
         self.preview_thread: QThread | None = None
         self.preview_worker: LargePreviewWorker | None = None
         self.original_pixmap: QPixmap | None = None
+        self.crop_box = _record_crop_box(record)
+        self.crop_reason = _record_crop_reason(record) if self.crop_box else ""
         self.fit_to_window = True
+        self.zoom_factor = 1.0
         self.pending_close = False
 
         filename = str(record.get("filename") or Path(str(record.get("path", ""))).name)
@@ -456,10 +929,15 @@ class LargePreviewDialog(QDialog):
         self.actual_button = QPushButton("100%")
         self.actual_button.setObjectName("secondaryButton")
         self.actual_button.clicked.connect(self._actual_size)
+        self.zoom_label = QLabel("100%")
+        self.zoom_label.setObjectName("zoomLabel")
+        self.zoom_label.setMinimumWidth(58)
+        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header_layout.addWidget(title_label, stretch=1)
         header_layout.addWidget(self.status_label)
         header_layout.addWidget(self.fit_button)
         header_layout.addWidget(self.actual_button)
+        header_layout.addWidget(self.zoom_label)
         layout.addWidget(header)
 
         self.image_label = QLabel("加载中..." if self.language == "zh" else "Loading...")
@@ -473,7 +951,20 @@ class LargePreviewDialog(QDialog):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setWidget(self.image_label)
+        self.scroll_area.viewport().installEventFilter(self)
+        self.image_label.installEventFilter(self)
         layout.addWidget(self.scroll_area, stretch=1)
+
+        self.crop_note_label = QLabel("")
+        self.crop_note_label.setObjectName("cropOverlayNote")
+        self.crop_note_label.setWordWrap(True)
+        if self.crop_box:
+            prefix = "LLM裁切建议" if self.language == "zh" else "LLM crop suggestion"
+            self.crop_note_label.setText(f"{prefix}: {self.crop_reason or ('按框内主体关系裁切' if self.language == 'zh' else 'Crop to the visible subject relationship')}")
+            self.crop_note_label.setToolTip(self.crop_note_label.text())
+        else:
+            self.crop_note_label.hide()
+        layout.addWidget(self.crop_note_label)
 
         self.setStyleSheet(
             """
@@ -485,6 +976,13 @@ class LargePreviewDialog(QDialog):
             }
             QLabel#sectionTitle { font-size: 14px; font-weight: 800; color: #f8fafc; }
             QLabel#muted { color: #94a3b8; }
+            QLabel#zoomLabel {
+                background: #233044;
+                border-radius: 6px;
+                color: #f8fafc;
+                font-weight: 800;
+                padding: 7px 9px;
+            }
             QLabel#previewImage {
                 background: #020617;
                 color: #94a3b8;
@@ -494,6 +992,14 @@ class LargePreviewDialog(QDialog):
             QScrollArea#previewScrollArea {
                 background: #020617;
                 border: none;
+            }
+            QLabel#cropOverlayNote {
+                background: #111827;
+                border: 1px solid #334155;
+                border-left: 5px solid #ffd400;
+                border-radius: 8px;
+                color: #e5edf7;
+                padding: 8px 10px;
             }
             QPushButton {
                 border: none;
@@ -505,6 +1011,15 @@ class LargePreviewDialog(QDialog):
             QPushButton#secondaryButton:hover { background: #334155; }
             """
         )
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt API
+        if (obj is self.scroll_area.viewport() or obj is self.image_label) and event.type() == QEvent.Type.Wheel and self.original_pixmap is not None:
+            delta = event.angleDelta().y() if hasattr(event, "angleDelta") else 0
+            if delta:
+                self._zoom_by(1.15 if delta > 0 else 1 / 1.15)
+                event.accept()
+                return True
+        return super().eventFilter(obj, event)
 
     def showEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
         super().showEvent(event)
@@ -566,10 +1081,7 @@ class LargePreviewDialog(QDialog):
     def _actual_size(self) -> None:
         if self.original_pixmap is None:
             return
-        self.fit_to_window = False
-        self.image_label.setPixmap(self.original_pixmap)
-        self.image_label.resize(self.original_pixmap.size())
-        self.scroll_area.setWidgetResizable(False)
+        self._set_zoom_factor(1.0)
 
     def _apply_fit(self) -> None:
         if self.original_pixmap is None:
@@ -583,136 +1095,92 @@ class LargePreviewDialog(QDialog):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
-        self.image_label.setPixmap(scaled)
+        self.zoom_factor = scaled.width() / max(1, self.original_pixmap.width())
+        self._update_zoom_label()
+        self.image_label.setPixmap(self._pixmap_with_crop_overlay(scaled))
+        self.image_label.resize(scaled.size())
 
+    def _zoom_by(self, multiplier: float) -> None:
+        if self.original_pixmap is None:
+            return
+        base = self.zoom_factor if not self.fit_to_window else max(self.zoom_factor, 0.1)
+        self._set_zoom_factor(base * multiplier)
 
-class RunHistoryDialog(QDialog):
-    def __init__(self, runs: list[dict[str, Any]], language: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.runs = runs
-        self.language = language if language in {"zh", "en"} else "zh"
-        self.selected_run: dict[str, Any] | None = None
-        self.setWindowTitle("运行历史" if self.language == "zh" else "Run History")
-        self.resize(920, 420)
+    def _set_zoom_factor(self, factor: float) -> None:
+        if self.original_pixmap is None:
+            return
+        factor = max(0.08, min(4.0, factor))
+        old_size = self.image_label.size()
+        viewport = self.scroll_area.viewport().size()
+        hbar = self.scroll_area.horizontalScrollBar()
+        vbar = self.scroll_area.verticalScrollBar()
+        rel_x = (hbar.value() + viewport.width() / 2) / max(1, old_size.width())
+        rel_y = (vbar.value() + viewport.height() / 2) / max(1, old_size.height())
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(10)
-
-        self.table = QTableWidget(0, 7)
-        self.table.setObjectName("historyTable")
-        headers = (
-            ["时间", "模式", "照片", "成功", "失败", "输出", "状态"]
-            if self.language == "zh"
-            else ["Time", "Mode", "Photos", "Done", "Failed", "Output", "State"]
+        self.fit_to_window = False
+        self.zoom_factor = factor
+        self.scroll_area.setWidgetResizable(False)
+        target_size = QSize(
+            max(1, int(round(self.original_pixmap.width() * factor))),
+            max(1, int(round(self.original_pixmap.height() * factor))),
         )
-        self.table.setHorizontalHeaderLabels(headers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._populate()
-        layout.addWidget(self.table, stretch=1)
-
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        self.open_button = QPushButton("打开输出" if self.language == "zh" else "Open Output")
-        self.open_button.setObjectName("secondaryButton")
-        self.open_button.clicked.connect(self._open_selected_output)
-        self.load_button = QPushButton("载入结果" if self.language == "zh" else "Load Run")
-        self.load_button.setObjectName("primaryButton")
-        self.load_button.clicked.connect(self._load_selected)
-        close_button = QPushButton("关闭" if self.language == "zh" else "Close")
-        close_button.setObjectName("secondaryButton")
-        close_button.clicked.connect(self.reject)
-        buttons.addWidget(self.open_button)
-        buttons.addWidget(self.load_button)
-        buttons.addWidget(close_button)
-        layout.addLayout(buttons)
-
-        self.setStyleSheet(
-            """
-            QDialog { background: #090d12; color: #dbe7f3; font-family: Microsoft YaHei UI, Microsoft YaHei, Segoe UI; }
-            QTableWidget {
-                background: #0c1117;
-                alternate-background-color: #101820;
-                border: 1px solid #26313d;
-                border-radius: 8px;
-                color: #dbe7f3;
-                gridline-color: #26313d;
-            }
-            QHeaderView::section {
-                background: #111820;
-                color: #9fb0c2;
-                border: none;
-                padding: 7px;
-                font-weight: 800;
-            }
-            QPushButton {
-                border: none;
-                border-radius: 6px;
-                padding: 9px 13px;
-                font-weight: 800;
-            }
-            QPushButton#primaryButton { background: #00a6ff; color: #061019; }
-            QPushButton#secondaryButton { background: #233044; color: #f8fafc; }
-            """
+        scaled = self.original_pixmap.scaled(
+            target_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
         )
+        self.image_label.setPixmap(self._pixmap_with_crop_overlay(scaled))
+        self.image_label.resize(scaled.size())
+        hbar.setValue(max(0, int(rel_x * scaled.width() - viewport.width() / 2)))
+        vbar.setValue(max(0, int(rel_y * scaled.height() - viewport.height() / 2)))
+        self._update_zoom_label()
 
-    def _populate(self) -> None:
-        self.table.setRowCount(len(self.runs))
-        for row, run in enumerate(self.runs):
-            output_dir = Path(str(run.get("output_dir", "")))
-            report_path = output_dir / "report.json"
-            available = output_dir.exists() and report_path.exists()
-            values = [
-                time.strftime("%Y-%m-%d %H:%M", time.localtime(int(run.get("created_at", 0) or 0))),
-                str(run.get("ai_mode", "")),
-                str(run.get("scanned", 0)),
-                str(run.get("processed", 0)),
-                str(run.get("failed", 0)),
-                str(output_dir),
-                ("可载入" if self.language == "zh" else "Ready") if available else ("缺失" if self.language == "zh" else "Missing"),
-            ]
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setData(Qt.ItemDataRole.UserRole, run)
-                if not available:
-                    item.setForeground(QColor("#ff9f1c"))
-                self.table.setItem(row, column, item)
-        self.table.resizeColumnsToContents()
-        if self.runs:
-            self.table.selectRow(0)
+    def _update_zoom_label(self) -> None:
+        if hasattr(self, "zoom_label"):
+            self.zoom_label.setText(f"{max(1, int(round(self.zoom_factor * 100)))}%")
 
-    def _current_run(self) -> dict[str, Any] | None:
-        row = self.table.currentRow()
-        if row < 0:
-            return None
-        item = self.table.item(row, 0)
-        run = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
-        return run if isinstance(run, dict) else None
+    def _pixmap_with_crop_overlay(self, pixmap: QPixmap) -> QPixmap:
+        if not self.crop_box or pixmap.isNull():
+            return pixmap
+        width = pixmap.width()
+        height = pixmap.height()
+        crop = QRect(
+            int(round(self.crop_box["x"] * width)),
+            int(round(self.crop_box["y"] * height)),
+            int(round(self.crop_box["width"] * width)),
+            int(round(self.crop_box["height"] * height)),
+        ).intersected(QRect(0, 0, width, height))
+        if crop.width() < 8 or crop.height() < 8:
+            return pixmap
 
-    def _load_selected(self) -> None:
-        run = self._current_run()
-        if not run:
-            return
-        output_dir = Path(str(run.get("output_dir", "")))
-        if not (output_dir / "report.json").exists():
-            QMessageBox.information(self, self.windowTitle(), "输出不可用" if self.language == "zh" else "Output unavailable")
-            return
-        self.selected_run = run
-        self.accept()
+        rendered = QPixmap(pixmap)
+        painter = QPainter(rendered)
+        overlay = QColor(2, 6, 23, 150)
+        painter.fillRect(QRect(0, 0, width, crop.top()), overlay)
+        painter.fillRect(QRect(0, crop.bottom() + 1, width, height - crop.bottom() - 1), overlay)
+        painter.fillRect(QRect(0, crop.top(), crop.left(), crop.height()), overlay)
+        painter.fillRect(QRect(crop.right() + 1, crop.top(), width - crop.right() - 1, crop.height()), overlay)
 
-    def _open_selected_output(self) -> None:
-        run = self._current_run()
-        if not run:
-            return
-        output_dir = Path(str(run.get("output_dir", "")))
-        if not output_dir.exists():
-            QMessageBox.information(self, self.windowTitle(), "输出不可用" if self.language == "zh" else "Output unavailable")
-            return
-        os.startfile(output_dir)  # type: ignore[attr-defined]
+        border_width = max(2, int(round(min(width, height) * 0.004)))
+        painter.setPen(QPen(QColor("#ffd400"), border_width))
+        painter.drawRect(crop.adjusted(border_width // 2, border_width // 2, -border_width // 2, -border_width // 2))
+
+        guide = max(18, int(round(min(crop.width(), crop.height()) * 0.09)))
+        painter.setPen(QPen(QColor("#f8fafc"), max(2, border_width - 1)))
+        left = crop.left()
+        right = crop.right()
+        top = crop.top()
+        bottom = crop.bottom()
+        painter.drawLine(left, top, left + guide, top)
+        painter.drawLine(left, top, left, top + guide)
+        painter.drawLine(right, top, right - guide, top)
+        painter.drawLine(right, top, right, top + guide)
+        painter.drawLine(left, bottom, left + guide, bottom)
+        painter.drawLine(left, bottom, left, bottom - guide)
+        painter.drawLine(right, bottom, right - guide, bottom)
+        painter.drawLine(right, bottom, right, bottom - guide)
+        painter.end()
+        return rendered
 
 
 class PhotoListModel(QAbstractListModel):
@@ -750,6 +1218,10 @@ class PhotoListModel(QAbstractListModel):
                 "do_not_overedit": "克制修图",
             },
             "en": {},
+        }
+        self.pair_status_labels = {
+            "zh": {"raw_jpeg_pair": "RAW+JPG", "raw_only": "仅RAW", "jpeg_only": "仅JPG", "single": "单文件"},
+            "en": {"raw_jpeg_pair": "RAW+JPG", "raw_only": "RAW only", "jpeg_only": "JPG only", "single": "single"},
         }
 
     def set_language(self, language: str) -> None:
@@ -796,7 +1268,9 @@ class PhotoListModel(QAbstractListModel):
             group_size = int(record.get("group_size", 1) or 1)
             if group_size > 1:
                 group_badge = f"  G{group_size}{'*' if record.get('is_group_best') else ''}"
-            return f"#{record.get('rank')}  {score:.1f}  {user_label}{group_badge}\n{record.get('filename')}\n{category}"
+            pair_status = self._display_value(record.get("pair_status", ""), self.pair_status_labels)
+            pair_badge = f"  {pair_status}" if pair_status else ""
+            return f"#{record.get('rank')}  {score:.1f}  {user_label}{group_badge}{pair_badge}\n{record.get('filename')}\n{category}"
         if role == int(Qt.ItemDataRole.ToolTipRole):
             return str(record.get("path", ""))
         return None
@@ -828,9 +1302,221 @@ class PhotoListModel(QAbstractListModel):
         self.dataChanged.emit(index, index, [int(Qt.ItemDataRole.DisplayRole), int(Qt.ItemDataRole.UserRole)])
 
 
+class PhotoCardDelegate(QStyledItemDelegate):
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:  # noqa: N802 - Qt API
+        if not index.data(Qt.ItemDataRole.UserRole):
+            return QSize(360, 120)
+        return QSize(238, 246)
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        record = index.data(Qt.ItemDataRole.UserRole)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = option.rect.adjusted(4, 4, -4, -4)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        light = bool(option.widget and option.widget.property("theme") == "light")
+        palette = (
+            {
+                "muted": "#6b7280",
+                "border": "#e6e8ee",
+                "hover_border": "#d1d5db",
+                "selected_border": "#5e6ad2",
+                "card": "#ffffff",
+                "hover_card": "#f7f8fb",
+                "selected_card": "#f1f3ff",
+                "image_border": "#d7dce5",
+                "title": "#111827",
+                "rank_bg": "#5e6ad2",
+                "rank_fg": "#ffffff",
+                "score_bg": "#eef2ff",
+                "score_fg": "#3f46a3",
+                "group_bg": "#eef0f4",
+                "group_fg": "#4b5563",
+                "category_bg": "#f2f4f8",
+                "category_fg": "#5e6ad2",
+            }
+            if light
+            else {
+                "muted": "#8fa4b8",
+                "border": "#26313d",
+                "hover_border": "#36506a",
+                "selected_border": "#00a6ff",
+                "card": "#10161d",
+                "hover_card": "#121922",
+                "selected_card": "#172232",
+                "image_border": "#314154",
+                "title": "#f8fafc",
+                "rank_bg": "#00a6ff",
+                "rank_fg": "#061019",
+                "score_bg": "#ffd400",
+                "score_fg": "#111827",
+                "group_bg": "#31415a",
+                "group_fg": "#dbe7f3",
+                "category_bg": "#1e2b3a",
+                "category_fg": "#9fd7ff",
+            }
+        )
+
+        if not isinstance(record, dict):
+            painter.setPen(QColor(palette["muted"]))
+            painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap), str(index.data(Qt.ItemDataRole.DisplayRole) or ""))
+            painter.restore()
+            return
+
+        painter.setPen(QColor(palette["selected_border"] if selected else palette["hover_border"] if hovered else palette["border"]))
+        painter.setBrush(QColor(palette["selected_card"] if selected else palette["hover_card"] if hovered else palette["card"]))
+        painter.drawRoundedRect(rect, 8, 8)
+
+        image_rect = QRect(rect.left() + 14, rect.top() + 12, rect.width() - 28, 112)
+        icon = index.data(Qt.ItemDataRole.DecorationRole)
+        pixmap = icon.pixmap(image_rect.size()) if isinstance(icon, QIcon) else QPixmap()
+        if not pixmap.isNull():
+            scaled = pixmap.scaled(image_rect.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            x = image_rect.left() + (image_rect.width() - scaled.width()) // 2
+            y = image_rect.top() + (image_rect.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+        else:
+            painter.setPen(QColor(palette["image_border"]))
+            painter.drawRect(image_rect)
+
+        rank = str(record.get("rank") or "-")
+        score = float(record.get("final_selection_score", 0) or 0)
+        user_label_raw = normalized_user_label(record.get("user_label")) or "unlabeled"
+        filename = str(record.get("filename") or "")
+        category = self._localized(index, record.get("category", ""), "category_labels")
+        tone = self._tone_label(index, record.get("tone_category", ""))
+        user_label = self._localized(index, user_label_raw, "user_label_labels")
+        group_size = int(record.get("group_size", 1) or 1)
+        group_rank = int(record.get("group_rank", 1) or 1)
+        if self._language(index) == "zh":
+            group_text = f"组 {group_rank}/{group_size}{' 最佳' if record.get('is_group_best') else ''}" if group_size > 1 else ""
+        else:
+            group_text = f"Group {group_rank}/{group_size}{' best' if record.get('is_group_best') else ''}" if group_size > 1 else ""
+        pair_text = self._localized(index, record.get("pair_status", ""), "pair_status_labels")
+
+        max_right = rect.right() - 12
+        tag_y = image_rect.bottom() + 8
+        x = rect.left() + 12
+        x = self._draw_tag(painter, x, tag_y, f"#{rank}", palette["rank_bg"], palette["rank_fg"], max_right=max_right)
+        x = self._draw_tag(painter, x + 6, tag_y, f"{score:.1f}", palette["score_bg"], palette["score_fg"], max_right=max_right)
+        self._draw_tag(
+            painter,
+            x + 6,
+            tag_y,
+            user_label,
+            self._label_color(user_label_raw, light=light),
+            "#ffffff" if light or user_label_raw == "reject" else "#061019",
+            max_right=max_right,
+        )
+        meta_y = tag_y + 28
+        x = rect.left() + 12
+        if group_text:
+            x = self._draw_tag(painter, x, meta_y, group_text, palette["group_bg"], palette["group_fg"], max_right=max_right)
+        if pair_text:
+            self._draw_tag(
+                painter,
+                x + (6 if group_text else 0),
+                meta_y,
+                pair_text,
+                "#eaf7f1" if light and record.get("has_raw_jpeg_pair") else "#fff7ed" if light else "#1f3b2f" if record.get("has_raw_jpeg_pair") else "#3b2f1f",
+                "#166534" if light and record.get("has_raw_jpeg_pair") else "#9a3412" if light else "#dbe7f3",
+                max_right=max_right,
+            )
+
+        painter.setPen(QColor(palette["title"]))
+        file_font = QFont(option.font)
+        file_font.setBold(True)
+        painter.setFont(file_font)
+        filename_rect = QRect(rect.left() + 12, tag_y + 57, rect.width() - 24, 20)
+        painter.drawText(filename_rect, int(Qt.AlignmentFlag.AlignCenter), painter.fontMetrics().elidedText(filename, Qt.TextElideMode.ElideMiddle, filename_rect.width()))
+        category_y = tag_y + 83
+        if category:
+            x = self._draw_tag(painter, rect.left() + 12, category_y, category, palette["category_bg"], palette["category_fg"], max_right=max_right)
+            if tone:
+                self._draw_tag(painter, x + 6, category_y, tone, palette["group_bg"], palette["group_fg"], max_right=max_right)
+        elif tone:
+            self._draw_tag(painter, rect.left() + 12, category_y, tone, palette["group_bg"], palette["group_fg"], max_right=max_right)
+        painter.restore()
+
+    def _localized(self, index: QModelIndex, value: Any, mapping_name: str) -> str:
+        model = index.model()
+        mapping = getattr(model, mapping_name, None)
+        display = getattr(model, "_display_value", None)
+        if callable(display) and isinstance(mapping, dict):
+            return str(display(value, mapping))
+        return str(value or "").replace("_", " ")
+
+    def _language(self, index: QModelIndex) -> str:
+        return str(getattr(index.model(), "language", "zh") or "zh")
+
+    def _tone_label(self, index: QModelIndex, value: Any) -> str:
+        raw = str(value or "")
+        if not raw:
+            return ""
+        if self._language(index) == "zh":
+            return {
+                "monochrome_or_near_bw": "近黑白",
+                "high_contrast": "高反差",
+                "low_key": "低调",
+                "high_key": "高调",
+                "warm_tone": "暖调",
+                "cool_tone": "冷调",
+                "vivid_color": "高饱和",
+                "muted_color": "低饱和",
+            }.get(raw, raw.replace("_", " "))
+        return raw.replace("_", " ")
+
+    def _draw_tag(self, painter: QPainter, x: int, y: int, text: str, bg: str, fg: str, *, max_right: int | None = None) -> int:
+        if max_right is not None and x > max_right - 24:
+            return x
+        font = QFont(painter.font())
+        font.setBold(True)
+        font.setPointSize(max(8, font.pointSize()))
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        available = None if max_right is None else max(30, max_right - x)
+        rendered_text = text
+        raw_width = metrics.horizontalAdvance(text) + 16
+        if available is not None and raw_width > available:
+            rendered_text = metrics.elidedText(text, Qt.TextElideMode.ElideRight, max(12, available - 16))
+        width = min(raw_width, available) if available is not None else raw_width
+        rect = QRect(x, y, width, 22)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(bg))
+        painter.drawRoundedRect(rect, 6, 6)
+        painter.setPen(QColor(fg))
+        painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), rendered_text)
+        return x + width
+
+    def _label_color(self, label: str, *, light: bool = False) -> str:
+        if light:
+            return {
+                "keep": "#5e6ad2",
+                "maybe": "#8b5cf6",
+                "reject": "#ef4444",
+                "unlabeled": "#94a3b8",
+            }.get(label, "#94a3b8")
+        return {
+            "keep": "#00a6ff",
+            "maybe": "#ffd400",
+            "reject": "#ff3b30",
+            "unlabeled": "#344052",
+        }.get(label, "#344052")
+
+
+class ShortcutListView(QListView):
+    def keyPressEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        window = self.window()
+        if hasattr(window, "_handle_shortcut_event") and window._handle_shortcut_event(event):
+            return
+        super().keyPressEvent(event)
+
+
 class LumaSiftWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self.setWindowIcon(lumasift_app_icon())
         self.ui_font_family = apply_application_font(QApplication.instance() or QApplication([]))
         self.setProperty("lumasift_ui_font_family", self.ui_font_family)
         self.resize(1440, 900)
@@ -839,11 +1525,16 @@ class LumaSiftWindow(QMainWindow):
         self.output_dir = Path("./outputs/gui")
         self.settings_store = QSettings("LumaSift", "LumaSift")
         self.language = "zh"
+        self.theme = str(self.settings_store.value("theme", "dark"))
+        if self.theme not in THEME_VALUES:
+            self.theme = "dark"
         self.settings_store.remove("language")
         self.worker_thread: QThread | None = None
         self.worker: AnalysisWorker | None = None
         self.key_check_thread: QThread | None = None
-        self.key_check_worker: QwenKeyCheckWorker | None = None
+        self.key_check_worker: VisionKeyCheckWorker | None = None
+        self.selected_review_thread: QThread | None = None
+        self.selected_review_worker: SelectedDeepReviewWorker | None = None
         self.thumbnail_thread: QThread | None = None
         self.thumbnail_worker: ThumbnailWorker | None = None
         self.visible_records: list[dict[str, Any]] = []
@@ -854,8 +1545,16 @@ class LumaSiftWindow(QMainWindow):
         self.workflow_steps: dict[str, QFrame] = {}
         self.stat_labels: dict[str, QLabel] = {}
         self.workflow_labels: dict[str, tuple[QLabel, QLabel]] = {}
+        self.workflow_state_labels: dict[str, QLabel] = {}
         self.static_labels: dict[str, QLabel] = {}
         self._animations: list[QPropertyAnimation] = []
+        self.run_heartbeat_timer = QTimer(self)
+        self.run_heartbeat_timer.setInterval(1000)
+        self.run_heartbeat_timer.timeout.connect(self._run_heartbeat_tick)
+        self.run_started_at = 0.0
+        self.last_progress_at = 0.0
+        self.last_progress_text = ""
+        self.heartbeat_phase = 0
         self.state_db = LumaSiftStateDb()
         self.current_run_id = ""
         self.pending_close = False
@@ -865,6 +1564,8 @@ class LumaSiftWindow(QMainWindow):
         self.nav_buttons: dict[str, QPushButton] = {}
         self.qwen_queue_state: dict[str, Any] = {}
         self.detected_vision_model = str(self.settings_store.value("vision_model", "qwen3.6-plus"))
+        self.shortcut_keys: dict[str, int] = dict(DEFAULT_SHORTCUT_KEYS)
+        self.shortcut_combos: dict[str, QComboBox] = {}
         self.preview_dialogs: list[LargePreviewDialog] = []
         self._build_ui()
         self._load_preferences()
@@ -872,6 +1573,10 @@ class LumaSiftWindow(QMainWindow):
         self._retranslate_ui()
         self._update_workflow("import")
         self._update_dashboard()
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+        QTimer.singleShot(0, self._show_startup_setup_prompt)
 
     def _t(self, key: str) -> str:
         return UI_TEXT.get(self.language, UI_TEXT["zh"]).get(key, key)
@@ -879,6 +1584,90 @@ class LumaSiftWindow(QMainWindow):
     def _change_language(self, label: str) -> None:
         self.language = "en" if label == "English" else "zh"
         self._retranslate_ui()
+
+    def _change_theme(self, *_: Any) -> None:
+        if not hasattr(self, "theme_combo"):
+            return
+        value = str(self.theme_combo.currentData() or "dark")
+        if value not in THEME_VALUES or value == self.theme:
+            return
+        self.theme = value
+        self.settings_store.setValue("theme", self.theme)
+        self._apply_style()
+        if hasattr(self, "help_text"):
+            self.help_text.setHtml(self._help_page_html())
+        if hasattr(self, "detail_text"):
+            self._show_selected_detail()
+        if self.photo_model is not None and hasattr(self, "photo_list"):
+            self.photo_list.viewport().update()
+
+    def _show_startup_setup_prompt(self) -> None:
+        if not hasattr(self, "input_edit"):
+            return
+        self._refresh_setup_attention()
+        message = self._startup_setup_message()
+        if hasattr(self, "cache_note"):
+            self.cache_note.setText(message.replace("\n", " "))
+            self._set_attention(self.cache_note, True)
+        if hasattr(self, "status_label"):
+            input_missing = not self.input_edit.text().strip() or not Path(self.input_edit.text().strip()).expanduser().exists()
+            self.status_label.setText(self._t("input_missing_hint") if input_missing else self._t("startup_output_note"))
+        if self._should_skip_startup_dialog():
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(self._t("startup_config_title"))
+        box.setText(message)
+        confirm_button = box.addButton(self._t("startup_confirm_paths"), QMessageBox.ButtonRole.AcceptRole)
+        local_button = box.addButton(self._t("startup_use_local_no_api"), QMessageBox.ButtonRole.ActionRole)
+        api_button = box.addButton(self._t("startup_configure_api"), QMessageBox.ButtonRole.ActionRole)
+        box.setDefaultButton(confirm_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == local_button:
+            local_index = self.mode_combo.findData("local_only")
+            if local_index >= 0:
+                self.mode_combo.setCurrentIndex(local_index)
+            self._save_preferences()
+            self._refresh_setup_attention()
+        elif clicked == api_button:
+            qwen_index = self.mode_combo.findData("qwen_vision")
+            if qwen_index >= 0:
+                self.mode_combo.setCurrentIndex(qwen_index)
+            self._show_nav_page("settings")
+            self.advanced_panel.setVisible(True)
+            self.api_key_edit.setFocus()
+        else:
+            self._show_nav_page("settings")
+            self.input_edit.setFocus()
+
+    def _startup_setup_message(self) -> str:
+        input_text = self.input_edit.text().strip()
+        output_text = self.output_edit.text().strip() or "./outputs/gui"
+        input_missing = not input_text or not Path(input_text).expanduser().exists()
+        qwen_enabled = (self.mode_combo.currentData() or self.mode_combo.currentText()) == "qwen_vision"
+        has_key = self._has_configured_qwen_keys()
+        if input_missing:
+            api_note = self._t("startup_input_missing")
+        elif qwen_enabled and not has_key:
+            api_note = self._t("startup_api_qwen_missing")
+        elif qwen_enabled and has_key:
+            api_note = self._t("startup_api_qwen_ready")
+        elif has_key:
+            api_note = self._t("startup_api_local_has_key")
+        else:
+            api_note = self._t("startup_api_local_no_key")
+        mode_text = self._t("qwen") if qwen_enabled else self._t("local")
+        return self._t("startup_config_body").format(
+            input_dir=input_text or self._t("missing_input_title"),
+            output_dir=output_text,
+            mode=mode_text,
+            api_note=api_note,
+        )
+
+    def _should_skip_startup_dialog(self) -> bool:
+        platform = os.environ.get("QT_QPA_PLATFORM", "").lower()
+        return platform == "offscreen" or bool(os.environ.get("LUMASIFT_NO_STARTUP_DIALOG")) or bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
     def _retranslate_ui(self) -> None:
         self.setWindowTitle(self._t("app_title"))
@@ -888,8 +1677,16 @@ class LumaSiftWindow(QMainWindow):
             self.language_combo.blockSignals(True)
             self.language_combo.setCurrentText("English" if self.language == "en" else "中文")
             self.language_combo.blockSignals(False)
+        if hasattr(self, "theme_combo"):
+            self.theme_combo.blockSignals(True)
+            self.theme_combo.clear()
+            self.theme_combo.addItem(self._t("theme_dark"), "dark")
+            self.theme_combo.addItem(self._t("theme_light"), "light")
+            self.theme_combo.setCurrentIndex(max(0, self.theme_combo.findData(self.theme)))
+            self.theme_combo.setToolTip(self._t("theme_tooltip"))
+            self.theme_combo.blockSignals(False)
         if hasattr(self, "title_label"):
-            self.title_label.setText("▰")
+            self._set_header_logo()
         if hasattr(self, "subtitle_label"):
             self.subtitle_label.setText(self._t("hero_subtitle"))
         step_keys = {
@@ -910,7 +1707,7 @@ class LumaSiftWindow(QMainWindow):
             ("review_board", self.static_labels.get("review_board")),
             ("review_cockpit", self.static_labels.get("review_cockpit")),
             ("review_mode", self.static_labels.get("review_mode")),
-            ("run_history", self.static_labels.get("history_page_title")),
+            ("shortcuts_title", self.static_labels.get("shortcuts_page_title")),
             ("nav_help", self.static_labels.get("help_page_title")),
         ]:
             if label:
@@ -918,7 +1715,8 @@ class LumaSiftWindow(QMainWindow):
         if hasattr(self, "browse_input_button"):
             self.browse_input_button.setText(self._t("browse"))
             self.browse_output_button.setText(self._t("browse"))
-        for page, text_key in [("main", "nav_main"), ("settings", "settings"), ("history", "run_history"), ("help", "nav_help")]:
+            self.output_edit.setToolTip(self._t("output_folder_hint"))
+        for page, text_key in [("main", "nav_main"), ("settings", "settings"), ("shortcuts", "nav_shortcuts"), ("help", "nav_help")]:
             button = self.nav_buttons.get(page)
             if button:
                 button.setText(self._t(text_key))
@@ -927,7 +1725,7 @@ class LumaSiftWindow(QMainWindow):
         mini_map = {
             "mini_Mode": "mode",
             "mini_Scan": "scan",
-            "mini_Qwen Top": "qwen_top",
+            "mini_Deep Top": "qwen_top",
             "mini_Advice Top": "advice_top",
             "mini_Show": "show",
         }
@@ -943,8 +1741,15 @@ class LumaSiftWindow(QMainWindow):
             mode_index = self.mode_combo.findData(mode_value)
             self.mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
             self.mode_combo.blockSignals(False)
+            self.top_n_spin.setToolTip(self._t("deep_top_tooltip"))
+            self.selected_top_spin.setToolTip(self._t("advice_top_tooltip"))
             self._sync_mode_controls()
             self.api_key_edit.setPlaceholderText(self._t("api_placeholder"))
+            if hasattr(self, "vision_base_url_edit"):
+                self.static_labels["vision_base_url"].setText(self._t("vision_base_url"))
+                self.static_labels["vision_model"].setText(self._t("vision_model"))
+                self.vision_base_url_edit.setPlaceholderText(f"{self._t('vision_base_url_placeholder')}: {DEFAULT_VISION_BASE_URL}")
+                self.vision_model_edit.setPlaceholderText(self._t("vision_model_placeholder"))
             self.check_key_button.setText(self._t("check_key"))
             self.show_key_checkbox.setText(self._t("show"))
             self.save_keys_checkbox.setText(self._t("save_keys"))
@@ -952,27 +1757,44 @@ class LumaSiftWindow(QMainWindow):
             self.cancel_button.setText(self._t("cancel"))
             self.main_run_button.setText(self._t("analyze"))
             self.main_cancel_button.setText(self._t("cancel"))
-            self.history_open_button.setText(self._t("open_output"))
-            self.history_load_button.setText(self._t("load_run"))
+            if hasattr(self, "shortcut_reset_button"):
+                self.shortcut_reset_button.setText(self._t("reset_shortcuts"))
+                self.shortcut_hint_label.setText(self._t("shortcuts_hint"))
+                for action, label in self.shortcut_labels.items():
+                    label.setText(self._t(f"shortcut_{action}"))
             self.help_text.setHtml(self._help_page_html())
             self.review_setup_button.setText(self._t("show_setup"))
-            self.review_history_button.setText(self._t("run_history"))
             self.review_new_scan_button.setText(self._t("new_scan"))
             self.search_edit.setPlaceholderText(self._t("search"))
             self.photo_list.setToolTip(self._t("grid_tooltip"))
             self.detail_hint_label.setText(self._t("detail_hint"))
-            self.keep_button.setText("▲")
+            if hasattr(self, "tone_filter"):
+                current_tone = self.tone_filter.currentData() or "all"
+                self.tone_filter.blockSignals(True)
+                self.tone_filter.clear()
+                self.tone_filter.addItem(self._t("all_tones"), "all")
+                for tone in sorted({str(record.get("tone_category", "")) for record in self.records if record.get("tone_category")}):
+                    self.tone_filter.addItem(self._display_tone_category(tone), tone)
+                tone_index = self.tone_filter.findData(current_tone)
+                self.tone_filter.setCurrentIndex(tone_index if tone_index >= 0 else 0)
+                self.tone_filter.blockSignals(False)
+            self.keep_button.setText(f"▲ {self._t('keep')}")
             self.keep_button.setToolTip(self._t("keep"))
-            self.maybe_button.setText("◆")
+            self.maybe_button.setText(f"◆ {self._t('maybe')}")
             self.maybe_button.setToolTip(self._t("maybe"))
-            self.reject_button.setText("■")
+            self.reject_button.setText(f"■ {self._t('reject')}")
             self.reject_button.setToolTip(self._t("reject"))
-            self.generate_advice_button.setText("")
+            self.deep_review_selected_button.setText(self._t("deep_review_selected"))
+            self.deep_review_selected_button.setToolTip(self._t("deep_review_selected_tooltip"))
+            self.generate_advice_button.setText(self._t("editing_plan"))
             self.generate_advice_button.setToolTip(self._t("editing_plan"))
-            self.open_output_button.setText("")
+            self.crop_preview_button.setText(self._t("crop_preview"))
+            self._sync_crop_preview_button()
+            self.open_output_button.setText(self._t("open_output"))
             self.open_output_button.setToolTip(self._t("open_output"))
-            self.open_contact_button.setText("")
+            self.open_contact_button.setText(self._t("open_contact"))
             self.open_contact_button.setToolTip(self._t("open_contact"))
+            self._sync_deep_review_selected_button()
             if not self.records:
                 self.result_count_label.setText(self._t("no_results"))
                 self.status_label.setText(self._t("ready"))
@@ -985,8 +1807,10 @@ class LumaSiftWindow(QMainWindow):
         if not hasattr(self, "category_filter"):
             return
         category = self.category_filter.currentData() or self.category_filter.currentText()
+        tone_value = self.tone_filter.currentData() if hasattr(self, "tone_filter") else "all"
         label_value = self.label_filter.currentData() or "all"
         group_value = self.group_filter.currentData() if hasattr(self, "group_filter") else "all"
+        pair_value = self.pair_filter.currentData() if hasattr(self, "pair_filter") else "all"
         review_value = self.review_filter.currentData() if hasattr(self, "review_filter") else "all"
         sort_value = self.sort_combo.currentData() or "score_desc"
         self.category_filter.blockSignals(True)
@@ -998,6 +1822,16 @@ class LumaSiftWindow(QMainWindow):
         category_index = self.category_filter.findData(category)
         self.category_filter.setCurrentIndex(category_index if category_index >= 0 else 0)
         self.category_filter.blockSignals(False)
+
+        self.tone_filter.blockSignals(True)
+        self.tone_filter.clear()
+        self.tone_filter.addItem(self._t("all_tones"), "all")
+        tones = sorted({str(record.get("tone_category", "")) for record in self.records if record.get("tone_category")})
+        for tone in tones:
+            self.tone_filter.addItem(self._display_tone_category(tone), tone)
+        tone_index = self.tone_filter.findData(tone_value)
+        self.tone_filter.setCurrentIndex(tone_index if tone_index >= 0 else 0)
+        self.tone_filter.blockSignals(False)
 
         self.label_filter.blockSignals(True)
         self.label_filter.clear()
@@ -1019,12 +1853,28 @@ class LumaSiftWindow(QMainWindow):
             ("all_groups", "all"),
             ("group_best", "best"),
             ("grouped_only", "grouped"),
+            ("group_time", "time"),
+            ("group_visual", "visual"),
             ("singletons", "singletons"),
         ]:
             self.group_filter.addItem(self._t(text_key), data)
         group_index = self.group_filter.findData(group_value)
         self.group_filter.setCurrentIndex(group_index if group_index >= 0 else 0)
         self.group_filter.blockSignals(False)
+
+        self.pair_filter.blockSignals(True)
+        self.pair_filter.clear()
+        for text_key, data in [
+            ("all_pairs", "all"),
+            ("raw_jpeg_pairs", "raw_jpeg_pair"),
+            ("raw_only", "raw_only"),
+            ("jpeg_only", "jpeg_only"),
+            ("other_files", "single"),
+        ]:
+            self.pair_filter.addItem(self._t(text_key), data)
+        pair_index = self.pair_filter.findData(pair_value)
+        self.pair_filter.setCurrentIndex(pair_index if pair_index >= 0 else 0)
+        self.pair_filter.blockSignals(False)
 
         self.review_filter.blockSignals(True)
         self.review_filter.clear()
@@ -1082,17 +1932,26 @@ class LumaSiftWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("mainSplitter")
         self.main_splitter = splitter
-        self.photo_list = QListView()
+        self.photo_list = ShortcutListView()
         self.photo_list.setObjectName("photoGrid")
         self.photo_list.setViewMode(QListView.ViewMode.IconMode)
         self.photo_list.setResizeMode(QListView.ResizeMode.Adjust)
         self.photo_list.setMovement(QListView.Movement.Static)
         self.photo_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.photo_list.setIconSize(QSize(210, 148))
-        self.photo_list.setSpacing(12)
+        self.photo_list.setSpacing(10)
         self.photo_list.setUniformItemSizes(True)
+        self.photo_list.setItemDelegate(PhotoCardDelegate(self.photo_list))
         self.photo_list.setLayoutMode(QListView.LayoutMode.Batched)
         self.photo_list.setBatchSize(96)
+        self.photo_list.installEventFilter(self)
+        self.photo_list.viewport().installEventFilter(self)
+        self.select_all_shortcut = QShortcut(QKeySequence("Ctrl+A"), self.photo_list)
+        self.select_all_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.select_all_shortcut.activated.connect(self._select_all_visible_records)
+        self.invert_selection_shortcut = QShortcut(QKeySequence("Ctrl+I"), self.photo_list)
+        self.invert_selection_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.invert_selection_shortcut.activated.connect(self._invert_visible_selection)
         self.photo_model = PhotoListModel(self._placeholder_icon())
         self.photo_model.set_language(self.language)
         self.photo_list.setModel(self.photo_model)
@@ -1153,21 +2012,31 @@ class LumaSiftWindow(QMainWindow):
         self.keep_button.setMinimumWidth(48)
         self.keep_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.keep_button.clicked.connect(lambda: self._mark_selected("keep"))
-        action_grid.addWidget(self.keep_button, 0, 0)
+        self.deep_review_selected_button = QPushButton("")
+        self.deep_review_selected_button.setObjectName("primaryButton")
+        self.deep_review_selected_button.setMinimumHeight(38)
+        self.deep_review_selected_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.deep_review_selected_button.clicked.connect(self._deep_review_selected)
+        action_grid.addWidget(self.deep_review_selected_button, 0, 0, 1, 4)
+        self.action_status_label = QLabel("")
+        self.action_status_label.setObjectName("actionStatus")
+        self.action_status_label.setWordWrap(True)
+        action_grid.addWidget(self.action_status_label, 1, 0, 1, 4)
+        action_grid.addWidget(self.keep_button, 2, 0)
         self.maybe_button = QPushButton("")
         self.maybe_button.setObjectName("markMaybeButton")
         self.maybe_button.setMinimumHeight(32)
         self.maybe_button.setMinimumWidth(48)
         self.maybe_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.maybe_button.clicked.connect(lambda: self._mark_selected("maybe"))
-        action_grid.addWidget(self.maybe_button, 0, 1)
+        action_grid.addWidget(self.maybe_button, 2, 1)
         self.reject_button = QPushButton("")
         self.reject_button.setObjectName("markRejectButton")
         self.reject_button.setMinimumHeight(32)
         self.reject_button.setMinimumWidth(48)
         self.reject_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.reject_button.clicked.connect(lambda: self._mark_selected("reject"))
-        action_grid.addWidget(self.reject_button, 0, 2)
+        action_grid.addWidget(self.reject_button, 2, 2, 1, 2)
         self.generate_advice_button = QPushButton("")
         self.generate_advice_button.setObjectName("primaryButton")
         self.generate_advice_button.setMinimumHeight(32)
@@ -1175,7 +2044,14 @@ class LumaSiftWindow(QMainWindow):
         self.generate_advice_button.setIconSize(QSize(18, 18))
         self.generate_advice_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.generate_advice_button.clicked.connect(self._generate_selected_advice)
-        action_grid.addWidget(self.generate_advice_button, 1, 0)
+        action_grid.addWidget(self.generate_advice_button, 3, 0)
+        self.crop_preview_button = QPushButton("")
+        self.crop_preview_button.setObjectName("secondaryButton")
+        self.crop_preview_button.setMinimumHeight(32)
+        self.crop_preview_button.setMinimumWidth(88)
+        self.crop_preview_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.crop_preview_button.clicked.connect(self._open_selected_crop_preview)
+        action_grid.addWidget(self.crop_preview_button, 3, 1)
         self.open_output_button = QPushButton("")
         self.open_output_button.setObjectName("secondaryButton")
         self.open_output_button.setMinimumHeight(32)
@@ -1184,7 +2060,7 @@ class LumaSiftWindow(QMainWindow):
         self.open_output_button.setIconSize(QSize(18, 18))
         self.open_output_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.open_output_button.clicked.connect(lambda: self._open_path(self.output_dir))
-        action_grid.addWidget(self.open_output_button, 1, 1)
+        action_grid.addWidget(self.open_output_button, 3, 2)
         self.open_contact_button = QPushButton("")
         self.open_contact_button.setObjectName("secondaryButton")
         self.open_contact_button.setMinimumHeight(32)
@@ -1193,7 +2069,7 @@ class LumaSiftWindow(QMainWindow):
         self.open_contact_button.setIconSize(QSize(18, 18))
         self.open_contact_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.open_contact_button.clicked.connect(lambda: self._open_path(self.output_dir / "contact_sheet_top50.jpg"))
-        action_grid.addWidget(self.open_contact_button, 1, 2)
+        action_grid.addWidget(self.open_contact_button, 3, 3)
         detail_layout.addWidget(action_bar, stretch=0)
         splitter.addWidget(self.detail_panel)
         splitter.setSizes([760, 700])
@@ -1209,8 +2085,8 @@ class LumaSiftWindow(QMainWindow):
         settings_layout.addWidget(self.controls_frame, stretch=1)
         root.addWidget(self.settings_page, stretch=1)
 
-        self.history_page = self._build_history_page()
-        root.addWidget(self.history_page, stretch=1)
+        self.shortcuts_page = self._build_shortcuts_page()
+        root.addWidget(self.shortcuts_page, stretch=1)
         self.help_page = self._build_help_page()
         root.addWidget(self.help_page, stretch=1)
 
@@ -1224,11 +2100,12 @@ class LumaSiftWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        title = QLabel("▰")
-        title.setObjectName("navMark")
-        title.setFixedWidth(36)
+        title = QLabel("")
+        title.setObjectName("navLogo")
+        title.setFixedSize(42, 34)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label = title
+        self._set_header_logo()
         subtitle = QLabel("")
         subtitle.setVisible(False)
         subtitle.setObjectName("subtitle")
@@ -1238,7 +2115,7 @@ class LumaSiftWindow(QMainWindow):
         for page, text_key, handler in [
             ("main", "nav_main", lambda: self._show_nav_page("main")),
             ("settings", "settings", lambda: self._show_nav_page("settings")),
-            ("history", "run_history", lambda: self._show_nav_page("history")),
+            ("shortcuts", "nav_shortcuts", lambda: self._show_nav_page("shortcuts")),
             ("help", "nav_help", lambda: self._show_nav_page("help")),
         ]:
             button = QPushButton("")
@@ -1249,9 +2126,15 @@ class LumaSiftWindow(QMainWindow):
             self.static_labels[f"nav_{text_key}"] = button
             layout.addWidget(button)
         self.settings_nav_button = self.nav_buttons["settings"]
-        self.history_button = self.nav_buttons["history"]
 
         layout.addStretch(1)
+
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem(self._t("theme_dark"), "dark")
+        self.theme_combo.addItem(self._t("theme_light"), "light")
+        self.theme_combo.setFixedWidth(92)
+        self.theme_combo.currentIndexChanged.connect(self._change_theme)
+        layout.addWidget(self.theme_combo)
 
         self.language_combo = QComboBox()
         self.language_combo.addItems(["中文", "English"])
@@ -1259,6 +2142,26 @@ class LumaSiftWindow(QMainWindow):
         self.language_combo.currentTextChanged.connect(self._change_language)
         layout.addWidget(self.language_combo)
         return frame
+
+    def _set_header_logo(self) -> None:
+        label = getattr(self, "title_label", None)
+        if not isinstance(label, QLabel):
+            return
+        logo_path = lumasift_resource_path("lumasift.png")
+        if logo_path:
+            pixmap = QPixmap(str(logo_path))
+            if not pixmap.isNull():
+                label.setText("")
+                label.setPixmap(
+                    pixmap.scaled(
+                        QSize(24, 24),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+                return
+        label.setPixmap(QPixmap())
+        label.setText("L")
 
     def _build_workflow(self) -> QFrame:
         frame = QFrame()
@@ -1269,7 +2172,7 @@ class LumaSiftWindow(QMainWindow):
         for key, title, caption in [
             ("import", "1. Import", "Choose local RAW/JPG folder"),
             ("local", "2. Pre-score", "Fast local CV and preview cache"),
-            ("qwen", "3. Deep review", "Qwen only for high-value candidates"),
+            ("qwen", "3. Deep analysis", "LLM only for high-value candidates"),
             ("edit", "4. Edit plan", "Multi-select concrete tuning guidance"),
         ]:
             step = QFrame()
@@ -1285,10 +2188,14 @@ class LumaSiftWindow(QMainWindow):
             body = QLabel(caption)
             body.setObjectName("stepCaption")
             body.setWordWrap(True)
+            state_label = QLabel("")
+            state_label.setObjectName("stepState")
             step_layout.addWidget(heading)
             step_layout.addWidget(body)
+            step_layout.addWidget(state_label)
             self.workflow_steps[key] = step
             self.workflow_labels[key] = (heading, body)
+            self.workflow_state_labels[key] = state_label
             layout.addWidget(step, stretch=1)
         return frame
 
@@ -1308,16 +2215,12 @@ class LumaSiftWindow(QMainWindow):
         self.review_setup_button = QPushButton("")
         self.review_setup_button.setObjectName("ghostButton")
         self.review_setup_button.clicked.connect(lambda: self._exit_review_mode(show_advanced=True))
-        self.review_history_button = QPushButton("")
-        self.review_history_button.setObjectName("secondaryButton")
-        self.review_history_button.clicked.connect(self._open_run_history)
         self.review_new_scan_button = QPushButton("")
         self.review_new_scan_button.setObjectName("secondaryButton")
         self.review_new_scan_button.clicked.connect(lambda: self._exit_review_mode(show_advanced=False))
 
         layout.addWidget(mode_label)
         layout.addWidget(self.review_summary_label, stretch=1)
-        layout.addWidget(self.review_history_button)
         layout.addWidget(self.review_setup_button)
         layout.addWidget(self.review_new_scan_button)
         return frame
@@ -1347,36 +2250,59 @@ class LumaSiftWindow(QMainWindow):
         frame.setVisible(False)
         return frame
 
-    def _build_history_page(self) -> QFrame:
+    def _build_shortcuts_page(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("navPage")
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
+
         title = QLabel("")
         title.setObjectName("sectionTitle")
-        self.static_labels["history_page_title"] = title
-        self.history_table = QTableWidget(0, 7)
-        self.history_table.setObjectName("historyTable")
-        self.history_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.history_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.history_table.verticalHeader().setVisible(False)
-        self.history_table.setAlternatingRowColors(True)
-        self.history_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.static_labels["shortcuts_page_title"] = title
+        self.shortcut_hint_label = QLabel("")
+        self.shortcut_hint_label.setObjectName("muted")
+        self.shortcut_hint_label.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(self.shortcut_hint_label)
+
+        card = QFrame()
+        card.setObjectName("controlCard")
+        card_layout = QGridLayout(card)
+        card_layout.setContentsMargins(18, 16, 18, 16)
+        card_layout.setHorizontalSpacing(18)
+        card_layout.setVerticalSpacing(12)
+        self.shortcut_labels: dict[str, QLabel] = {}
+        for row, action in enumerate(SHORTCUT_ACTIONS):
+            label = QLabel("")
+            label.setObjectName("fieldLabel")
+            combo = self._build_shortcut_combo(action)
+            self.shortcut_labels[action] = label
+            self.shortcut_combos[action] = combo
+            card_layout.addWidget(label, row, 0)
+            card_layout.addWidget(combo, row, 1)
+        card_layout.setColumnStretch(1, 1)
+        layout.addWidget(card)
+
         actions = QHBoxLayout()
         actions.addStretch(1)
-        self.history_open_button = QPushButton("")
-        self.history_open_button.setObjectName("secondaryButton")
-        self.history_open_button.clicked.connect(self._open_selected_history_output)
-        self.history_load_button = QPushButton("")
-        self.history_load_button.setObjectName("primaryButton")
-        self.history_load_button.clicked.connect(self._load_selected_history_run)
-        actions.addWidget(self.history_open_button)
-        actions.addWidget(self.history_load_button)
-        layout.addWidget(title)
-        layout.addWidget(self.history_table, stretch=1)
+        self.shortcut_reset_button = QPushButton("")
+        self.shortcut_reset_button.setObjectName("secondaryButton")
+        self.shortcut_reset_button.setMinimumHeight(34)
+        self.shortcut_reset_button.clicked.connect(self._reset_shortcuts_to_defaults)
+        actions.addWidget(self.shortcut_reset_button)
         layout.addLayout(actions)
+        layout.addStretch(1)
         return frame
+
+    def _build_shortcut_combo(self, action: str) -> QComboBox:
+        combo = QComboBox()
+        combo.setObjectName("settingInput")
+        combo.setMinimumHeight(36)
+        for label, key_code in SHORTCUT_KEY_CHOICES:
+            combo.addItem(label, key_code)
+        combo.currentIndexChanged.connect(lambda _index, action=action: self._shortcut_combo_changed(action))
+        return combo
 
     def _build_help_page(self) -> QFrame:
         frame = QFrame()
@@ -1408,6 +2334,7 @@ class LumaSiftWindow(QMainWindow):
 
         self.input_edit = QLineEdit("D:/DCIM")
         self.input_edit.setObjectName("pathEdit")
+        self.input_edit.textChanged.connect(lambda *_: self._refresh_setup_attention())
         browse_input = QPushButton("Browse")
         self.browse_input_button = browse_input
         browse_input.setObjectName("secondaryButton")
@@ -1421,6 +2348,7 @@ class LumaSiftWindow(QMainWindow):
 
         self.output_edit = QLineEdit(str(self.output_dir))
         self.output_edit.setObjectName("pathEdit")
+        self.output_edit.textChanged.connect(lambda *_: self._refresh_setup_attention())
         browse_output = QPushButton("Browse")
         self.browse_output_button = browse_output
         browse_output.setObjectName("secondaryButton")
@@ -1428,6 +2356,7 @@ class LumaSiftWindow(QMainWindow):
         output_label = QLabel("Output folder")
         output_label.setObjectName("fieldLabel")
         self.static_labels["output_folder"] = output_label
+        self.output_edit.setToolTip(self._t("output_folder_hint"))
         main_row.addWidget(output_label, 1, 0)
         main_row.addWidget(self.output_edit, 1, 1)
         main_row.addWidget(browse_output, 1, 2)
@@ -1466,7 +2395,7 @@ class LumaSiftWindow(QMainWindow):
         self.mode_combo.addItem("qwen_vision", "qwen_vision")
         self.mode_combo.currentTextChanged.connect(self._sync_mode_controls)
         self.mode_combo.setObjectName("settingInput")
-        self.mode_combo.setFixedSize(174, 36)
+        self.mode_combo.setFixedSize(360, 36)
         self.limit_spin = QSpinBox()
         self.limit_spin.setRange(1, 100000)
         self.limit_spin.setValue(50)
@@ -1498,7 +2427,7 @@ class LumaSiftWindow(QMainWindow):
 
         self.advanced_panel = QFrame()
         self.advanced_panel.setObjectName("advancedPanel")
-        self.advanced_panel.setMinimumHeight(178)
+        self.advanced_panel.setMinimumHeight(224)
         self.advanced_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         advanced_layout = QVBoxLayout(self.advanced_panel)
         advanced_layout.setContentsMargins(10, 10, 10, 10)
@@ -1511,7 +2440,7 @@ class LumaSiftWindow(QMainWindow):
         for col, (label, control) in enumerate([
             ("Mode", self.mode_combo),
             ("Scan", self.limit_spin),
-            ("Qwen Top", self.top_n_spin),
+            ("Deep Top", self.top_n_spin),
             ("Advice Top", self.selected_top_spin),
             ("Show", self.display_limit_spin),
         ]):
@@ -1521,15 +2450,23 @@ class LumaSiftWindow(QMainWindow):
             mini_label.setMinimumHeight(18)
             settings_grid.addWidget(mini_label, 0, col)
             settings_grid.addWidget(control, 1, col)
-            settings_grid.setColumnMinimumWidth(col, 136 if label != "Mode" else 180)
+            settings_grid.setColumnMinimumWidth(col, 136 if label != "Mode" else 372)
         settings_grid.setColumnStretch(5, 1)
         advanced_layout.addLayout(settings_grid)
 
         self.api_key_edit = QLineEdit()
-        self.api_key_edit.setPlaceholderText("Optional: comma-separated Qwen keys. Leave empty to use .env.")
+        self.api_key_edit.setPlaceholderText("Optional: enter one LLM API key. Leave empty to use .env.")
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key_edit.setMinimumHeight(34)
         self.api_key_edit.textEdited.connect(self._api_key_text_edited)
+        self.vision_base_url_edit = QLineEdit()
+        self.vision_base_url_edit.setObjectName("settingInput")
+        self.vision_base_url_edit.setMinimumHeight(34)
+        self.vision_base_url_edit.setPlaceholderText(f"Auto: {DEFAULT_VISION_BASE_URL}")
+        self.vision_model_edit = QLineEdit()
+        self.vision_model_edit.setObjectName("settingInput")
+        self.vision_model_edit.setMinimumHeight(34)
+        self.vision_model_edit.setPlaceholderText("Auto-detect best vision model")
         self.show_key_checkbox = QCheckBox("Show")
         self.show_key_checkbox.setMinimumHeight(24)
         self.show_key_checkbox.toggled.connect(self._toggle_key_visibility)
@@ -1545,22 +2482,38 @@ class LumaSiftWindow(QMainWindow):
         key_layout.addWidget(self.show_key_checkbox)
         self.save_keys_checkbox = QCheckBox("Save API keys locally")
         self.save_keys_checkbox.setMinimumHeight(24)
-        self.cache_note = QLabel("Qwen mode uploads only Top-N compressed JPEG previews; RAW files stay local.")
+        self.cache_note = QLabel("Deep mode uploads only Top-N compressed JPEG previews; RAW files stay local.")
         self.cache_note.setObjectName("muted")
         self.cache_note.setMinimumHeight(20)
-        api_label = QLabel("Qwen keys")
+        api_label = QLabel("LLM API")
         api_label.setObjectName("fieldLabel")
         self.static_labels["qwen_keys"] = api_label
+        base_url_label = QLabel("")
+        base_url_label.setObjectName("miniLabel")
+        self.static_labels["vision_base_url"] = base_url_label
+        model_label = QLabel("")
+        model_label.setObjectName("miniLabel")
+        self.static_labels["vision_model"] = model_label
+        endpoint_row = QWidget()
+        endpoint_layout = QHBoxLayout(endpoint_row)
+        endpoint_layout.setContentsMargins(0, 0, 0, 0)
+        endpoint_layout.setSpacing(8)
+        endpoint_layout.addWidget(base_url_label)
+        endpoint_layout.addWidget(self.vision_base_url_edit, stretch=2)
+        endpoint_layout.addWidget(model_label)
+        endpoint_layout.addWidget(self.vision_model_edit, stretch=1)
         key_grid = QGridLayout()
         key_grid.setHorizontalSpacing(10)
         key_grid.setVerticalSpacing(6)
         key_grid.addWidget(api_label, 0, 0)
         key_grid.addWidget(key_row, 0, 1)
-        key_grid.addWidget(self.save_keys_checkbox, 1, 1)
-        key_grid.addWidget(self.cache_note, 2, 1)
+        key_grid.addWidget(endpoint_row, 1, 1)
+        key_grid.addWidget(self.save_keys_checkbox, 2, 1)
+        key_grid.addWidget(self.cache_note, 3, 1)
         key_grid.setRowMinimumHeight(0, 34)
-        key_grid.setRowMinimumHeight(1, 24)
-        key_grid.setRowMinimumHeight(2, 20)
+        key_grid.setRowMinimumHeight(1, 34)
+        key_grid.setRowMinimumHeight(2, 24)
+        key_grid.setRowMinimumHeight(3, 20)
         key_grid.setColumnStretch(1, 1)
         advanced_layout.addLayout(key_grid)
         self.advanced_panel.setVisible(True)
@@ -1593,14 +2546,20 @@ class LumaSiftWindow(QMainWindow):
             ]
         )
         self.category_filter.currentTextChanged.connect(self._populate_records)
+        self.tone_filter = QComboBox()
+        self.tone_filter.addItems(["All tones"])
+        self.tone_filter.currentIndexChanged.connect(self._populate_records)
         self.label_filter = QComboBox()
         self.label_filter.addItems(["All labels", "keep", "maybe", "reject", "unlabeled"])
         self.label_filter.currentTextChanged.connect(self._populate_records)
         self.group_filter = QComboBox()
         self.group_filter.addItems(["All groups", "Group best", "Grouped", "Singles"])
         self.group_filter.currentTextChanged.connect(self._populate_records)
+        self.pair_filter = QComboBox()
+        self.pair_filter.addItems(["All pairs", "RAW+JPG", "RAW only", "JPG only", "Other files"])
+        self.pair_filter.currentIndexChanged.connect(self._populate_records)
         self.review_filter = QComboBox()
-        self.review_filter.addItems(["All review", "Qwen reviewed", "Concrete read", "Not reviewed", "Failed/retry", "Skipped"])
+        self.review_filter.addItems(["All review", "LLM-read", "Concrete read", "Not reviewed", "Failed/retry", "Skipped"])
         self.review_filter.currentIndexChanged.connect(self._populate_records)
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["Score high to low", "Label priority", "Score low to high", "Rank", "Filename A-Z"])
@@ -1625,8 +2584,10 @@ class LumaSiftWindow(QMainWindow):
         layout.addWidget(filter_label)
         layout.addWidget(self.search_edit, stretch=1)
         layout.addWidget(self.category_filter)
+        layout.addWidget(self.tone_filter)
         layout.addWidget(self.label_filter)
         layout.addWidget(self.group_filter)
+        layout.addWidget(self.pair_filter)
         layout.addWidget(self.review_filter)
         layout.addWidget(self.sort_combo)
         layout.addWidget(self.result_count_label)
@@ -1660,18 +2621,16 @@ class LumaSiftWindow(QMainWindow):
         self._show_nav_page("settings")
 
     def _show_nav_page(self, page: str) -> None:
-        page = page if page in {"main", "settings", "history", "help"} else "main"
+        page = page if page in {"main", "settings", "shortcuts", "help"} else "main"
         self.current_nav_page = page
         if hasattr(self, "main_page"):
             self.main_page.setVisible(page == "main")
         if hasattr(self, "settings_page"):
             self.settings_page.setVisible(page == "settings")
-        if hasattr(self, "history_page"):
-            self.history_page.setVisible(page == "history")
+        if hasattr(self, "shortcuts_page"):
+            self.shortcuts_page.setVisible(page == "shortcuts")
         if hasattr(self, "help_page"):
             self.help_page.setVisible(page == "help")
-        if page == "history":
-            self._refresh_history_page()
         if page == "settings" and hasattr(self, "advanced_panel"):
             self.controls_frame.setVisible(True)
             self.advanced_panel.setVisible(True)
@@ -1717,7 +2676,10 @@ class LumaSiftWindow(QMainWindow):
         processed = summary.get("processed", len(self.records)) if summary else len(self.records)
         failed = summary.get("failed", 0) if summary else 0
         visible = len(self.visible_records)
-        self.review_summary_label.setText(f"{processed} / {failed} | {visible}")
+        if self.language == "zh":
+            self.review_summary_label.setText(f"已完成：{processed} 张 | 失败：{failed} | 当前显示：{visible}")
+        else:
+            self.review_summary_label.setText(f"Done: {processed} | Failed: {failed} | Showing: {visible}")
         self._update_dashboard(summary)
 
     def _exit_review_mode(self, *, show_advanced: bool) -> None:
@@ -1733,7 +2695,10 @@ class LumaSiftWindow(QMainWindow):
             self._exit_review_mode(show_advanced=False)
         self._show_nav_page("main")
         input_dir = Path(self.input_edit.text()).expanduser()
-        output_dir = Path(self.output_edit.text()).expanduser()
+        output_text = self.output_edit.text().strip() or "./outputs/gui"
+        if not self.output_edit.text().strip():
+            self.output_edit.setText(output_text)
+        output_dir = Path(output_text).expanduser()
         if not input_dir.exists():
             QMessageBox.warning(self, self._t("missing_input_title"), str(input_dir))
             return
@@ -1744,7 +2709,13 @@ class LumaSiftWindow(QMainWindow):
         settings.input_dir = input_dir
         settings.output_dir = output_dir
         settings.ai_mode = str(self.mode_combo.currentData() or "local_only")
-        if self.detected_vision_model:
+        if hasattr(self, "vision_base_url_edit"):
+            settings.vision_api_base_url = _clean_vision_base_url(self.vision_base_url_edit.text())
+        model_override = _clean_vision_model_override(self.vision_model_edit.text()) if hasattr(self, "vision_model_edit") else ""
+        if model_override:
+            settings.vision_model = model_override
+            self.detected_vision_model = settings.vision_model
+        elif self.detected_vision_model:
             settings.vision_model = self.detected_vision_model
         settings.limit = self.limit_spin.value()
         settings.top_n_api_analysis = self.top_n_spin.value()
@@ -1773,6 +2744,9 @@ class LumaSiftWindow(QMainWindow):
                 self._t("missing_key_body"),
             )
             return
+        if not self._confirm_run_paths(input_dir, output_dir, settings):
+            self._show_nav_page("settings")
+            return
 
         self._save_preferences()
         stop_file = output_dir / "STOP_LUMASIFT"
@@ -1786,6 +2760,11 @@ class LumaSiftWindow(QMainWindow):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.status_label.setText(self._t("step_local"))
+        self.run_started_at = time.monotonic()
+        self.last_progress_at = self.run_started_at
+        self.last_progress_text = self._t("step_local")
+        self.heartbeat_phase = 0
+        self.run_heartbeat_timer.start()
         self._reset_qwen_queue_state(settings)
         self._set_grid_records([], self._t("running_grid"))
         self.detail_text.setHtml(self._empty_detail_html())
@@ -1806,21 +2785,36 @@ class LumaSiftWindow(QMainWindow):
         self.worker_thread.finished.connect(self.worker_thread.deleteLater)
         self.worker_thread.start()
 
+    def _confirm_run_paths(self, input_dir: Path, output_dir: Path, settings: Settings) -> bool:
+        mode_text = (
+            self._t("confirm_run_qwen").format(n=settings.top_n_api_analysis)
+            if settings.ai_mode == "qwen_vision"
+            else self._t("confirm_run_local")
+        )
+        body = self._t("confirm_run_body").format(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            mode=mode_text,
+        )
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(self._t("confirm_run_title"))
+        box.setText(body)
+        start_button = box.addButton(self._t("confirm_run_start"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(self._t("confirm_run_settings"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(start_button)
+        box.exec()
+        return box.clickedButton() == start_button
+
     def _analysis_thread_finished(self) -> None:
         self.worker_thread = None
         self.worker = None
         self._finish_pending_close_if_ready()
 
     def _analysis_finished(self, payload: dict) -> None:
+        self.run_heartbeat_timer.stop()
         self.records = list(payload["report"].get("records", []))
         self._merge_user_labels()
-        self.state_db.record_run(
-            run_id=str(payload["summary"].get("run_id", self.current_run_id)),
-            input_dir=self.input_edit.text(),
-            output_dir=str(self.output_dir),
-            ai_mode=str(self.mode_combo.currentData() or "local_only"),
-            summary=payload["summary"],
-        )
         self._write_current_reports()
         was_cancelled = (self.output_dir / "STOP_LUMASIFT").exists()
         self.status_label.setText(
@@ -1842,6 +2836,7 @@ class LumaSiftWindow(QMainWindow):
         self._enter_review_mode(payload["summary"])
 
     def _analysis_failed(self, message: str) -> None:
+        self.run_heartbeat_timer.stop()
         if self.review_mode:
             self._exit_review_mode(show_advanced=True)
         self.status_label.setText(self._t("failed"))
@@ -1863,7 +2858,12 @@ class LumaSiftWindow(QMainWindow):
         self.status_label.setText(self._t("checking_key"))
         self.cache_note.setText(self._t("checking_key"))
         self.key_check_thread = QThread()
-        self.key_check_worker = QwenKeyCheckWorker(keys, self.language)
+        base_url = _vision_base_url_override(self.vision_base_url_edit.text() if hasattr(self, "vision_base_url_edit") else "")
+        model_text = _clean_vision_model_override(self.vision_model_edit.text()) if hasattr(self, "vision_model_edit") else ""
+        preferred_model = model_text if model_text and model_text != self.detected_vision_model else ""
+        if hasattr(self, "vision_model_edit") and not preferred_model:
+            self.vision_model_edit.clear()
+        self.key_check_worker = VisionKeyCheckWorker(keys, self.language, base_url, preferred_model)
         self.key_check_worker.moveToThread(self.key_check_thread)
         self.key_check_thread.started.connect(self.key_check_worker.run)
         self.key_check_worker.finished.connect(self._qwen_key_check_finished)
@@ -1883,10 +2883,16 @@ class LumaSiftWindow(QMainWindow):
         except Exception:
             return []
 
-    def _qwen_key_check_finished(self, summary: str, model: str) -> None:
+    def _qwen_key_check_finished(self, summary: str, model: str, base_url: str) -> None:
+        if hasattr(self, "vision_base_url_edit"):
+            detected_base_url = _clean_vision_base_url(base_url)
+            self.vision_base_url_edit.setText(detected_base_url)
+            self.settings_store.setValue("vision_base_url", detected_base_url)
         if model:
             self.detected_vision_model = model
             self.settings_store.setValue("vision_model", model)
+            if hasattr(self, "vision_model_edit"):
+                self.vision_model_edit.setText(model)
         self.cache_note.setText(summary)
         self.status_label.setText(self._t("key_check_ok"))
         self.check_key_button.setEnabled(True)
@@ -1904,18 +2910,40 @@ class LumaSiftWindow(QMainWindow):
     def _analysis_progress(self, stage: str, current: int, total: int) -> None:
         self._update_workflow("qwen" if stage == "qwen" else "local")
         if total <= 0:
-            self.progress.setValue(0)
-            self.status_label.setText(f"{stage}: preparing...")
+            self.progress.setRange(0, 0)
+            text = f"{stage}: preparing..."
+            self.last_progress_at = time.monotonic()
+            self.last_progress_text = text
+            self.status_label.setText(text)
             return
+        if self.progress.maximum() == 0:
+            self.progress.setRange(0, 100)
         value = int((current / total) * 100)
         self.progress.setValue(max(0, min(100, value)))
         label = {
             "manifest": "Scanning files",
             "local": "Local RAW/preview analysis",
-            "qwen": "Qwen vision review",
+            "qwen": "LLM Deep Analysis",
             "done": "Done",
         }.get(stage, stage)
-        self.status_label.setText(f"{label}: {current}/{total}")
+        text = f"{label}: {current}/{total}"
+        self.last_progress_at = time.monotonic()
+        self.last_progress_text = text
+        self.status_label.setText(text)
+
+    def _run_heartbeat_tick(self) -> None:
+        if self.worker_thread is None or not self.worker_thread.isRunning():
+            self.run_heartbeat_timer.stop()
+            return
+        now = time.monotonic()
+        elapsed = max(0, int(now - self.run_started_at)) if self.run_started_at else 0
+        minutes, seconds = divmod(elapsed, 60)
+        dots = "." * ((self.heartbeat_phase % 3) + 1)
+        self.heartbeat_phase += 1
+        base = self.last_progress_text or self._t("step_local")
+        if self.last_progress_at and now - self.last_progress_at >= 10:
+            base = self._t("running_alive_hint")
+        self.status_label.setText(f"{base}{dots} {self._t('elapsed')} {minutes:02d}:{seconds:02d}")
 
     def _reset_qwen_queue_state(self, settings: Settings) -> None:
         enabled = settings.ai_mode == "qwen_vision"
@@ -1943,7 +2971,7 @@ class LumaSiftWindow(QMainWindow):
             self.qwen_queue_state.update(
                 {
                     "enabled": True,
-                    "model": str(event.get("model", self.qwen_queue_state.get("model", "Qwen"))),
+                    "model": str(event.get("model", self.qwen_queue_state.get("model", self._t("qwen")))),
                     "total": total,
                     "queued": total,
                     "running": "",
@@ -1960,7 +2988,20 @@ class LumaSiftWindow(QMainWindow):
         elif event_type == "qwen_candidate_running":
             self.qwen_queue_state["queued"] = max(0, int(self.qwen_queue_state.get("queued", 0) or 0) - 1)
             self.qwen_queue_state["running"] = str(event.get("filename") or Path(str(event.get("path", ""))).name)
-            self.qwen_queue_state["phase"] = "压缩预览 / 上传视觉分析 / 等待模型返回" if self.language == "zh" else "Compressing preview / sending vision request / waiting for model"
+            self.qwen_queue_state["phase"] = "压缩预览 / 上传 LLM 深度分析 / 等待模型返回" if self.language == "zh" else "Compressing preview / sending LLM deep-analysis request / waiting for model"
+        elif event_type == "qwen_vision_verified":
+            model = str(event.get("model") or "").strip()
+            base_url = str(event.get("base_url") or "").strip()
+            if model:
+                self.qwen_queue_state["model"] = model
+                self.detected_vision_model = model
+                if hasattr(self, "vision_model_edit"):
+                    self.vision_model_edit.setText(model)
+                self.settings_store.setValue("vision_model", model)
+            if base_url and hasattr(self, "vision_base_url_edit"):
+                self.vision_base_url_edit.setText(base_url)
+                self.settings_store.setValue("vision_base_url", base_url)
+            self.qwen_queue_state["phase"] = "视觉模型探针通过，开始深度分析" if self.language == "zh" else "Vision probe passed; starting deep analysis"
         elif event_type == "qwen_candidate_finished":
             status = str(event.get("status", "done"))
             if status == "cache-hit":
@@ -2005,7 +3046,7 @@ class LumaSiftWindow(QMainWindow):
                 hint = self._t("qwen_key_local_hint")
                 self.qwen_queue_label.setToolTip(hint)
                 self.qwen_queue_label.setText(
-                    "<span style='font-weight:900; color:#f8fafc;'>Qwen</span>"
+                    f"<span style='font-weight:900; color:#f8fafc;'>{self._escape(self._t('qwen'))}</span>"
                     f"&nbsp;&nbsp;<span style='color:#ffd400;'>! {self._escape(hint)}</span>"
                 )
                 self.qwen_queue_label.setVisible(True)
@@ -2018,7 +3059,7 @@ class LumaSiftWindow(QMainWindow):
                 self.qwen_queue_label.setVisible(False)
                 self.qwen_queue_label.setText("")
             return
-        model = self.qwen_queue_state.get("model", "Qwen")
+        model = self.qwen_queue_state.get("model", self._t("qwen"))
         running = str(self.qwen_queue_state.get("running", "") or "")
         if len(running) > 32:
             running = f"{running[:29]}..."
@@ -2042,7 +3083,7 @@ class LumaSiftWindow(QMainWindow):
         total = int(self.qwen_queue_state.get("total", 0) or 0)
         completed = int(done or 0) + int(cache or 0) + int(failed or 0) + int(cancelled or 0)
         text = (
-            "<span style='font-weight:900; color:#f8fafc;'>Qwen</span>"
+            f"<span style='font-weight:900; color:#f8fafc;'>{self._escape(self._t('qwen'))}</span>"
             f"&nbsp;&nbsp;<span style='color:#9fb0c2;'>{self._escape(str(model))}</span>"
             f"&nbsp;&nbsp;&nbsp;<span title='{labels['queued']}' style='color:#9fb0c2;'>● <b>{queued}</b></span>"
             f"&nbsp;&nbsp;<span title='{labels['running']}' style='color:#ffd400;'>▶ <b>{self._escape(running or '0')}</b></span>"
@@ -2057,7 +3098,7 @@ class LumaSiftWindow(QMainWindow):
             if cancelling:
                 phase = "正在暂停深评" if self.language == "zh" else "Pausing deep review"
             elif running:
-                phase = "压缩预览 / 上传视觉分析 / 等待模型返回" if self.language == "zh" else "Compressing preview / sending vision request / waiting for model"
+                phase = "压缩预览 / 上传 LLM 深度分析 / 等待模型返回" if self.language == "zh" else "Compressing preview / sending LLM deep-analysis request / waiting for model"
             elif completed and completed >= total and total:
                 phase = "深评完成，正在汇总结果" if self.language == "zh" else "Deep review complete; consolidating results"
             else:
@@ -2067,7 +3108,7 @@ class LumaSiftWindow(QMainWindow):
         if failed and last_error:
             text += f"&nbsp;&nbsp;<span style='color:#ff9f1c;'>{self._escape(self._t('qwen_failures_hint'))}</span>"
         self.qwen_queue_label.setToolTip(
-            f"Qwen {model}: {labels['queued']} {queued}, {labels['running']} {running or '0'}, "
+            f"{self._t('qwen')} {model}: {labels['queued']} {queued}, {labels['running']} {running or '0'}, "
             f"{labels['done']} {done}, {labels['cache']} {cache}, {labels['failed']} {failed}, "
             f"{labels['retry']} {retrying}, {labels['cancelled']} {cancelled}"
             + (f"\n\n{last_error}" if last_error else "")
@@ -2159,11 +3200,15 @@ class LumaSiftWindow(QMainWindow):
         records = list(self.records)
         query = self.search_edit.text().strip().lower() if hasattr(self, "search_edit") else ""
         category = self.category_filter.currentData() if hasattr(self, "category_filter") else "all"
+        tone_filter = self.tone_filter.currentData() if hasattr(self, "tone_filter") else "all"
         label_filter = self.label_filter.currentData() if hasattr(self, "label_filter") else "all"
         group_filter = self.group_filter.currentData() if hasattr(self, "group_filter") else "all"
+        pair_filter = self.pair_filter.currentData() if hasattr(self, "pair_filter") else "all"
         review_filter = self.review_filter.currentData() if hasattr(self, "review_filter") else "all"
         if category and category != "all":
             records = [record for record in records if str(record.get("category", "")) == category]
+        if tone_filter and tone_filter != "all":
+            records = [record for record in records if str(record.get("tone_category", "")) == str(tone_filter)]
         if label_filter and label_filter != "all":
             if label_filter == "unlabeled":
                 records = [record for record in records if not self._normalized_user_label(record)]
@@ -2174,8 +3219,22 @@ class LumaSiftWindow(QMainWindow):
                 records = [record for record in records if int(record.get("group_size", 1) or 1) <= 1 or bool(record.get("is_group_best"))]
             elif group_filter == "grouped":
                 records = [record for record in records if int(record.get("group_size", 1) or 1) > 1]
+            elif group_filter == "time":
+                records = [
+                    record
+                    for record in records
+                    if int(record.get("group_size", 1) or 1) > 1 and "time" in str(record.get("group_basis") or "")
+                ]
+            elif group_filter == "visual":
+                records = [
+                    record
+                    for record in records
+                    if int(record.get("group_size", 1) or 1) > 1 and (str(record.get("group_basis") or "visual") in {"visual", "visual_time"})
+                ]
             elif group_filter == "singletons":
                 records = [record for record in records if int(record.get("group_size", 1) or 1) <= 1]
+        if pair_filter and pair_filter != "all":
+            records = [record for record in records if str(record.get("pair_status") or "single") == str(pair_filter)]
         if review_filter and review_filter != "all":
             records = [record for record in records if self._record_matches_review_filter(record, str(review_filter))]
         if query:
@@ -2188,8 +3247,12 @@ class LumaSiftWindow(QMainWindow):
                         str(record.get("filename", "")),
                         str(record.get("path", "")),
                         str(record.get("category", "")),
+                        str(record.get("tone_category", "")),
                         str(record.get("user_label", "")),
                         str(record.get("recommended_style", "")),
+                        str(record.get("pair_status", "")),
+                        str(record.get("paired_raw_path", "")),
+                        str(record.get("paired_jpeg_path", "")),
                     ]
                 ).lower()
             ]
@@ -2216,15 +3279,17 @@ class LumaSiftWindow(QMainWindow):
     def _record_matches_review_filter(self, record: dict[str, Any], review_filter: str) -> bool:
         bucket = self._qwen_review_bucket(record)
         if review_filter == "reviewed":
-            return bucket in {"concrete", "reviewed"}
+            return bucket == "concrete"
         return bucket == review_filter
 
     def _qwen_review_bucket(self, record: dict[str, Any]) -> str:
         status = str(record.get("qwen_status") or "").strip().lower()
         source = str(record.get("analysis_source") or "").strip().lower()
         quality = str(record.get("analysis_quality") or "").strip().lower()
+        if is_current_concrete_qwen_review(record):
+            return "concrete"
         if status in {"done", "cache-hit"} or source == "qwen_vision":
-            return "concrete" if quality == "concrete" else "reviewed"
+            return "not_reviewed" if quality == "concrete" else "weak"
         if status == "failed" or status.startswith("retry"):
             return "failed"
         if status == "cancelled" or status.startswith("skipped"):
@@ -2336,12 +3401,169 @@ class LumaSiftWindow(QMainWindow):
         selected = self._selected_record_indexes()
         if not selected:
             self.detail_text.setHtml(self._empty_detail_html())
+            self._sync_crop_preview_button()
             self._update_dashboard()
             return
         record = selected[0].data(Qt.ItemDataRole.UserRole)
         self.detail_text.setHtml(self._format_record_detail_html(record, len(selected)))
+        self._sync_crop_preview_button()
         self._update_dashboard()
         self._fade_in(self.detail_text, duration=180)
+
+    def _sync_crop_preview_button(self) -> None:
+        if not hasattr(self, "crop_preview_button"):
+            return
+        selected = self._selected_record_indexes()
+        record = selected[0].data(Qt.ItemDataRole.UserRole) if selected else None
+        has_crop = isinstance(record, dict) and _record_crop_box(record) is not None
+        self.crop_preview_button.setEnabled(has_crop)
+        self.crop_preview_button.setToolTip(self._t("crop_preview_tooltip") if has_crop else self._t("crop_preview_disabled"))
+        self._sync_deep_review_selected_button()
+
+    def _open_selected_crop_preview(self) -> None:
+        selected = self._selected_record_indexes()
+        record = selected[0].data(Qt.ItemDataRole.UserRole) if selected else None
+        if not isinstance(record, dict) or _record_crop_box(record) is None:
+            QMessageBox.information(self, self._t("no_crop_box_title"), self._t("crop_preview_disabled"))
+            return
+        self._open_large_preview(selected[0])
+
+    def _sync_deep_review_selected_button(self) -> None:
+        if not hasattr(self, "deep_review_selected_button"):
+            return
+        selected = self._selected_record_indexes()
+        running = self.selected_review_thread is not None and self.selected_review_thread.isRunning()
+        self.deep_review_selected_button.setEnabled(bool(selected) and not running)
+        self.deep_review_selected_button.setToolTip(self._t("deep_review_selected_tooltip") if selected else self._t("select_first"))
+
+    def _settings_for_selected_deep_review(self) -> Settings:
+        settings = Settings.from_env()
+        output_text = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
+        settings.output_dir = Path(output_text or str(self.output_dir)).expanduser()
+        settings.ai_mode = "qwen_vision"
+        if hasattr(self, "vision_base_url_edit"):
+            settings.vision_api_base_url = _clean_vision_base_url(self.vision_base_url_edit.text())
+        model_override = _clean_vision_model_override(self.vision_model_edit.text()) if hasattr(self, "vision_model_edit") else ""
+        if model_override:
+            settings.vision_model = model_override
+        elif self.detected_vision_model:
+            settings.vision_model = self.detected_vision_model
+        keys_text = self.api_key_edit.text().strip() if hasattr(self, "api_key_edit") else ""
+        if keys_text:
+            settings.vision_api_keys = [key.strip() for key in keys_text.split(",") if key.strip()]
+        return settings
+
+    def _deep_review_selected(self) -> None:
+        selected = self._selected_record_indexes()
+        if not selected:
+            QMessageBox.information(self, self._t("no_selection"), self._t("select_first"))
+            return
+        display_record = selected[0].data(Qt.ItemDataRole.UserRole)
+        if not isinstance(display_record, dict):
+            return
+        record = self._canonical_record(display_record)
+        if not record.get("path") or not Path(str(record.get("path"))).exists():
+            QMessageBox.information(self, self._t("no_results"), str(record.get("path", "")))
+            return
+        settings = self._settings_for_selected_deep_review()
+        if not settings.vision_api_keys:
+            QMessageBox.warning(self, self._t("missing_key_title"), self._t("missing_key_body"))
+            self._show_nav_page("settings")
+            self.advanced_panel.setVisible(True)
+            self.api_key_edit.setFocus()
+            return
+        self.output_dir = settings.output_dir
+        settings.output_dir.mkdir(parents=True, exist_ok=True)
+        self._save_preferences()
+        self.deep_review_selected_button.setEnabled(False)
+        self.action_status_label.setText(self._t("deep_review_running"))
+        self.status_label.setText(self._t("deep_review_running"))
+        self.selected_review_thread = QThread()
+        self.selected_review_worker = SelectedDeepReviewWorker(record, settings, settings.output_dir)
+        self.selected_review_worker.moveToThread(self.selected_review_thread)
+        self.selected_review_thread.started.connect(self.selected_review_worker.run)
+        self.selected_review_worker.progress.connect(self._selected_review_progress)
+        self.selected_review_worker.finished.connect(self._selected_review_finished)
+        self.selected_review_worker.failed.connect(self._selected_review_failed)
+        self.selected_review_worker.finished.connect(self.selected_review_thread.quit)
+        self.selected_review_worker.failed.connect(self.selected_review_thread.quit)
+        self.selected_review_thread.finished.connect(self._selected_review_thread_finished)
+        self.selected_review_thread.finished.connect(self.selected_review_thread.deleteLater)
+        self.selected_review_thread.start()
+
+    def _selected_review_progress(self, stage: str) -> None:
+        text = self._t("deep_review_running")
+        if stage == "vision_check":
+            text = "正在确认当前模型真的能看图..." if self.language == "zh" else "Verifying the model can actually read images..."
+        elif stage == "preview":
+            text = "正在生成深评预览..." if self.language == "zh" else "Preparing preview for deep review..."
+        elif stage == "deep_review":
+            text = self._t("deep_review_running")
+        self.action_status_label.setText(text)
+        self.status_label.setText(text)
+
+    def _selected_review_finished(self, updated_record: dict[str, Any]) -> None:
+        selected_keys = self._selected_record_keys()
+        target_key = self._record_key(updated_record)
+        for index, record in enumerate(self.records):
+            if self._record_key(record) == target_key:
+                record.update(updated_record)
+                break
+        self.records = rank_records(self.records)
+        self._write_current_reports()
+        self._refresh_filter_options()
+        self._populate_records()
+        self._restore_selection_by_keys(selected_keys or {target_key})
+        self._show_selected_detail()
+        self.action_status_label.setText(self._t("deep_review_done"))
+        self.status_label.setText(self._t("deep_review_done"))
+        self._update_workflow("edit")
+
+    def _selected_review_failed(self, message: str) -> None:
+        compact = self._humanize_llm_failure_message(message)
+        compact = compact[:300] + ("..." if len(compact) > 300 else "")
+        self._mark_selected_deep_review_failed(message)
+        self.action_status_label.setText(f"{self._t('deep_review_failed')}: {compact}")
+        self.status_label.setText(self._t("deep_review_failed"))
+        self._show_selected_detail()
+        QMessageBox.warning(self, self._t("deep_review_failed"), compact)
+
+    def _mark_selected_deep_review_failed(self, message: str) -> None:
+        selected = self._selected_record_indexes()
+        if not selected:
+            return
+        display_record = selected[0].data(Qt.ItemDataRole.UserRole)
+        if not isinstance(display_record, dict):
+            return
+        record = self._canonical_record(display_record)
+        clear_qwen_review_fields(record, status="failed", reason=message)
+        self._write_current_reports()
+
+    def _humanize_llm_failure_message(self, message: str) -> str:
+        raw = str(message or "").strip()
+        lower = raw.lower()
+        if "metric-driven" in lower or "too indecisive" in lower or "too generic" in lower:
+            if self.language == "zh":
+                return (
+                    "模型返回的是指标化/模棱两可内容，不是基于照片画面的专业判断。"
+                    "这通常说明当前模型没有真正读取 image_url，或供应商把请求路由到了非视觉模型。"
+                    "请先在设置里点“检查”，让程序选择通过视觉探针的模型；未通过前不要继续烧深评 token。"
+                )
+            return (
+                "The model returned metric-driven or indecisive text instead of a visual photo read. "
+                "This usually means the provider routed the request to a non-vision model or image_url was not actually consumed."
+            )
+        if "live image-vision probe" in lower or "no suitable model" in lower or "failed the live image" in lower:
+            if self.language == "zh":
+                return "当前接口/模型没有通过真实看图探针。key 可能有效，但这个模型不能用于照片深评；请检查接口地址或换支持视觉的模型。"
+            return "The endpoint/key may be valid, but no configured model passed the live image-vision probe."
+        return raw
+
+    def _selected_review_thread_finished(self) -> None:
+        self.selected_review_worker = None
+        self.selected_review_thread = None
+        self._sync_deep_review_selected_button()
+        self._finish_pending_close_if_ready()
 
     def _first_score(self, record: dict[str, Any], *keys: str) -> float:
         for key in keys:
@@ -2387,6 +3609,23 @@ class LumaSiftWindow(QMainWindow):
             "do_not_overedit": "克制轻修",
         }.get(raw, raw.replace("_", " "))
 
+    def _display_tone_category(self, value: Any) -> str:
+        raw = str(value or "")
+        if not raw:
+            return ""
+        if self.language != "zh":
+            return raw.replace("_", " ")
+        return {
+            "monochrome_or_near_bw": "近黑白",
+            "high_contrast": "高反差",
+            "low_key": "低调暗部",
+            "high_key": "高调明亮",
+            "warm_tone": "暖调",
+            "cool_tone": "冷调",
+            "vivid_color": "高饱和",
+            "muted_color": "低饱和",
+        }.get(raw, raw.replace("_", " "))
+
     def _display_user_label(self, value: Any) -> str:
         raw = str(value or "unlabeled")
         if self.language != "zh":
@@ -2394,10 +3633,12 @@ class LumaSiftWindow(QMainWindow):
         return {"keep": "保留", "maybe": "待定", "reject": "淘汰", "unlabeled": "未标记"}.get(raw, raw)
 
     def _display_story(self, record: dict[str, Any]) -> str:
+        if str(record.get("analysis_source") or "") == "qwen_vision" and not self._is_displayable_qwen_review(record):
+            return self._local_story_summary(record)
         raw = str(record.get("story_interpretation", "") or "").strip()
         if self.language == "zh" and (not raw or raw == "Not available in local_only mode." or raw.startswith("Local pre-screen only:")):
             return self._local_story_summary(record)
-        return raw or ("Qwen review has not been run yet." if self.language != "zh" else "等待深度评审。")
+        return raw or ("LLM Deep Analysis has not been run yet." if self.language != "zh" else "等待 LLM 深度分析。")
 
     def _local_story_summary(self, record: dict[str, Any]) -> str:
         metrics = record.get("local_metrics") if isinstance(record.get("local_metrics"), dict) else {}
@@ -2405,22 +3646,30 @@ class LumaSiftWindow(QMainWindow):
         contrast = self._number(metrics.get("contrast"))
         tension = self._first_score(record, "visual_tension_score")
         editability = self._first_score(record, "editability_score", "editing_potential_score")
+        if str(record.get("qwen_status") or "").lower() == "failed":
+            failure = self._qwen_failure_message(record)
+            return (
+                "【LLM 深评失败】这不是专业深评结果。"
+                f"{failure} "
+                f"当前只保留本地技术草稿：亮度约 {brightness:.0f}、对比约 {contrast:.0f}、结构代理分 {tension:.0f}、可修潜力 {editability:.0f}。"
+                "请先检查 API/网络后重跑深评，再根据人物、动作和瞬间做最终选片。"
+            )
         parts = [
-            "本地预筛只能判断明暗、边缘密度、可修空间和技术风险，不能真正识别人、手势、情绪和决定性瞬间。",
+            "【仅本地预筛，不是专业深评】本地算法只能判断明暗、边缘密度、可修空间和技术风险；不能识别人、手势、情绪和决定性瞬间。",
             f"这张的亮度约 {brightness:.0f}、对比约 {contrast:.0f}、视觉结构代理分 {tension:.0f}、可修潜力 {editability:.0f}。",
         ]
         if tension >= 62:
-            parts.append("结构密度较高，可能存在街头层次或现场张力，建议放入 Top-N 深评确认内容是否成立。")
+            parts.append("本地结论只够把它送进深评队列；最终保留必须以选中照片深评看到的主体、动作和遮挡关系为准。")
         elif editability >= 68:
-            parts.append("文件可修空间较好，但是否有故事价值仍需要 Qwen 或人工看图判断。")
+            parts.append("文件可修空间较好，但这不是故事价值判断；先点「深评选中照片」再决定留或淘汰。")
         else:
-            parts.append("目前更像技术预筛候选，最终保留应以画面内容和人文信息为准。")
+            parts.append("目前只是一张技术预筛候选；没有视觉深评前，不应把它当成作品候选。")
         return "".join(parts)
 
     def _display_direction(self, record: dict[str, Any]) -> str:
         raw = str(record.get("best_editing_direction", "") or "").strip()
-        if self.language == "zh" and (not raw or raw == "Run qwen_vision mode for concrete artistic editing guidance."):
-            return "先点击「修图方案」生成中文参数建议；如果要判断主体关系、街拍瞬间和画面故事，再启用 Qwen 深评。"
+        if self.language == "zh" and (not raw or raw in {"Run qwen_vision mode for concrete artistic editing guidance.", "Run vision LLM deep analysis for concrete artistic editing guidance."}):
+            return "先点击“修图方案”生成中文参数建议；如果要判断主体关系、街拍瞬间和画面故事，再启用 LLM 深度分析。"
         return raw or ("Use the selected-photo editing plan for detailed parameters." if self.language != "zh" else "生成修图方案后查看具体参数。")
 
     def _localized_reasons(self, values: list[Any], *, positive: bool) -> list[str]:
@@ -2430,7 +3679,8 @@ class LumaSiftWindow(QMainWindow):
             if self.language == "zh":
                 replacements = {
                     "Local proxy detected workable tonal/detail structure.": "本地指标显示画面仍有可用的明暗和细节结构。",
-                    "Semantic story and human-documentary value require Qwen vision review.": "故事感、人物关系和人文价值需要 Qwen 视觉深评确认。",
+                    "Semantic story and human-documentary value require Qwen vision review.": "故事感、人物关系和人文价值需要 LLM 深度分析确认。",
+                    "Semantic story and human-documentary value require a vision LLM or human review.": "故事感、人物关系和人文价值需要 LLM 深度分析或人工看图确认。",
                     "Local contrast and edge structure can support a stronger documentary edit.": "本地对比和边缘结构足以支撑更有力度的纪实处理。",
                     "Moderate tonal separation leaves room for a restrained humanistic edit.": "明暗分离中等，适合做克制的人文彩色或轻纪实处理。",
                     "Brightness is in a recoverable range with usable midtone information.": "亮度处在可恢复区间，中间调仍有可用信息。",
@@ -2441,7 +3691,8 @@ class LumaSiftWindow(QMainWindow):
                     "The frame is bright; protect highlights before judging subtle subject detail.": "画面偏亮，先保护高光，再判断细节是否成立。",
                     "Highlight clipping is visible enough to constrain recovery.": "高光溢出会限制后期恢复。",
                     "Shadow clipping may hide important documentary cues.": "阴影死黑可能藏掉关键纪实线索。",
-                    "Semantic story, human relationship, and decisive moment still require Qwen or human review.": "真实故事、人物关系和决定性瞬间仍需要 Qwen 或人工看图确认。",
+                    "Semantic story, human relationship, and decisive moment still require Qwen or human review.": "真实故事、人物关系和决定性瞬间仍需要 LLM 深度分析或人工看图确认。",
+                    "Semantic story, human relationship, and decisive moment still require a vision LLM or human review.": "真实故事、人物关系和决定性瞬间仍需要 LLM 深度分析或人工看图确认。",
                     "Local proxy found enough recoverable structure for manual review.": "本地代理发现仍有可恢复结构，值得人工扫一眼。",
                     "pending vision review": "等待视觉深评",
                 }
@@ -2455,33 +3706,59 @@ class LumaSiftWindow(QMainWindow):
         score = float(record.get("final_selection_score", 0) or 0)
         category = self._escape(self._display_category(record.get("category", "")))
         style = self._escape(self._display_style(record.get("recommended_style", "")))
+        tone_category = self._escape(self._display_tone_category(record.get("tone_category", "")))
         user_label = self._escape(self._display_user_label(record.get("user_label", "") or "unlabeled"))
         filename = self._escape(str(record.get("filename", "")))
         story = self._escape(self._display_story(record))
-        direction = self._escape(self._display_direction(record))
-        crop = self._escape(str(record.get("crop_strategy", "") or ("先不裁切；进入修图方案后再给具体比例。" if self.language == "zh" else "No crop instruction recorded.")))
-        positives = self._html_list(self._localized_reasons(record.get("positive_reasons", [])[:4], positive=True), "本地指标显示仍有可修空间" if self.language == "zh" else "pending vision review")
-        negatives = self._html_list(self._localized_reasons(record.get("negative_reasons", [])[:4], positive=False), "暂无明显风险" if self.language == "zh" else "none recorded")
-        visible_evidence = self._html_list(record.get("visible_evidence", [])[:6], "")
-        subject_relationship = self._escape(str(record.get("subject_relationship", "") or ""))
-        decisive_moment = self._escape(str(record.get("decisive_moment_read", "") or ""))
-        why_this_frame = self._escape(str(record.get("why_this_frame", "") or ""))
-        avoid_overediting = self._escape(str(record.get("avoid_overediting", "") or ""))
-        params = record.get("specific_edit_parameters", {}) or {}
+        analysis_state_html = self._format_analysis_state_html(record)
+        displayable_qwen_review = self._is_displayable_qwen_review(record)
+        professional_review_html = self._format_professional_review_html(record) if displayable_qwen_review else ""
+        direction = self._escape(self._display_direction(record)) if displayable_qwen_review else self._escape("深评通过后再给具体修图方向。" if self.language == "zh" else "Run a valid deep review for editing direction.")
+        crop = self._escape(str(record.get("crop_strategy", "") or ("先不裁切；进入修图方案后再给具体比例。" if self.language == "zh" else "No crop instruction recorded."))) if displayable_qwen_review else self._escape("深评通过后再给裁切建议。" if self.language == "zh" else "Run a valid deep review for crop advice.")
+        crop_box_html = self._format_crop_box_detail_html(record) if displayable_qwen_review else ""
+        if displayable_qwen_review:
+            risk_items = self._dedupe_display_strings(
+                list(record.get("critical_flaws", []) or [])
+                + list(record.get("negative_reasons", []) or [])
+                + list(record.get("frame_failure_reasons", []) or [])
+                + [
+                    str(record.get("selection_risk") or ""),
+                    str(record.get("edit_vs_select_warning") or ""),
+                    str(record.get("subject_identity_uncertainty") or ""),
+                ]
+            )
+            positive_items = list(record.get("positive_reasons", []) or [])
+        else:
+            risk_items = []
+            positive_items = []
+        positives = self._html_list(self._localized_reasons(positive_items[:4], positive=True), "本地指标显示仍有可修空间" if self.language == "zh" else "pending vision review")
+        negatives = self._html_list(self._localized_reasons(risk_items[:6], positive=False), "未记录不可修复风险" if self.language == "zh" else "no non-fixable risks recorded")
+        visible_evidence = self._html_list(record.get("visible_evidence", [])[:6], "") if displayable_qwen_review else ""
+        subject_relationship = self._escape(str(record.get("subject_relationship", "") or "")) if displayable_qwen_review else ""
+        decisive_moment = self._escape(str(record.get("decisive_moment_read", "") or "")) if displayable_qwen_review else ""
+        why_this_frame = self._escape(str(record.get("why_this_frame", "") or "")) if displayable_qwen_review else ""
+        avoid_overediting = self._escape(str(record.get("avoid_overediting", "") or "")) if displayable_qwen_review else ""
+        params = record.get("specific_edit_parameters", {}) if displayable_qwen_review else {}
         params_rows = "".join(
             f"<tr><td>{self._escape(self._lightroom_detail_label(str(key)))}</td><td>{self._escape(str(value))}</td></tr>"
             for key, value in params.items()
         )
         if not params_rows:
             params_rows = f"<tr><td>{'参数' if self.language == 'zh' else 'Parameters'}</td><td>{'点击「修图方案」生成具体参数' if self.language == 'zh' else 'Generate an editing plan.'}</td></tr>"
-        advanced_params = record.get("advanced_lightroom_parameters")
+        advanced_params = record.get("advanced_lightroom_parameters") if displayable_qwen_review else None
         advanced_labels = record.get("advanced_lightroom_parameter_labels")
         advanced_params_html = self._format_advanced_parameters_html(advanced_params, advanced_labels, include_basic=False) if isinstance(advanced_params, dict) else ""
+        file_rows = self._format_file_metadata_rows(record)
         labels = {
             "selected": "已选" if self.language == "zh" else "Selected",
             "user_label": "标记" if self.language == "zh" else "Mark",
-            "group": "相似组" if self.language == "zh" else "Group",
+            "tone": "色调" if self.language == "zh" else "Tone",
+            "group": "分组" if self.language == "zh" else "Group",
             "best": "组内最佳" if self.language == "zh" else "best",
+            "basis": "依据" if self.language == "zh" else "basis",
+            "time_group": "时间" if self.language == "zh" else "time",
+            "visual_group": "视觉相似" if self.language == "zh" else "visual",
+            "visual_time_group": "视觉+时间" if self.language == "zh" else "visual+time",
             "story": "故事" if self.language == "zh" else "Story",
             "human": "人文" if self.language == "zh" else "Human",
             "editability": "可修" if self.language == "zh" else "Edit",
@@ -2496,6 +3773,7 @@ class LumaSiftWindow(QMainWindow):
             "moment": "瞬间" if self.language == "zh" else "Moment",
             "frame": "为什么是这张" if self.language == "zh" else "Why This Frame",
             "avoid": "别修掉" if self.language == "zh" else "Do Not Remove",
+            "file_info": "文件信息" if self.language == "zh" else "File Info",
         }
         if str(record.get("analysis_source") or "") == "local_proxy":
             labels["story"] = "结构" if self.language == "zh" else "Structure"
@@ -2508,7 +3786,19 @@ class LumaSiftWindow(QMainWindow):
                 best_text = labels["best"]
             else:
                 best_text = f"{labels['best']}: {self._escape(Path(str(record.get('group_best_path', ''))).name)}"
-            group_text = f" | {labels['group']} {self._escape(str(record.get('group_rank', '-')))}/{group_size} {best_text}"
+            basis_label = {
+                "time": labels["time_group"],
+                "visual": labels["visual_group"],
+                "visual_time": labels["visual_time_group"],
+            }.get(str(record.get("group_basis") or ""), str(record.get("group_basis") or ""))
+            basis_text = f" {labels['basis']}: {self._escape(basis_label)}" if basis_label else ""
+            time_span = record.get("group_time_span_seconds")
+            if time_span not in (None, ""):
+                try:
+                    basis_text += f" {float(time_span):.0f}s"
+                except (TypeError, ValueError):
+                    pass
+            group_text = f" | {labels['group']} {self._escape(str(record.get('group_rank', '-')))}/{group_size} {best_text}{basis_text}"
         if str(record.get("analysis_source") or "") == "local_proxy":
             metrics = record.get("local_metrics") if isinstance(record.get("local_metrics"), dict) else {}
             story_score = self._first_score(record, "visual_tension_score")
@@ -2526,27 +3816,31 @@ class LumaSiftWindow(QMainWindow):
               <td><span class="rank">#{self._escape(str(record.get("rank", "-")))}</span><h2>{filename}</h2></td>
               <td class="score-cell">{score:.1f}</td>
             </tr></table>
-            <p class="meta">{labels["selected"]} {selected_count} | {category} | {style} | {labels["user_label"]}: {user_label}{group_text}</p>
+            <p class="meta">{labels["selected"]} {selected_count} | {category} | {style}{f' | {labels["tone"]}: {tone_category}' if tone_category else ''} | {labels["user_label"]}: {user_label}{group_text}</p>
             <table class="metrics"><tr>
               <td><b>{story_score:.0f}</b><br><span>{labels["story"]}</span></td>
               <td><b>{human_score:.0f}</b><br><span>{labels["human"]}</span></td>
               <td><b>{editability_score:.0f}</b><br><span>{labels["editability"]}</span></td>
             </tr></table>
           </div>
+          {analysis_state_html}
+          {professional_review_html}
           <h3>{labels["story_read"]}</h3>
           <p>{story}</p>
+          {f'<h3>{labels["file_info"]}</h3><table>{file_rows}</table>' if file_rows else ''}
           {f'<h3>{labels["evidence"]}</h3>{visible_evidence}' if visible_evidence else ''}
           {f'<h3>{labels["relationship"]}</h3><p>{subject_relationship}</p>' if subject_relationship else ''}
           {f'<h3>{labels["moment"]}</h3><p>{decisive_moment}</p>' if decisive_moment else ''}
           {f'<h3>{labels["frame"]}</h3><p>{why_this_frame}</p>' if why_this_frame else ''}
-          <h3>{labels["why"]}</h3>
-          {positives}
           <h3>{labels["risks"]}</h3>
           {negatives}
+          <h3>{labels["why"]}</h3>
+          {positives}
           <h3>{labels["direction"]}</h3>
           <p>{direction}</p>
           <h3>{labels["crop"]}</h3>
           <p>{crop}</p>
+          {crop_box_html}
           <h3>{labels["params"]}</h3>
           <table>{params_rows}</table>
           {advanced_params_html}
@@ -2554,6 +3848,138 @@ class LumaSiftWindow(QMainWindow):
         </div>
         </body></html>
         """
+
+    def _format_analysis_state_html(self, record: dict[str, Any]) -> str:
+        source = str(record.get("analysis_source") or "")
+        qwen_status = str(record.get("qwen_status") or "").lower()
+        quality = str(record.get("analysis_quality") or "")
+        if qwen_status == "failed":
+            title = "深评失败：当前不是专业摄影判断" if self.language == "zh" else "Deep review failed"
+            body = (
+                f"{self._qwen_failure_message(record)} 下面只显示本地技术草稿；不要据此判断人物关系、决定性瞬间或作品价值。"
+                if self.language == "zh"
+                else f"{self._qwen_failure_message(record)} The detail below is only a local technical draft."
+            )
+            return f'<div class="analysis-state failed"><b>{self._escape(title)}</b><p>{self._escape(body)}</p></div>'
+        if source != "qwen_vision":
+            title = "仅本地预筛：请先深评选中照片" if self.language == "zh" else "Local pre-screen only"
+            body = (
+                "这里的分数来自明暗、对比、边缘密度和可修空间，不能替代对人物、手势、情绪、遮挡和构图关系的阅读。"
+                if self.language == "zh"
+                else "Scores here come from tonal and structure proxies, not a semantic photo read."
+            )
+            return f'<div class="analysis-state local"><b>{self._escape(title)}</b><p>{self._escape(body)}</p></div>'
+        prompt_version = str(record.get("qwen_prompt_version") or "")
+        if prompt_version != QWEN_STORY_PROMPT_VERSION:
+            title = "旧版深评：建议重跑选中照片深评" if self.language == "zh" else "Stale deep review"
+            body = (
+                f"这条结果来自 {prompt_version or '未知旧版'}，当前专业校验已升级到 {QWEN_STORY_PROMPT_VERSION}；旧报告可能偏指标化或不够有结论。"
+                if self.language == "zh"
+                else f"This result came from {prompt_version or 'an unknown old prompt'}; the current review prompt is {QWEN_STORY_PROMPT_VERSION}."
+            )
+            return f'<div class="analysis-state weak"><b>{self._escape(title)}</b><p>{self._escape(body)}</p></div>'
+        if quality != "concrete":
+            title = "深评返回不合格：请重跑选中照片深评" if self.language == "zh" else "Weak deep review"
+            body = (
+                "模型返回了部分信息，但没有形成可用的照片内容阅读；这条结果已降级，不应作为保留/淘汰依据。"
+                if self.language == "zh"
+                else "The model returned partial visual information, but the evidence chain is incomplete."
+            )
+            return f'<div class="analysis-state weak"><b>{self._escape(title)}</b><p>{self._escape(body)}</p></div>'
+        return ""
+
+    def _is_displayable_qwen_review(self, record: dict[str, Any]) -> bool:
+        return is_current_concrete_qwen_review(record)
+
+    def _qwen_failure_message(self, record: dict[str, Any]) -> str:
+        errors = record.get("errors")
+        if isinstance(errors, list):
+            for item in reversed(errors):
+                text = str(item)
+                if "qwen_vision_failed:" in text:
+                    return self._humanize_llm_failure_message(text.split("qwen_vision_failed:", 1)[1].strip())
+                if text.strip():
+                    return self._humanize_llm_failure_message(text.strip())
+        return "LLM 深评没有成功返回可用结果。" if self.language == "zh" else "LLM Deep Analysis did not return a usable result."
+
+    def _format_professional_review_html(self, record: dict[str, Any]) -> str:
+        if str(record.get("qwen_status") or "").lower() == "failed":
+            return ""
+        review = record.get("professional_review")
+        if not isinstance(review, dict):
+            return ""
+        field_order = [
+            ("editorial_summary", "编辑总评" if self.language == "zh" else "Editorial Read"),
+            ("story_read", "故事与人文价值" if self.language == "zh" else "Story Value"),
+            ("composition_read", "构图判断" if self.language == "zh" else "Composition"),
+            ("selection_logic", "选片逻辑" if self.language == "zh" else "Selection Logic"),
+            ("editing_logic", "后期逻辑" if self.language == "zh" else "Editing Logic"),
+            ("final_recommendation", "最终建议" if self.language == "zh" else "Recommendation"),
+        ]
+        rows = []
+        for key, label in field_order:
+            value = str(review.get(key) or "").strip()
+            if value:
+                rows.append(f"<h4>{self._escape(label)}</h4><p>{self._escape(value)}</p>")
+        if not rows:
+            return ""
+        title = "专业深评" if self.language == "zh" else "Professional Review"
+        return f'<div class="professional-review"><h3>{self._escape(title)}</h3>{"".join(rows)}</div>'
+
+    def _format_crop_box_detail_html(self, record: dict[str, Any]) -> str:
+        crop_box = _record_crop_box(record)
+        if not crop_box:
+            return ""
+        reason = self._escape(_record_crop_reason(record))
+        left = crop_box["x"] * 100
+        top = crop_box["y"] * 100
+        right = (crop_box["x"] + crop_box["width"]) * 100
+        bottom = (crop_box["y"] + crop_box["height"]) * 100
+        if self.language == "zh":
+            label = "预览裁切框"
+            position = f"左 {left:.0f}% / 上 {top:.0f}% / 右 {right:.0f}% / 下 {bottom:.0f}%"
+            note = "双击照片打开大图预览可直接看到裁切框。"
+        else:
+            label = "Preview crop box"
+            position = f"left {left:.0f}% / top {top:.0f}% / right {right:.0f}% / bottom {bottom:.0f}%"
+            note = "Double-click the photo to see the crop overlay in the large preview."
+        reason_html = f"<br>{reason}" if reason else ""
+        return f'<p class="crop-note"><b>{label}:</b> {self._escape(position)}{reason_html}<br><span>{self._escape(note)}</span></p>'
+
+    def _format_file_metadata_rows(self, record: dict[str, Any]) -> str:
+        rows: list[tuple[str, Any]] = []
+        if record.get("pair_status"):
+            pair_label = {
+                "raw_jpeg_pair": "RAW+JPG",
+                "raw_only": "RAW only",
+                "jpeg_only": "JPG only",
+                "single": "single",
+            }.get(str(record.get("pair_status")), str(record.get("pair_status")))
+            rows.append(("配对" if self.language == "zh" else "Pair", pair_label))
+        if record.get("paired_raw_path"):
+            rows.append(("RAW", Path(str(record.get("paired_raw_path"))).name))
+        if record.get("paired_jpeg_path"):
+            rows.append(("JPG", Path(str(record.get("paired_jpeg_path"))).name))
+        exif = record.get("exif") if isinstance(record.get("exif"), dict) else {}
+        exif_labels = {
+            "camera_make": "品牌" if self.language == "zh" else "Make",
+            "camera_model": "机身" if self.language == "zh" else "Camera",
+            "lens": "镜头" if self.language == "zh" else "Lens",
+            "shutter_speed": "快门" if self.language == "zh" else "Shutter",
+            "aperture": "光圈" if self.language == "zh" else "Aperture",
+            "iso": "ISO",
+            "focal_length": "焦距" if self.language == "zh" else "Focal",
+            "date_time_original": "时间" if self.language == "zh" else "Time",
+            "date_time": "时间" if self.language == "zh" else "Time",
+            "raw_preview_source": "RAW预览" if self.language == "zh" else "RAW Preview",
+        }
+        seen: set[str] = set()
+        for key in ("camera_make", "camera_model", "lens", "shutter_speed", "aperture", "iso", "focal_length", "date_time_original", "date_time", "raw_preview_source"):
+            if key in seen or not exif.get(key):
+                continue
+            rows.append((exif_labels.get(key, key), exif.get(key)))
+            seen.add(key)
+        return "".join(f"<tr><td>{self._escape(str(label))}</td><td>{self._escape(str(value))}</td></tr>" for label, value in rows)
 
     def _generate_selected_advice(self) -> None:
         if not self.records:
@@ -2581,6 +4007,7 @@ class LumaSiftWindow(QMainWindow):
             QMessageBox.information(self, self._t("no_selection"), self._t("select_first"))
             return
         payload = build_selected_editing_advice(records_for_advice, selected_ranks=selected_ranks, language=self.language)
+        self._merge_advice_payload_to_records(payload)
         json_path = self.output_dir / "selected_editing_advice.json"
         md_path = self.output_dir / "selected_editing_advice.md"
         write_json_report(json_path, payload)
@@ -2588,13 +4015,38 @@ class LumaSiftWindow(QMainWindow):
         self.detail_text.setHtml(self._format_advice_html(payload))
         self.status_label.setText(str(md_path))
         self._update_workflow("edit")
+        self._sync_crop_preview_button()
         self._fade_in(self.detail_text)
+
+    def _merge_advice_payload_to_records(self, payload: dict[str, Any]) -> None:
+        items = payload.get("selected_editing_advice", [])
+        if not isinstance(items, list):
+            return
+        by_rank = {self._rank_for_advice(record): record for record in self.records if self._rank_for_advice(record) is not None}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            rank = self._rank_for_advice(item)
+            record = by_rank.get(rank)
+            if record is None:
+                continue
+            crop_plan = item.get("crop_plan")
+            if isinstance(crop_plan, dict):
+                record["crop_plan"] = crop_plan
+                editing_plan = record.get("editing_plan")
+                if not isinstance(editing_plan, dict):
+                    editing_plan = {}
+                    record["editing_plan"] = editing_plan
+                editing_plan["crop_plan"] = crop_plan
+            if item.get("specific_lightroom_parameters"):
+                record["specific_edit_parameters"] = item.get("specific_lightroom_parameters")
 
     def _mark_selected(self, label: str) -> None:
         selected_indexes = self._selected_record_indexes()
         if not selected_indexes:
             QMessageBox.information(self, self._t("no_selection"), self._t("select_first"))
             return
+        label_value = normalized_user_label(label) or None
         changed = 0
         changed_rows: list[int] = []
         changed_keys: set[str] = set()
@@ -2603,14 +4055,14 @@ class LumaSiftWindow(QMainWindow):
             if not isinstance(display_record, dict) or not display_record.get("path"):
                 continue
             record = self._canonical_record(display_record)
-            record["user_label"] = label
-            display_record["user_label"] = label
+            record["user_label"] = label_value or ""
+            display_record["user_label"] = label_value or ""
             apply_user_feedback_fields(record)
             apply_user_feedback_fields(display_record)
             changed_keys.add(self._record_key(record))
             self.state_db.set_user_label(
                 path=record["path"],
-                label=label,
+                label=label_value,
                 run_id=self.current_run_id or None,
                 rank=int(record.get("rank", 0) or 0),
                 score=float(record.get("final_selection_score", 0) or 0),
@@ -2628,7 +4080,113 @@ class LumaSiftWindow(QMainWindow):
                 self.photo_model.refresh_row(row)
         self._show_selected_detail()
         self._update_dashboard()
-        self.status_label.setText(f"{changed} -> {self._t(label)}")
+        self.status_label.setText(f"{changed} -> {self._t(label_value) if label_value else self._t('unmark')}")
+
+    def _mark_keyboard_selection(self, label: str) -> None:
+        if self.photo_model is not None and not self._selected_record_indexes() and self.photo_model.records:
+            index = self.photo_list.currentIndex()
+            if not index.isValid() or not index.data(Qt.ItemDataRole.UserRole):
+                index = self.photo_model.index(0, 0)
+            self.photo_list.selectionModel().select(
+                index,
+                QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+            )
+            self.photo_list.setCurrentIndex(index)
+        self._mark_selected(label)
+
+    def _toggle_keyboard_mark(self) -> None:
+        selected = self._selected_record_indexes()
+        if not selected:
+            self._mark_keyboard_selection("keep")
+            return
+        record = selected[0].data(Qt.ItemDataRole.UserRole)
+        current_label = normalized_user_label(record.get("user_label", "")) if isinstance(record, dict) else ""
+        self._mark_keyboard_selection("" if current_label else "keep")
+
+    def _select_all_visible_records(self) -> None:
+        if self.photo_model is None or self.photo_list.selectionModel() is None or not self.photo_model.records:
+            return
+        selection_model = self.photo_list.selectionModel()
+        selection_model.clearSelection()
+        for row in range(self.photo_model.rowCount()):
+            selection_model.select(
+                self.photo_model.index(row, 0),
+                QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+            )
+        first = self.photo_model.index(0, 0)
+        if first.isValid():
+            selection_model.setCurrentIndex(first, QItemSelectionModel.SelectionFlag.NoUpdate)
+        self._show_selected_detail()
+
+    def _invert_visible_selection(self) -> None:
+        if self.photo_model is None or self.photo_list.selectionModel() is None or not self.photo_model.records:
+            return
+        selection_model = self.photo_list.selectionModel()
+        first_selected: QModelIndex | None = None
+        for row in range(self.photo_model.rowCount()):
+            index = self.photo_model.index(row, 0)
+            command = QItemSelectionModel.SelectionFlag.Deselect if selection_model.isSelected(index) else QItemSelectionModel.SelectionFlag.Select
+            selection_model.select(index, command | QItemSelectionModel.SelectionFlag.Rows)
+            if command == QItemSelectionModel.SelectionFlag.Select and first_selected is None:
+                first_selected = index
+        if first_selected is not None:
+            selection_model.setCurrentIndex(first_selected, QItemSelectionModel.SelectionFlag.NoUpdate)
+        self._show_selected_detail()
+
+    def _shortcut_event_code(self, event: Any) -> int:
+        modifier_mask = (
+            Qt.KeyboardModifier.ControlModifier.value
+            | Qt.KeyboardModifier.ShiftModifier.value
+            | Qt.KeyboardModifier.AltModifier.value
+        )
+        return int(event.key()) | (event.modifiers().value & modifier_mask)
+
+    def _shortcut_action_for_code(self, code: int) -> str | None:
+        for action in SHORTCUT_ACTIONS:
+            if int(self.shortcut_keys.get(action, DEFAULT_SHORTCUT_KEYS[action])) == int(code):
+                return action
+        return None
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt API
+        if event.type() == QEvent.Type.KeyPress and isinstance(watched, QWidget) and (watched is self or self.isAncestorOf(watched)) and self._handle_shortcut_event(event):
+            return True
+        return super().eventFilter(watched, event)
+
+    def _handle_shortcut_event(self, event: Any) -> bool:
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QTextEdit, QComboBox, QSpinBox, QCheckBox)):
+            return False
+        action = self._shortcut_action_for_code(self._shortcut_event_code(event))
+        if action == "keep":
+            self._mark_keyboard_selection("keep")
+            event.accept()
+            return True
+        if action == "reject":
+            self._mark_keyboard_selection("reject")
+            event.accept()
+            return True
+        if action == "toggle_mark":
+            self._toggle_keyboard_mark()
+            event.accept()
+            return True
+        if action == "maybe":
+            self._mark_keyboard_selection("maybe")
+            event.accept()
+            return True
+        if action == "select_all":
+            self._select_all_visible_records()
+            event.accept()
+            return True
+        if action == "invert_selection":
+            self._invert_visible_selection()
+            event.accept()
+            return True
+        return False
+
+    def keyPressEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        if self._handle_shortcut_event(event):
+            return
+        super().keyPressEvent(event)
 
     def _cancel_analysis(self, *, close_after_stop: bool = False) -> None:
         if close_after_stop:
@@ -2669,18 +4227,117 @@ class LumaSiftWindow(QMainWindow):
         except Exception:  # noqa: BLE001 - this is only a UI hint.
             return False
 
+    def _set_attention(self, widget: QWidget | None, enabled: bool) -> None:
+        if widget is None:
+            return
+        widget.setProperty("attention", "true" if enabled else "false")
+        style = widget.style()
+        style.unpolish(widget)
+        style.polish(widget)
+        widget.update()
+
+    def _refresh_setup_attention(self) -> None:
+        if not hasattr(self, "input_edit"):
+            return
+        input_missing = not self.input_edit.text().strip() or not Path(self.input_edit.text().strip()).exists()
+        qwen_enabled = hasattr(self, "mode_combo") and (self.mode_combo.currentData() or self.mode_combo.currentText()) == "qwen_vision"
+        llm_missing_key = qwen_enabled and not self._has_configured_qwen_keys()
+        self._set_attention(self.input_edit, input_missing)
+        self._set_attention(self.output_edit, False)
+        self._set_attention(self.api_key_edit if hasattr(self, "api_key_edit") else None, llm_missing_key)
+        if hasattr(self, "cache_note"):
+            hints: list[str] = []
+            if input_missing:
+                hints.append(self._t("input_missing_hint"))
+            if llm_missing_key:
+                hints.append(self._t("llm_setup_missing_hint"))
+            if hints:
+                self.cache_note.setText(" ".join(hints))
+                self._set_attention(self.cache_note, True)
+            else:
+                self.cache_note.setText(self._t("cache_note") if qwen_enabled else self._t("local_mode_hint"))
+                self._set_attention(self.cache_note, False)
+
     def _sync_mode_controls(self) -> None:
         qwen_enabled = (self.mode_combo.currentData() or self.mode_combo.currentText()) == "qwen_vision"
         self.top_n_spin.setEnabled(qwen_enabled)
         self.api_key_edit.setEnabled(True)
+        if hasattr(self, "vision_base_url_edit"):
+            self.vision_base_url_edit.setEnabled(qwen_enabled)
+        if hasattr(self, "vision_model_edit"):
+            self.vision_model_edit.setEnabled(qwen_enabled)
         self.show_key_checkbox.setEnabled(True)
         self.save_keys_checkbox.setEnabled(True)
-        if hasattr(self, "cache_note"):
-            self.cache_note.setText(self._t("cache_note") if qwen_enabled else self._t("qwen_key_local_hint"))
+        self._refresh_setup_attention()
         self._update_workflow("qwen" if qwen_enabled else "import")
         self._render_qwen_queue_state()
 
+    def _load_shortcuts(self) -> None:
+        try:
+            version = int(self.settings_store.value("shortcuts_version", 0))
+        except (TypeError, ValueError):
+            version = 0
+        if version < 2:
+            self.shortcut_keys = dict(DEFAULT_SHORTCUT_KEYS)
+            self._save_shortcuts()
+            return
+        loaded: dict[str, int] = {}
+        used: set[int] = set()
+        for action in SHORTCUT_ACTIONS:
+            default = DEFAULT_SHORTCUT_KEYS[action]
+            try:
+                key_code = int(self.settings_store.value(f"shortcut_{action}", default))
+            except (TypeError, ValueError):
+                key_code = default
+            allowed = {code for _label, code in SHORTCUT_KEY_CHOICES}
+            if key_code not in allowed or key_code in used:
+                key_code = default
+            if key_code in used:
+                key_code = next(code for _label, code in SHORTCUT_KEY_CHOICES if code not in used)
+            loaded[action] = key_code
+            used.add(key_code)
+        self.shortcut_keys = loaded
+        self._sync_shortcut_combos()
+
+    def _save_shortcuts(self) -> None:
+        self.settings_store.setValue("shortcuts_version", 3)
+        for action, key_code in self.shortcut_keys.items():
+            self.settings_store.setValue(f"shortcut_{action}", int(key_code))
+        self._sync_shortcut_combos()
+
+    def _sync_shortcut_combos(self) -> None:
+        for action, combo in getattr(self, "shortcut_combos", {}).items():
+            combo.blockSignals(True)
+            index = combo.findData(int(self.shortcut_keys.get(action, DEFAULT_SHORTCUT_KEYS[action])))
+            combo.setCurrentIndex(index if index >= 0 else 0)
+            combo.blockSignals(False)
+
+    def _shortcut_combo_changed(self, action: str) -> None:
+        combo = self.shortcut_combos.get(action)
+        if combo is None:
+            return
+        new_key = int(combo.currentData())
+        old_key = int(self.shortcut_keys.get(action, DEFAULT_SHORTCUT_KEYS[action]))
+        for other_action, other_key in list(self.shortcut_keys.items()):
+            if other_action != action and int(other_key) == new_key:
+                self.shortcut_keys[other_action] = old_key
+        self.shortcut_keys[action] = new_key
+        self._save_shortcuts()
+        self.status_label.setText(self._t("shortcuts_saved"))
+
+    def _reset_shortcuts_to_defaults(self) -> None:
+        self.shortcut_keys = dict(DEFAULT_SHORTCUT_KEYS)
+        self._save_shortcuts()
+        self.status_label.setText(self._t("shortcuts_reset_done"))
+
     def _load_preferences(self) -> None:
+        stored_theme = str(self.settings_store.value("theme", self.theme))
+        self.theme = stored_theme if stored_theme in THEME_VALUES else "dark"
+        if hasattr(self, "theme_combo"):
+            self.theme_combo.blockSignals(True)
+            theme_index = self.theme_combo.findData(self.theme)
+            self.theme_combo.setCurrentIndex(theme_index if theme_index >= 0 else 0)
+            self.theme_combo.blockSignals(False)
         self.input_edit.setText(str(self.settings_store.value("input_dir", "D:/DCIM")))
         self.output_edit.setText(str(self.settings_store.value("output_dir", "./outputs/gui")))
         self.output_dir = Path(self.output_edit.text())
@@ -2688,13 +4345,20 @@ class LumaSiftWindow(QMainWindow):
         self.top_n_spin.setValue(int(self.settings_store.value("top_n", 5)))
         self.selected_top_spin.setValue(int(self.settings_store.value("selected_top", 10)))
         self.display_limit_spin.setValue(int(self.settings_store.value("display_limit", 300)))
-        self.detected_vision_model = str(self.settings_store.value("vision_model", self.detected_vision_model or "qwen3.6-plus"))
+        stored_vision_model = _clean_vision_model_override(self.settings_store.value("vision_model", self.detected_vision_model or "qwen3.6-plus"))
+        self.detected_vision_model = stored_vision_model or "qwen3.6-plus"
+        if hasattr(self, "vision_base_url_edit"):
+            stored_base_url = self.settings_store.value("vision_base_url", "")
+            self.vision_base_url_edit.setText(_vision_base_url_override(stored_base_url))
+        if hasattr(self, "vision_model_edit"):
+            self.vision_model_edit.setText("" if stored_vision_model == "qwen3.6-plus" else stored_vision_model)
         mode = str(self.settings_store.value("mode", "local_only"))
         mode_index = self.mode_combo.findData(mode if mode in {"local_only", "qwen_vision"} else "local_only")
         self.mode_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
         saved_keys = str(self.settings_store.value("api_keys", ""))
         self.api_key_edit.setText(saved_keys)
         self.save_keys_checkbox.setChecked(bool(saved_keys))
+        self._load_shortcuts()
         self._sync_mode_controls()
 
     def _save_preferences(self) -> None:
@@ -2705,11 +4369,18 @@ class LumaSiftWindow(QMainWindow):
         self.settings_store.setValue("selected_top", self.selected_top_spin.value())
         self.settings_store.setValue("display_limit", self.display_limit_spin.value())
         self.settings_store.setValue("mode", self.mode_combo.currentData() or "local_only")
+        self.settings_store.setValue("theme", self.theme)
+        if hasattr(self, "vision_base_url_edit"):
+            self.settings_store.setValue("vision_base_url", _clean_vision_base_url(self.vision_base_url_edit.text()))
+        model_override = _clean_vision_model_override(self.vision_model_edit.text()) if hasattr(self, "vision_model_edit") else ""
+        if model_override:
+            self.detected_vision_model = model_override
         self.settings_store.setValue("vision_model", self.detected_vision_model or "qwen3.6-plus")
         if self.save_keys_checkbox.isChecked():
             self.settings_store.setValue("api_keys", self.api_key_edit.text())
         else:
             self.settings_store.remove("api_keys")
+        self._save_shortcuts()
 
     def _merge_user_labels(self) -> None:
         labels = self.state_db.load_labels(str(record.get("path", "")) for record in self.records if record.get("path"))
@@ -2751,7 +4422,7 @@ class LumaSiftWindow(QMainWindow):
         return rank if rank > 0 else None
 
     def _has_qwen_review(self, record: dict[str, Any]) -> bool:
-        return self._qwen_review_bucket(record) in {"concrete", "reviewed"}
+        return self._qwen_review_bucket(record) == "concrete"
 
     def _default_advice_ranks(self, pool: list[dict[str, Any]] | None = None) -> list[int]:
         candidates = list(pool if pool is not None else self._filtered_records())
@@ -2778,95 +4449,6 @@ class LumaSiftWindow(QMainWindow):
             os.startfile(path)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, self._t("failed"), str(exc))
-
-    def _open_run_history(self) -> None:
-        self._show_nav_page("history")
-
-    def _refresh_history_page(self) -> None:
-        if not hasattr(self, "history_table"):
-            return
-        runs = self.state_db.list_runs(limit=50)
-        headers = (
-            ["时间", "模式", "照片", "完成", "失败", "输出", "状态"]
-            if self.language == "zh"
-            else ["Time", "Mode", "Photos", "Done", "Failed", "Output", "State"]
-        )
-        self.history_table.setHorizontalHeaderLabels(headers)
-        self.history_table.setRowCount(len(runs))
-        for row, run in enumerate(runs):
-            output_dir = Path(str(run.get("output_dir", "")))
-            report_path = output_dir / "report.json"
-            available = output_dir.exists() and report_path.exists()
-            values = [
-                time.strftime("%Y-%m-%d %H:%M", time.localtime(int(run.get("created_at", 0) or 0))),
-                str(run.get("ai_mode", "")),
-                str(run.get("scanned", 0)),
-                str(run.get("processed", 0)),
-                str(run.get("failed", 0)),
-                str(output_dir),
-                ("可载入" if self.language == "zh" else "Ready") if available else ("缺失" if self.language == "zh" else "Missing"),
-            ]
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setData(Qt.ItemDataRole.UserRole, run)
-                if not available:
-                    item.setForeground(QColor("#ff9f1c"))
-                self.history_table.setItem(row, column, item)
-        self.history_table.resizeColumnsToContents()
-        if runs:
-            self.history_table.selectRow(0)
-
-    def _selected_history_run(self) -> dict[str, Any] | None:
-        if not hasattr(self, "history_table"):
-            return None
-        row = self.history_table.currentRow()
-        if row < 0:
-            return None
-        item = self.history_table.item(row, 0)
-        run = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
-        return run if isinstance(run, dict) else None
-
-    def _load_selected_history_run(self) -> None:
-        run = self._selected_history_run()
-        if run:
-            self._restore_history_run(run)
-
-    def _open_selected_history_output(self) -> None:
-        run = self._selected_history_run()
-        if not run:
-            return
-        self._open_path(Path(str(run.get("output_dir", ""))))
-
-    def _restore_history_run(self, run: dict[str, Any]) -> None:
-        output_dir = Path(str(run.get("output_dir", "")))
-        report_path = output_dir / "report.json"
-        if not report_path.exists():
-            QMessageBox.information(self, self._t("run_history"), self._t("missing_run"))
-            return
-        try:
-            report = json.loads(report_path.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001 - broken historical reports should not crash the GUI.
-            QMessageBox.warning(self, self._t("failed"), str(exc))
-            return
-        self.output_dir = output_dir
-        self.output_edit.setText(str(output_dir))
-        self.input_edit.setText(str(run.get("input_dir", "")))
-        mode_index = self.mode_combo.findData(str(run.get("ai_mode", "local_only")))
-        if mode_index >= 0:
-            self.mode_combo.setCurrentIndex(mode_index)
-        self.current_run_id = str(run.get("run_id", ""))
-        self.records = list(report.get("records", []))
-        self._merge_user_labels()
-        self._refresh_filter_options()
-        self._populate_records()
-        self._enter_review_mode(
-            {
-                "processed": int(run.get("processed", len(self.records)) or len(self.records)),
-                "failed": int(run.get("failed", 0) or 0),
-            }
-        )
-        self.status_label.setText(self._t("done"))
-        self._fade_in(self.photo_list)
 
     def _apply_shadow(self, widget: QWidget, *, blur: int, y: int, alpha: int) -> None:
         shadow = QGraphicsDropShadowEffect(widget)
@@ -2906,6 +4488,9 @@ class LumaSiftWindow(QMainWindow):
             step.setProperty("state", state)
             step.style().unpolish(step)
             step.style().polish(step)
+            state_label = self.workflow_state_labels.get(key)
+            if state_label is not None:
+                state_label.setText(self._t(f"workflow_{state}"))
 
     def _update_dashboard(self, summary: dict[str, Any] | None = None) -> None:
         scanned = summary.get("scanned", len(self.records)) if summary else len(self.records)
@@ -2933,7 +4518,7 @@ class LumaSiftWindow(QMainWindow):
             body="选目录、跑分析、再多选生成修图方案。" if self.language == "zh" else "Choose a folder, run analysis, then multi-select photos for editing plans.",
             step1="选择照片目录" if self.language == "zh" else "Choose a photo folder",
             step2="本地快速初筛" if self.language == "zh" else "Run local pre-score",
-            step3="高价值候选再交给 Qwen" if self.language == "zh" else "Use Qwen for high-value candidates",
+            step3="高价值候选再交给 LLM 深度分析" if self.language == "zh" else "Use LLM Deep Analysis for high-value candidates",
         )
 
     def _help_page_html(self) -> str:
@@ -2948,31 +4533,31 @@ class LumaSiftWindow(QMainWindow):
                   <tr>
                     <td>1 导入照片目录</td><td class="arrow">-&gt;</td>
                     <td>2 本地初筛</td><td class="arrow">-&gt;</td>
-                    <td>3 Qwen 深评 Top-N</td><td class="arrow">-&gt;</td>
+                    <td>3 LLM深度分析 Top-N</td><td class="arrow">-&gt;</td>
                     <td>4 人工标记与筛选</td><td class="arrow">-&gt;</td>
                     <td>5 生成修图方案</td>
                   </tr>
                 </table>
-                <p><span class="warn">核心原则：</span>本地模型先做便宜、快速、隐私友好的技术与结构预筛；真正涉及人物关系、决定性瞬间、故事价值和可编辑方向的判断，优先看 Qwen 深评或人工看图。</p>
+                <p><span class="warn">核心原则：</span>本地模型先做便宜、快速、隐私友好的技术与结构预筛；真正涉及人物关系、决定性瞬间、故事价值和可编辑方向的判断，优先看 LLM深度分析或人工看图。</p>
               </div>
 
               <div class="advice-card">
                 <h2>首次使用：从一组照片跑到可交付结果</h2>
                 <table>
                   <tr><td><b>1. 进入设置</b></td><td>点击顶部 <span class="kbd">设置</span>，选择照片目录和输出目录。照片目录可以是 JPG、PNG、常见 RAW 文件混合目录；RAW 原片不会上传。</td></tr>
-                  <tr><td><b>2. 选择模式</b></td><td><span class="kbd">本地</span> 只做本机初筛；<span class="kbd">Qwen</span> 会先本地筛，再把 Top-N 压缩预览交给视觉模型深评。要判断故事、人文和瞬间，建议使用 Qwen 模式。</td></tr>
-                  <tr><td><b>3. 设置数量</b></td><td><span class="kbd">扫描</span> 控制最多处理多少张；<span class="kbd">Qwen Top-N</span> 控制深评候选数量；<span class="kbd">修图 Top-N</span> 控制没手动选图时默认生成多少张修图方案。</td></tr>
-                  <tr><td><b>4. 填 key 并检查</b></td><td>填入 Qwen / NewCoin API key 后点 <span class="kbd">检查</span>。界面会显示余额与可用视觉模型。密钥只应保存在本机设置或环境变量，不要写入项目文件。</td></tr>
-                  <tr><td><b>5. 开始分析</b></td><td>回到 <span class="kbd">视图</span>，点 <span class="kbd">开始分析</span>。分析中可以点 <span class="kbd">取消</span> 请求停止，已完成结果会保留。</td></tr>
+                  <tr><td><b>2. 选择模式</b></td><td><span class="kbd">本地</span> 只做本机初筛；<span class="kbd">LLM深度分析</span> 会先本地筛，再把 Top-N 压缩预览交给支持图像的 LLM。要判断故事、人文和瞬间，建议使用深度分析模式。</td></tr>
+                  <tr><td><b>3. 设置数量</b></td><td><span class="kbd">扫描</span> 控制最多处理多少张；<span class="kbd">深评 Top-N</span> 控制深评候选数量；<span class="kbd">修图 Top-N</span> 控制没手动选图时默认生成多少张修图方案。</td></tr>
+                  <tr><td><b>4. 填 key 并检查</b></td><td>填入 OpenAI-compatible / NewCoin API key 后点 <span class="kbd">检查</span>。界面会检测是否存在合适的图像 LLM，显示选中的模型和剩余 token/额度。密钥只应保存在本机设置或环境变量，不要写入项目文件。</td></tr>
+                  <tr><td><b>5. 开始分析</b></td><td>回到 <span class="kbd">工作流</span>，点 <span class="kbd">开始分析</span>。分析中可以点 <span class="kbd">取消</span> 请求停止，已完成结果会保留。</td></tr>
                 </table>
               </div>
 
               <div class="advice-card">
                 <h2>界面区域怎么读</h2>
                 <table class="mini-grid">
-                  <tr><td><b>顶部导航</b><br>视图、设置、历史、帮助。筛片模式下顶部仍可见，便于返回设置或加载历史。</td><td><b>流程条</b><br>导入、初筛、深评、修图四步。点击步骤可快速展开对应配置或回到主评审视图。</td></tr>
-                  <tr><td><b>选片板</b><br>左侧照片网格显示排名、分数、人工标记、相似组信息。双击照片可打开大图预览。</td><td><b>评审面板</b><br>右侧显示故事判断、可见证据、人物关系、瞬间判断、风险、裁切和修图参数。</td></tr>
-                  <tr><td><b>Qwen 状态条</b><br>显示排队、运行、完成、缓存、失败、重试和取消数量。鼠标悬停可看失败原因。</td><td><b>输出入口</b><br>底部图标按钮可打开输出目录、联系表和生成修图方案。</td></tr>
+                  <tr><td><b>顶部导航</b><br>工作流、设置、快捷键、帮助。筛片模式下顶部仍可见，便于返回设置或调整快捷键。</td><td><b>流程条</b><br>导入、初筛、深评、修图四步。点击步骤可快速展开对应配置或回到主评审视图。</td></tr>
+                  <tr><td><b>选片板</b><br>左侧照片网格显示排名、分数、人工标记、时间/相似分组信息。双击照片可打开大图预览。</td><td><b>评审面板</b><br>右侧显示故事判断、可见证据、人物关系、瞬间判断、风险、裁切和修图参数。</td></tr>
+                  <tr><td><b>LLM深度分析状态条</b><br>显示排队、运行、完成、缓存、失败、重试和取消数量。鼠标悬停可看失败原因。</td><td><b>输出入口</b><br>底部图标按钮可打开输出目录、联系表和生成修图方案。</td></tr>
                 </table>
               </div>
 
@@ -2982,19 +4567,19 @@ class LumaSiftWindow(QMainWindow):
                   <li><b>搜索框：</b>按文件名、路径、分类、风格和标记搜索。</li>
                   <li><b>分类筛选：</b>查看作品候选、强修图候选、故事候选、技术弱但有趣、普通记录、淘汰候选等。</li>
                   <li><b>标记筛选：</b>查看保留、待定、淘汰、未标记。使用右侧三个图标按钮给选中的多张照片批量标记。</li>
-                  <li><b>相似组筛选：</b>只看组最佳、只看成组照片或只看单张。组内最佳只是系统建议，仍应结合人的内容判断。</li>
+                  <li><b>分组筛选：</b>只看组最佳、成组照片、时间组、相似组或单张。组内最佳只是系统建议，仍应结合人的内容判断。</li>
                   <li><b>深评状态筛选：</b>查看已深评、完整证据、未深评、失败/重试、已跳过。做最终修图方案前，建议先切到 <span class="kbd">已深评</span> 或 <span class="kbd">完整证据</span>。</li>
                   <li><b>排序：</b>高分优先、标记优先、低分优先、排名、文件名。人工标记会影响“标记优先”排序。</li>
                 </ul>
               </div>
 
               <div class="advice-card">
-                <h2>Qwen 深评怎么工作</h2>
+                <h2>LLM深度分析怎么工作</h2>
                 <table>
                   <tr><td><b>上传内容</b></td><td>只上传 Top-N 候选的压缩 JPEG 预览，不上传 RAW 原片。预览用于视觉理解和修图建议。</td></tr>
                   <tr><td><b>缓存</b></td><td>同一张预览和同一提示版本命中缓存时不会重复扣费；状态条会显示缓存数量。</td></tr>
                   <tr><td><b>失败与重试</b></td><td>网络、中转站或模型返回截断时会重试。最终失败会保留本地初筛结果，并在深评状态中显示失败。</td></tr>
-                  <tr><td><b>未深评</b></td><td>Top-N 之外、被人工淘汰、或相似组非最佳的照片可能标记为未深评/跳过。这类照片的修图建议会更保守，不会伪装成完整视觉判断。</td></tr>
+                  <tr><td><b>未深评</b></td><td>Top-N 之外、被人工淘汰、或分组非最佳的照片可能标记为未深评/跳过。这类照片的修图建议会更保守，不会伪装成完整视觉判断。</td></tr>
                   <tr><td><b>判断可信度</b></td><td>“完整证据”表示模型返回了较具体的可见证据、人物关系、瞬间和修图计划；“已深评”表示有视觉结果但证据可能较弱。</td></tr>
                 </table>
               </div>
@@ -3003,7 +4588,7 @@ class LumaSiftWindow(QMainWindow):
                 <h2>生成修图方案</h2>
                 <ul>
                   <li>手动多选照片后点右下角修图方案按钮，会严格按你选中的照片生成。</li>
-                  <li>如果没有手动选择，系统会在当前筛选范围内优先选择已 Qwen 深评的照片，再按修图 Top-N 数量生成。</li>
+                  <li>如果没有手动选择，系统会在当前筛选范围内优先选择已完成 LLM深度分析的照片，再按修图 Top-N 数量生成。</li>
                   <li>建议先用 <span class="kbd">深评状态 = 已深评</span> 或 <span class="kbd">完整证据</span> 过滤，再生成最终方案。</li>
                   <li>输出会写入 <span class="kbd">selected_editing_advice.md</span> 和 <span class="kbd">selected_editing_advice.json</span>。Markdown 适合阅读，JSON 适合后续自动化处理。</li>
                   <li>未深评照片只给保守技术草稿；高级 HSL、色彩分级、局部遮罩等细节只在视觉证据足够时输出。</li>
@@ -3014,7 +4599,7 @@ class LumaSiftWindow(QMainWindow):
                 <h2>输出文件</h2>
                 <table>
                   <tr><td><b>report.csv</b></td><td>表格报告，适合快速排序、筛选、人工复盘。</td></tr>
-                  <tr><td><b>report.json</b></td><td>完整结构化结果，包含本地分数、Qwen 深评、相似组、标记和错误信息。</td></tr>
+                  <tr><td><b>report.json</b></td><td>完整结构化结果，包含本地分数、LLM深度分析、时间/相似分组、标记和错误信息。</td></tr>
                   <tr><td><b>selected_editing_advice.md / .json</b></td><td>当前选择或默认 Top-N 的修图建议。</td></tr>
                   <tr><td><b>contact sheet</b></td><td>联系表图像，用于快速浏览候选照片。</td></tr>
                   <tr><td><b>previews</b></td><td>本地生成的压缩预览和缩略图缓存，可重新生成，不应当成原片备份。</td></tr>
@@ -3024,11 +4609,11 @@ class LumaSiftWindow(QMainWindow):
               <div class="advice-card">
                 <h2>常见问题排查</h2>
                 <ul>
-                  <li><b>提示 Qwen 失败：</b>先点“检查”确认 key、余额和模型可用；再看状态条悬停提示。若是中转站超时，降低 Qwen Top-N 后重跑通常更稳。</li>
+                  <li><b>提示 LLM深度分析失败：</b>先点“检查”确认 key、token/额度和模型可用；再看状态条悬停提示。若是中转站超时，降低深评 Top-N 后重跑通常更稳。</li>
                   <li><b>生成的建议像草稿：</b>检查深评状态。如果照片未深评或证据不足，系统会故意保守，避免编造人物关系和修图细节。</li>
-                  <li><b>好照片被本地低分：</b>本地初筛只看技术和结构代理。街头摄影里轻微虚焦、噪点、高反差不应自动淘汰；把这类照片标为“待定”或增加 Qwen Top-N。</li>
-                  <li><b>相似组只显示一张：</b>切换“相似组”筛选为“成组”，可查看同组其它帧并人工比较决定性瞬间。</li>
-                  <li><b>想恢复历史结果：</b>进入“历史”，选择一次运行后点“载入”。如果输出目录已移动或删除，历史项会显示缺失。</li>
+                  <li><b>好照片被本地低分：</b>本地初筛只看技术和结构代理。街头摄影里轻微虚焦、噪点、高反差不应自动淘汰；把这类照片标为“待定”或增加深评 Top-N。</li>
+                  <li><b>分组只显示一张：</b>切换“分组”筛选为“成组”或“时间组”，可查看同组其它帧并人工比较决定性瞬间。</li>
+                  <li><b>想复盘结果：</b>打开输出目录里的 <span class="kbd">report.json</span>、<span class="kbd">report.csv</span> 或联系表；应用内不再提供历史页。</li>
                 </ul>
               </div>
             </div>
@@ -3045,31 +4630,31 @@ class LumaSiftWindow(QMainWindow):
                   <tr>
                     <td>1 Import folder</td><td class="arrow">-&gt;</td>
                     <td>2 Local pre-score</td><td class="arrow">-&gt;</td>
-                    <td>3 Qwen Top-N review</td><td class="arrow">-&gt;</td>
+                    <td>3 LLM Deep Analysis Top-N</td><td class="arrow">-&gt;</td>
                     <td>4 Mark and filter</td><td class="arrow">-&gt;</td>
                     <td>5 Generate edit plans</td>
                   </tr>
                 </table>
-                <p><span class="warn">Principle:</span> local analysis is fast, private, and cheap; story, human relationship, decisive moment, and concrete editing direction should come from Qwen review or human inspection.</p>
+                <p><span class="warn">Principle:</span> local analysis is fast, private, and cheap; story, human relationship, decisive moment, and concrete editing direction should come from LLM Deep Analysis or human inspection.</p>
               </div>
 
               <div class="advice-card">
                 <h2>First Run</h2>
                 <table>
                   <tr><td><b>1. Open Settings</b></td><td>Choose the photo folder and output folder. JPG, PNG, and common RAW formats can be mixed. RAW files are not uploaded.</td></tr>
-                  <tr><td><b>2. Pick a mode</b></td><td><span class="kbd">Local</span> runs only on-device pre-scoring. <span class="kbd">Qwen</span> runs local pre-score first, then sends Top-N compressed previews for visual review.</td></tr>
-                  <tr><td><b>3. Set counts</b></td><td>Scan limit controls how many files are processed. Qwen Top-N controls deep-review cost. Advice Top-N controls the default edit-plan count when nothing is manually selected.</td></tr>
+                  <tr><td><b>2. Pick a mode</b></td><td><span class="kbd">Local</span> runs only on-device pre-scoring. <span class="kbd">LLM Deep Analysis</span> runs local pre-score first, then sends Top-N compressed previews to a vision-capable LLM.</td></tr>
+                  <tr><td><b>3. Set counts</b></td><td>Scan limit controls how many files are processed. Deep Top-N controls deep-review cost. Advice Top-N controls the default edit-plan count when nothing is manually selected.</td></tr>
                   <tr><td><b>4. Check the key</b></td><td>Enter the API key and click <span class="kbd">Check</span> to verify quota and the active vision model. Keep keys in local settings or environment variables only.</td></tr>
-                  <tr><td><b>5. Analyze</b></td><td>Return to View and click <span class="kbd">Analyze</span>. Cancel requests a stop; completed records remain available.</td></tr>
+                  <tr><td><b>5. Analyze</b></td><td>Return to Workflow and click <span class="kbd">Analyze</span>. Cancel requests a stop; completed records remain available.</td></tr>
                 </table>
               </div>
 
               <div class="advice-card">
                 <h2>Reading the App</h2>
                 <table class="mini-grid">
-                  <tr><td><b>Top navigation</b><br>View, Settings, History, Help remain reachable during review.</td><td><b>Workflow strip</b><br>Import, pre-score, deep review, and edit-plan stages.</td></tr>
-                  <tr><td><b>Review board</b><br>Left grid with rank, score, label, and similar-group badges. Double-click opens the large preview.</td><td><b>Review panel</b><br>Story read, evidence, relationships, moment, risks, crop, and parameters.</td></tr>
-                  <tr><td><b>Qwen status</b><br>Queued, running, done, cache, failed, retry, and cancelled counts.</td><td><b>Output actions</b><br>Open output, contact sheet, and selected-photo editing plan.</td></tr>
+                  <tr><td><b>Top navigation</b><br>Workflow, Settings, Shortcuts, and Help remain reachable during review.</td><td><b>Workflow strip</b><br>Import, pre-score, deep review, and edit-plan stages.</td></tr>
+                  <tr><td><b>Review board</b><br>Left grid with rank, score, label, and time/similar group badges. Double-click opens the large preview.</td><td><b>Review panel</b><br>Story read, evidence, relationships, moment, risks, crop, and parameters.</td></tr>
+                  <tr><td><b>LLM Deep Analysis status</b><br>Queued, running, done, cache, failed, retry, and cancelled counts.</td><td><b>Output actions</b><br>Open output, contact sheet, and selected-photo editing plan.</td></tr>
                 </table>
               </div>
 
@@ -3077,20 +4662,20 @@ class LumaSiftWindow(QMainWindow):
                 <h2>Filtering and Marking</h2>
                 <ul>
                   <li>Search by filename, path, category, style, or label.</li>
-                  <li>Filter by category, user label, similar group role, and Qwen review status.</li>
-                  <li>Before final edit-plan generation, prefer <span class="kbd">Qwen reviewed</span> or <span class="kbd">Concrete read</span>.</li>
+                  <li>Filter by category, user label, time/similar group role, pair status, and LLM Deep Analysis status.</li>
+                  <li>Before final edit-plan generation, prefer <span class="kbd">LLM-read</span> or <span class="kbd">Concrete read</span>.</li>
                   <li>Use the keep, maybe, and reject buttons to batch-mark selected photos.</li>
                 </ul>
               </div>
 
               <div class="advice-card">
-                <h2>Qwen Review</h2>
+                <h2>LLM Deep Analysis</h2>
                 <table>
                   <tr><td><b>Uploads</b></td><td>Only Top-N compressed JPEG previews are uploaded. RAW files stay local.</td></tr>
                   <tr><td><b>Cache</b></td><td>Identical preview and prompt-version hits avoid repeated cost.</td></tr>
                   <tr><td><b>Failures</b></td><td>Network, relay, or truncated model output failures are retried. Final failures keep local pre-score records.</td></tr>
-                  <tr><td><b>Not reviewed</b></td><td>Outside Top-N, rejected, or similar non-best frames may be marked not reviewed or skipped.</td></tr>
-                  <tr><td><b>Confidence</b></td><td>Concrete read means specific visible evidence and an editing plan are present; Qwen reviewed means visual output exists but may be weaker.</td></tr>
+                  <tr><td><b>Not reviewed</b></td><td>Outside Top-N, rejected, or grouped non-best frames may be marked not reviewed or skipped.</td></tr>
+                  <tr><td><b>Confidence</b></td><td>Concrete read means specific visible evidence and an editing plan are present; LLM-read means visual output exists but may be weaker.</td></tr>
                 </table>
               </div>
 
@@ -3098,7 +4683,7 @@ class LumaSiftWindow(QMainWindow):
                 <h2>Edit Plans and Outputs</h2>
                 <ul>
                   <li>Manual selection is always respected.</li>
-                  <li>With no manual selection, the app defaults to Qwen-reviewed records within the active filter, then Advice Top-N.</li>
+                  <li>With no manual selection, the app defaults to LLM-read records within the active filter, then Advice Top-N.</li>
                   <li>Advice is written to <span class="kbd">selected_editing_advice.md</span> and <span class="kbd">selected_editing_advice.json</span>.</li>
                   <li>Unreviewed photos receive conservative technical drafts; advanced color and mask detail requires enough visual evidence.</li>
                   <li>Main reports are <span class="kbd">report.csv</span>, <span class="kbd">report.json</span>, contact sheets, and preview caches.</li>
@@ -3110,6 +4695,18 @@ class LumaSiftWindow(QMainWindow):
 
     def _escape(self, value: str) -> str:
         return html.escape(value, quote=True)
+
+    def _dedupe_display_strings(self, values: list[Any]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value).strip()
+            normalized = " ".join(text.split())
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(text)
+        return result
 
     def _html_list(self, values: list[Any], fallback: str) -> str:
         items = [str(item) for item in values if str(item).strip()]
@@ -3191,6 +4788,7 @@ class LumaSiftWindow(QMainWindow):
         crop_keep = self._html_list(crop_plan.get("keep", []) if isinstance(crop_plan.get("keep"), list) else [], "")
         crop_remove = self._html_list(crop_plan.get("remove_or_reduce", []) if isinstance(crop_plan.get("remove_or_reduce"), list) else [], "")
         crop_reason = self._escape(str(crop_plan.get("reason", "") or item.get("crop_strategy", "") or ""))
+        crop_box_html = self._format_crop_box_detail_html(item)
         avoid_overediting = self._escape(str(item.get("avoid_overediting", "") or ""))
         local_masks = item.get("local_masks") if isinstance(item.get("local_masks"), list) else []
         labels = item.get("lightroom_parameter_labels", {})
@@ -3284,6 +4882,7 @@ class LumaSiftWindow(QMainWindow):
           {advanced_html}
           <h3>{text["crop"]}</h3>
           <p>{crop_reason}</p>
+          {crop_box_html}
           {f'<h3>{text["crop_keep"]}</h3>{crop_keep}' if crop_keep else ''}
           {f'<h3>{text["crop_remove"]}</h3>{crop_remove}' if crop_remove else ''}
           <h3>{text["local"]}</h3>
@@ -3416,11 +5015,12 @@ class LumaSiftWindow(QMainWindow):
         }.get(normalized, normalized.replace("_", " "))
 
     def _detail_html_style(self) -> str:
-        return """
+        style = """
         <style>
         body { color: #dbe7f3; font-family: Microsoft YaHei UI, Microsoft YaHei, Segoe UI; font-size: 12px; background: #090d12; margin: 0; }
         h2 { margin: 0 0 4px 0; font-size: 19px; color: #f8fafc; }
         h3 { margin: 12px 0 6px 0; font-size: 12px; color: #00a6ff; text-transform: uppercase; letter-spacing: 0px; border-left: 5px solid #ffd400; padding-left: 7px; }
+        h4 { margin: 8px 0 3px 0; font-size: 12px; color: #f8fafc; }
         p { line-height: 1.45; margin: 4px 0 8px 0; color: #c8d4e0; }
         ul { margin: 4px 0 8px 18px; padding: 0; }
         li { margin-bottom: 5px; }
@@ -3428,7 +5028,18 @@ class LumaSiftWindow(QMainWindow):
         td { border-bottom: 1px solid #26313d; padding: 6px; vertical-align: top; color: #dbe7f3; }
         pre { white-space: pre-wrap; background: #0b0f14; border: 1px solid #26313d; border-radius: 8px; padding: 10px; color: #dbe7f3; }
         .summary-card { background: #101820; border: 1px solid #293646; border-left: 6px solid #ff3b30; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+        .analysis-state { background: #101820; border: 1px solid #293646; border-left: 6px solid #ffd400; border-radius: 8px; padding: 9px 10px; margin: 8px 0 10px 0; }
+        .analysis-state b { color: #f8fafc; font-size: 13px; }
+        .analysis-state p { margin-bottom: 0; }
+        .analysis-state.failed { border-left-color: #ff3b30; background: #15100f; }
+        .analysis-state.local { border-left-color: #ffd400; }
+        .analysis-state.weak { border-left-color: #ff9f1c; }
+        .professional-review { background: #0d131a; border: 1px solid #293646; border-left: 6px solid #00a6ff; border-radius: 8px; padding: 10px; margin: 8px 0 12px 0; }
+        .professional-review h3 { margin-top: 0; }
+        .professional-review p { line-height: 1.55; }
         .advice-card { background: #0d131a; border: 1px solid #293646; border-left: 6px solid #00a6ff; border-radius: 8px; padding: 10px; margin: 8px 0 12px 0; }
+        .crop-note { background: #0d131a; border: 1px solid #293646; border-left: 5px solid #ffd400; border-radius: 8px; padding: 8px; }
+        .crop-note span { color: #93a4b8; }
         .advice-head h2 { margin-top: 5px; }
         .pill { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 8px; background: #17324a; color: #8fd3ff; font-weight: 800; }
         .rank { color: #ffd400; font-weight: 900; }
@@ -3459,10 +5070,20 @@ class LumaSiftWindow(QMainWindow):
         .warn { color: #ffd400; font-weight: 800; }
         </style>
         """
+        if self.theme != "light":
+            return style
+        light_style = _light_theme_stylesheet(style)
+        light_style = light_style.replace(
+            ".summary-card { background: #ffffff; border: 1px solid #cbd5e1; border-left: 6px solid #ff3b30;",
+            ".summary-card { background: #ffffff; border: 1px solid #cbd5e1; border-left: 6px solid #5e6ad2;",
+        )
+        return light_style
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
+        self.setProperty("theme", self.theme)
+        if hasattr(self, "photo_list"):
+            self.photo_list.setProperty("theme", self.theme)
+        style = """
             QMainWindow, QWidget {
                 background: #090d12;
                 color: #dbe7f3;
@@ -3471,9 +5092,11 @@ class LumaSiftWindow(QMainWindow):
             }
             QLabel { background: transparent; }
             QLabel#title { font-size: 34px; font-weight: 900; color: #f8fafc; letter-spacing: 0px; }
-            QLabel#navMark { font-size: 19px; font-weight: 900; color: #00a6ff; letter-spacing: 0px; }
+            QLabel#navLogo { background: transparent; padding: 0px; }
             QLabel#subtitle { color: #9fb0c2; font-size: 13px; }
             QLabel#muted, QLabel#statCaption, QLabel#stepCaption { color: #93a4b8; }
+            QLabel#muted[attention="true"] { color: #ffd400; font-weight: 900; }
+            QLabel#actionStatus { color: #93a4b8; font-size: 11px; font-weight: 800; min-height: 16px; }
             QLabel#sectionTitle { font-size: 14px; font-weight: 900; color: #f8fafc; }
             QLabel#fieldLabel { color: #c8d4e0; font-weight: 800; }
             QLabel#miniLabel { color: #9fb0c2; font-weight: 800; }
@@ -3490,14 +5113,6 @@ class LumaSiftWindow(QMainWindow):
                 background: #090d12;
                 border: none;
                 border-radius: 0px;
-            }
-            QTableWidget#historyTable {
-                background: #0c1117;
-                alternate-background-color: #101820;
-                border: 1px solid #26313d;
-                border-radius: 0px;
-                color: #dbe7f3;
-                gridline-color: #26313d;
             }
             QFrame#hero, QFrame#topNav, QFrame#controlCard, QFrame#toolbar, QFrame#reviewBar {
                 background: #111820;
@@ -3557,10 +5172,14 @@ class LumaSiftWindow(QMainWindow):
                 border: 2px solid #ffd400;
             }
             QFrame#stepCard[state="done"] {
-                background: #14231e;
-                border: 1px solid #00a6ff;
+                background: #111820;
+                border: 1px solid #334155;
+                border-left: 5px solid #61d394;
             }
             QLabel#stepTitle { font-weight: 900; color: #f8fafc; }
+            QLabel#stepState { color: #93a4b8; font-size: 11px; font-weight: 900; }
+            QFrame#stepCard[state="active"] QLabel#stepState { color: #ffd400; }
+            QFrame#stepCard[state="done"] QLabel#stepState { color: #61d394; }
             QLineEdit, QSpinBox, QComboBox, QTextEdit, QListView {
                 background: #0c1117;
                 border: 1px solid #2a3645;
@@ -3571,6 +5190,10 @@ class LumaSiftWindow(QMainWindow):
             }
             QLineEdit:focus, QSpinBox:focus, QComboBox:focus, QTextEdit:focus {
                 border: 2px solid #ffd400;
+            }
+            QLineEdit[attention="true"], QComboBox[attention="true"] {
+                border: 2px solid #ffd400;
+                background: #15120a;
             }
             QSpinBox {
                 font-size: 14px;
@@ -3627,9 +5250,9 @@ class LumaSiftWindow(QMainWindow):
             QPushButton#markRejectButton { background: #ff3b30; color: #ffffff; }
             QPushButton#markRejectButton:hover { background: #ff625a; }
             QPushButton#markKeepButton, QPushButton#markMaybeButton, QPushButton#markRejectButton {
-                font-size: 20px;
+                font-size: 13px;
                 font-weight: 900;
-                padding: 2px 8px;
+                padding: 6px 8px;
             }
             QPushButton:disabled { background: #26313d; color: #66778a; }
             QListView#photoGrid {
@@ -3678,10 +5301,44 @@ class LumaSiftWindow(QMainWindow):
             }
             QProgressBar::chunk { background: #00a6ff; border-radius: 5px; }
             """
-        )
+        if self.theme == "light":
+            style = (
+                _light_theme_stylesheet(style)
+                + """
+                QFrame#topNav {
+                    background: #ffffff;
+                    border: none;
+                    border-bottom: 1px solid #e6e8ee;
+                }
+                QPushButton#navButton {
+                    color: #6b7280;
+                    background: transparent;
+                }
+                QPushButton#navButton:hover {
+                    color: #111827;
+                    background: #f3f4f6;
+                    border-bottom: 2px solid #5e6ad2;
+                }
+                QPushButton#navButton[active="true"] {
+                    color: #111827;
+                    background: #eef2ff;
+                    border-bottom: 2px solid #5e6ad2;
+                }
+                QFrame#actionBar { background: #ffffff; border: 1px solid #e6e8ee; }
+                QFrame#detailPanel { border-left: 6px solid #5e6ad2; }
+                QFrame#guideCyan, QFrame#guideYellow { background: #5e6ad2; }
+                QLabel#qwenQueueLabel { border-left: 6px solid #5e6ad2; }
+                QPushButton#markMaybeButton { background: #8b5cf6; color: #ffffff; }
+                QPushButton#markMaybeButton:hover { background: #7c3aed; color: #ffffff; }
+                """
+            )
+        self.setStyleSheet(style)
 
     def closeEvent(self, event: Any) -> None:
         if self.allow_close:
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self)
             super().closeEvent(event)
             return
         if self._background_tasks_running():
@@ -3690,12 +5347,16 @@ class LumaSiftWindow(QMainWindow):
             self.status_label.setText(self._t("closing"))
             self._request_background_stop()
             return
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
         super().closeEvent(event)
 
     def _background_tasks_running(self) -> bool:
         analysis_running = self.worker_thread is not None and self.worker_thread.isRunning()
         thumbnail_running = self.thumbnail_thread is not None and self.thumbnail_thread.isRunning()
-        return bool(analysis_running or thumbnail_running)
+        selected_review_running = self.selected_review_thread is not None and self.selected_review_thread.isRunning()
+        return bool(analysis_running or thumbnail_running or selected_review_running)
 
     def _request_background_stop(self) -> None:
         self._cancel_analysis(close_after_stop=True)
@@ -3714,9 +5375,14 @@ class LumaSiftWindow(QMainWindow):
 
 def main() -> int:
     install_crash_logging()
+    configure_windows_app_identity()
     app = QApplication(sys.argv)
     apply_application_font(app)
+    app.setOrganizationName("LumaSift")
     app.setApplicationName("LumaSift")
+    app.setApplicationDisplayName("LumaSift")
+    app.setDesktopFileName("LumaSift")
+    app.setWindowIcon(lumasift_app_icon())
     window = LumaSiftWindow()
     window.show()
     return app.exec()
@@ -3724,3 +5390,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

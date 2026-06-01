@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageOps
 
+from lumasift.core.manifest import RAW_EXTENSIONS
+
 
 @dataclass
 class LoadedImage:
@@ -34,7 +36,7 @@ def _load_raw(path: Path) -> LoadedImage:
     try:
         import rawpy  # type: ignore[import-not-found]
     except ImportError as exc:
-        raise RuntimeError("rawpy is required for ARW files. Install lumasift[raw].") from exc
+        raise RuntimeError("rawpy is required for RAW files. Install lumasift[raw].") from exc
 
     errors: list[str] = []
     with rawpy.imread(str(path)) as raw:
@@ -42,6 +44,7 @@ def _load_raw(path: Path) -> LoadedImage:
             thumb = raw.extract_thumb()
             if thumb.format == rawpy.ThumbFormat.JPEG:
                 with Image.open(BytesIO(thumb.data)) as image:
+                    exif = dict(image.getexif() or {})
                     rgb_image = ImageOps.exif_transpose(image).convert("RGB")
                     rgb = np.asarray(rgb_image, dtype=np.uint8)
                     width, height = rgb_image.size
@@ -52,7 +55,7 @@ def _load_raw(path: Path) -> LoadedImage:
                     width=width,
                     height=height,
                     errors=errors,
-                    exif={"raw_preview_source": "embedded_jpeg"},
+                    exif={**exif, "raw_preview_source": "embedded_jpeg"},
                 )
             if thumb.format == rawpy.ThumbFormat.BITMAP:
                 rgb = np.asarray(thumb.data, dtype=np.uint8)
@@ -84,8 +87,8 @@ def _load_raw(path: Path) -> LoadedImage:
 
 def load_image(path: Path) -> LoadedImage:
     suffix = path.suffix.lower()
-    if suffix == ".arw":
+    if suffix in RAW_EXTENSIONS:
         return _load_raw(path)
-    if suffix in {".png", ".jpg", ".jpeg"}:
+    if suffix in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
         return _load_bitmap(path)
     raise ValueError(f"Unsupported image extension: {path.suffix}")

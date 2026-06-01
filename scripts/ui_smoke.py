@@ -10,6 +10,8 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
+from lumasift.analysis.qwen_story import QWEN_STORY_PROMPT_VERSION
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "outputs" / "ui_smoke"
@@ -48,6 +50,10 @@ def main() -> int:
     window.output_dir = args.output / "app_output"
     window.output_dir.mkdir(parents=True, exist_ok=True)
     window.language = args.language
+    window.theme = "dark"
+    if hasattr(window, "theme_combo"):
+        window.theme_combo.setCurrentIndex(max(0, window.theme_combo.findData("dark")))
+    window._apply_style()
     window._retranslate_ui()
     window._queue_visible_thumbnails = lambda: None
     window.show()
@@ -56,9 +62,20 @@ def main() -> int:
     snapshots: list[Snapshot] = []
     snapshots.append(capture(window, args.output, "main_page", setup_collapsed_checks(window, QFontDatabase, QFontMetrics, args.language)))
 
+    if hasattr(window, "theme_combo"):
+        window.theme_combo.setCurrentIndex(max(0, window.theme_combo.findData("light")))
+        app.processEvents()
+        snapshots.append(capture(window, args.output, "light_theme_main", light_theme_checks(window)))
+        window.theme_combo.setCurrentIndex(max(0, window.theme_combo.findData("dark")))
+        app.processEvents()
+
     window._show_nav_page("settings")
     app.processEvents()
     snapshots.append(capture(window, args.output, "settings_page", setup_expanded_checks(window)))
+
+    window._show_nav_page("shortcuts")
+    app.processEvents()
+    snapshots.append(capture(window, args.output, "shortcuts_page", shortcuts_page_checks(window)))
 
     window._show_nav_page("help")
     app.processEvents()
@@ -150,6 +167,8 @@ def make_records(photo_dir: Path, *, count: int) -> list[dict[str, Any]]:
                 "user_label": "unlabeled",
                 "analysis_source": "qwen_vision",
                 "analysis_quality": "concrete",
+                "qwen_status": "done",
+                "qwen_prompt_version": QWEN_STORY_PROMPT_VERSION,
                 "editorial_verdict": {
                     "action": "maybe",
                     "confidence": 72,
@@ -174,6 +193,14 @@ def make_records(photo_dir: Path, *, count: int) -> list[dict[str, Any]]:
                         "aspect_ratio": "3:2",
                         "keep": ["pedestrian cluster", "street signs"],
                         "remove_or_reduce": ["empty edge clutter"],
+                        "crop_box": {
+                            "x": 0.08,
+                            "y": 0.06,
+                            "width": 0.84,
+                            "height": 0.88,
+                            "reason": "keep the pedestrian cluster and reduce empty edge clutter",
+                            "composition_goal": "make the street relationship read faster",
+                        },
                     },
                     "local_masks": [
                         {
@@ -365,10 +392,19 @@ def setup_collapsed_checks(window: Any, font_database_type: Any, font_metrics_ty
         check_visible(window.main_page, "main_page_visible"),
         check_not_visible(window.controls_frame, "settings_hidden_on_main_page"),
         check_visible(window.workflow_frame, "workflow_visible_near_top"),
-        check_visible(window.history_button, "history_button_visible"),
         check_visible(window.settings_nav_button, "settings_nav_button_visible"),
         check_min_size(window.main_run_button, "main_analyze_button_size", min_width=92, min_height=32),
         check_min_size(window.main_cancel_button, "main_cancel_button_size", min_width=54, min_height=32),
+    ]
+
+
+def light_theme_checks(window: Any) -> list[dict[str, Any]]:
+    style = str(window.styleSheet())
+    return [
+        check_value(getattr(window, "theme", "") == "light", "light_theme_active", getattr(window, "theme", "")),
+        check_value("#5e6ad2" in style.lower(), "light_theme_linear_indigo", "Linear-style indigo accent present"),
+        check_value("#f6f8fb" in style.lower() or "#ffffff" in style.lower(), "light_theme_surface", "light surfaces present"),
+        check_visible(window.main_page, "light_theme_main_visible"),
     ]
 
 
@@ -389,12 +425,27 @@ def setup_expanded_checks(window: Any) -> list[dict[str, Any]]:
     return checks
 
 
+def shortcuts_page_checks(window: Any) -> list[dict[str, Any]]:
+    return [
+        check_visible(window.shortcuts_page, "shortcuts_page_visible"),
+        check_visible(window.shortcut_hint_label, "shortcuts_hint_visible"),
+        check_min_size(window.shortcut_combos["keep"], "shortcut_keep_combo_readable", min_width=90, min_height=32),
+        check_min_size(window.shortcut_combos["reject"], "shortcut_reject_combo_readable", min_width=90, min_height=32),
+        check_min_size(window.shortcut_combos["toggle_mark"], "shortcut_toggle_combo_readable", min_width=90, min_height=32),
+        check_min_size(window.shortcut_combos["maybe"], "shortcut_maybe_combo_readable", min_width=90, min_height=32),
+        check_value(window.shortcut_combos["keep"].currentText() == "↑", "shortcut_keep_default_up", window.shortcut_combos["keep"].currentText()),
+        check_value(window.shortcut_combos["reject"].currentText() == "↓", "shortcut_reject_default_down", window.shortcut_combos["reject"].currentText()),
+        check_value(window.shortcut_combos["toggle_mark"].currentText() == "S", "shortcut_toggle_default_s", window.shortcut_combos["toggle_mark"].currentText()),
+        check_value(window.shortcut_combos["maybe"].currentText() == "D", "shortcut_maybe_default_d", window.shortcut_combos["maybe"].currentText()),
+    ]
+
+
 def help_page_checks(window: Any, language: str) -> list[dict[str, Any]]:
     plain_text = window.help_text.toPlainText()
     if language == "zh":
-        required = ["LumaSift 使用说明", "导入照片目录", "Qwen 深评", "深评状态筛选", "常见问题排查"]
+        required = ["LumaSift 使用说明", "导入照片目录", "LLM深度分析", "深评状态筛选", "常见问题排查"]
     else:
-        required = ["LumaSift User Guide", "Import folder", "Qwen Top-N review", "Filtering and Marking", "Edit Plans"]
+        required = ["LumaSift User Guide", "Import folder", "LLM Deep Analysis", "Filtering and Marking", "Edit Plans"]
     return [
         check_visible(window.help_page, "help_page_visible"),
         check_min_size(window.help_text, "help_text_readable", min_width=900, min_height=500),
@@ -426,7 +477,6 @@ def review_checks(window: Any) -> list[dict[str, Any]]:
     plain_text = window.detail_text.toPlainText()
     return [
         check_visible(window.review_bar, "review_bar_visible"),
-        check_visible(window.review_history_button, "review_history_button_visible"),
         check_visible(window.header_frame, "top_nav_visible_in_review"),
         check_not_visible(window.workflow_frame, "workflow_hidden_in_review"),
         check_not_visible(window.controls_frame, "setup_controls_hidden_in_review"),
@@ -435,15 +485,17 @@ def review_checks(window: Any) -> list[dict[str, Any]]:
         check_min_size(window.keep_button, "keep_icon_button_size", min_width=48, min_height=30),
         check_min_size(window.maybe_button, "maybe_icon_button_size", min_width=48, min_height=30),
         check_min_size(window.reject_button, "reject_icon_button_size", min_width=48, min_height=30),
-        check_value(window.keep_button.text() == "▲", "keep_button_icon_only", window.keep_button.text()),
-        check_value(window.maybe_button.text() == "◆", "maybe_button_icon_only", window.maybe_button.text()),
-        check_value(window.reject_button.text() == "■", "reject_button_icon_only", window.reject_button.text()),
-        check_value(not window.open_output_button.text(), "open_output_icon_only", window.open_output_button.text()),
-        check_value(not window.open_contact_button.text(), "open_contact_icon_only", window.open_contact_button.text()),
+        check_value(("保留" in window.keep_button.text()) or ("Keep" in window.keep_button.text()), "keep_button_labeled", window.keep_button.text()),
+        check_value(("待定" in window.maybe_button.text()) or ("Maybe" in window.maybe_button.text()), "maybe_button_labeled", window.maybe_button.text()),
+        check_value(("淘汰" in window.reject_button.text()) or ("Reject" in window.reject_button.text()), "reject_button_labeled", window.reject_button.text()),
+        check_value(bool(window.open_output_button.text()), "open_output_labeled", window.open_output_button.text()),
+        check_value(bool(window.open_contact_button.text()), "open_contact_labeled", window.open_contact_button.text()),
         check_min_size(window.generate_advice_button, "editing_plan_button_size", min_width=48, min_height=30),
+        check_value(bool(window.generate_advice_button.text()), "editing_plan_labeled", window.generate_advice_button.text()),
+        check_value(bool(window.crop_preview_button.text()), "crop_preview_labeled", window.crop_preview_button.text()),
         check_value(window.photo_model.rowCount() >= 1, "records_rendered", f"row_count={window.photo_model.rowCount()}"),
         check_value("G3" in window.photo_model.data(window.photo_model.index(0, 0), 0), "group_badge_visible", window.photo_model.data(window.photo_model.index(0, 0), 0)),
-        check_value(("相似组" in plain_text) or ("Group" in plain_text), "group_detail_visible", plain_text[:500]),
+        check_value(("分组" in plain_text) or ("相似组" in plain_text) or ("Group" in plain_text), "group_detail_visible", plain_text[:500]),
         check_value(("可见证据" in plain_text) or ("Visible Evidence" in plain_text), "story_evidence_visible", plain_text[:800]),
         check_value(("为什么是这张" in plain_text) or ("Why This Frame" in plain_text), "why_this_frame_visible", plain_text[:800]),
         check_value("Not available in local_only mode" not in plain_text, "review_no_english_local_fallback", "local fallback localized"),

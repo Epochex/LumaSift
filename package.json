@@ -1,0 +1,14 @@
+{
+  "name": "lumasift-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript core logic for LumaSift photo review and editing guidance.",
+  "scripts": {
+    "build:ts": "tsc -p tsconfig.json",
+    "test:ts": "tsc -p tsconfig.json && node --test build_ts/tests_ts/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}

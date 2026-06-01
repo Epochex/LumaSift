@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from lumasift.analysis.editing_advice import build_selected_editing_advice
+from lumasift.analysis.qwen_story import QWEN_STORY_PROMPT_VERSION
 from lumasift.reports.markdown_report import render_selected_editing_advice_markdown
 
 
@@ -82,6 +83,8 @@ def test_existing_qwen_style_and_parameters_are_preserved_and_filled() -> None:
         specific_edit_parameters={"contrast": "+31", "temperature": "-650K"},
         analysis_source="qwen_vision",
         analysis_quality="concrete",
+        qwen_status="done",
+        qwen_prompt_version=QWEN_STORY_PROMPT_VERSION,
         editorial_verdict={"action": "keep", "confidence": 82, "one_line_reason": "left foreground cyclist overlaps with the crossing crowd before it dissolves"},
         visible_evidence=[
             "left foreground cyclist overlaps with the crossing crowd",
@@ -138,6 +141,8 @@ def test_vision_advice_uses_structured_editing_plan_when_available() -> None:
         "qwen.jpg",
         analysis_source="qwen_vision",
         analysis_quality="concrete",
+        qwen_status="done",
+        qwen_prompt_version=QWEN_STORY_PROMPT_VERSION,
         editorial_verdict={"action": "maybe", "confidence": 70, "one_line_reason": "左下角戴白耳机的背影人物和 DB 标语形成车站关系"},
         visible_evidence=["左下角戴白耳机的背影人物遮挡栏杆", "上方 DB 标语提供柏林车站语境", "中景两名行人走向站台"],
         subject_relationship="前景旅客、中景行人和车站标语形成通勤空间关系。",
@@ -168,6 +173,81 @@ def test_vision_advice_uses_structured_editing_plan_when_available() -> None:
     assert advice["crop_plan"]["keep"] == ["DB 标语", "中景两名行人"]
     assert advice["local_masks"][0]["target"] == "左下角前景人物"
     assert advice["evidence_snapshot"]["visible_evidence"][0].startswith("左下角")
+
+
+def test_stale_qwen_advice_does_not_reuse_old_editing_plan_or_parameters() -> None:
+    record = _record(
+        1,
+        "stale.jpg",
+        analysis_source="qwen_vision",
+        analysis_quality="concrete",
+        qwen_status="done",
+        qwen_prompt_version="qwen-story-v8",
+        recommended_style="cinematic_urban_color",
+        specific_edit_parameters={"contrast": "+99", "temperature": "-2000K"},
+        editing_plan={
+            "edit_intent": "old qwen edit intent that should not be reused",
+            "crop_plan": {
+                "aspect_ratio": "16:9",
+                "keep": ["old subject"],
+                "remove_or_reduce": ["old edge"],
+            },
+            "local_masks": [{"target": "old subject", "operation": "Exposure +1", "reason": "old reason"}],
+        },
+    )
+
+    advice = build_selected_editing_advice([record], selected_ranks=[1], language="en")["selected_editing_advice"][0]
+
+    assert advice["editing_advice_source"] == "technical_draft"
+    assert advice["blocked_reason"]
+    assert "old qwen" not in advice["editing_intent"]
+    assert advice["lightroom_parameters"]["contrast"] != "+99"
+    assert advice["lightroom_parameters"]["temperature"] != "-2000K"
+    assert advice["crop_plan"]["keep"] != ["old subject"]
+    assert advice["local_masks"] == []
+
+
+def test_rejected_qwen_advice_does_not_generate_lightroom_recipe() -> None:
+    record = _record(
+        1,
+        "reject.jpg",
+        analysis_source="qwen_vision",
+        analysis_quality="concrete",
+        qwen_status="done",
+        qwen_prompt_version=QWEN_STORY_PROMPT_VERSION,
+        category="reject_candidate",
+        editorial_verdict={
+            "action": "reject",
+            "confidence": 90,
+            "one_line_reason": "foreground head blocks the station sign and distant pedestrians",
+        },
+        visible_evidence=[
+            "foreground head blocks the station sign",
+            "distant pedestrians are too small to read",
+            "green pillar splits the station background",
+        ],
+        subject_relationship="Foreground head, station sign, and distant pedestrians do not form a usable relationship.",
+        decisive_moment_read="No readable gesture or timing survives the foreground obstruction.",
+        editing_plan={
+            "edit_intent": "do not rescue",
+            "crop_plan": {
+                "keep": ["station sign"],
+                "remove_or_reduce": ["foreground head"],
+                "crop_box": {"x": 0, "y": 0, "width": 1, "height": 1, "reason": "cannot fix"},
+            },
+            "local_masks": [{"target": "station sign", "operation": "Exposure +0.1", "reason": "old mask"}],
+        },
+    )
+
+    advice = build_selected_editing_advice([record], selected_ranks=[1], language="en")["selected_editing_advice"][0]
+
+    assert advice["editing_advice_source"] == "rejected_by_vision"
+    assert advice["blocked_reason"]
+    assert advice["lightroom_parameters"] == {}
+    assert advice["advanced_lightroom_parameters"] == {}
+    assert advice["local_adjustments"] == []
+    assert advice["local_masks"] == []
+    assert "cannot rescue" in advice["crop_plan"]["reason"].lower()
 
 
 def test_markdown_report_renders_selected_advice() -> None:

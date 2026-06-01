@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from statistics import mean
+from typing import Any
 
 import numpy as np
 
@@ -27,6 +28,44 @@ def _technical_score(rgb: np.ndarray) -> tuple[float, dict[str, float]]:
         "contrast": round(contrast, 3),
         "highlight_clipping_ratio": round(highlight_clip, 5),
         "shadow_clipping_ratio": round(shadow_clip, 5),
+    }
+
+
+def _tone_profile(rgb: np.ndarray, metrics: dict[str, float]) -> dict[str, Any]:
+    rgb_float = rgb.astype(np.float32)
+    means = np.mean(rgb_float.reshape(-1, 3), axis=0)
+    red, green, blue = [float(value) for value in means]
+    max_channel = np.max(rgb_float, axis=2)
+    min_channel = np.min(rgb_float, axis=2)
+    saturation = float(np.mean((max_channel - min_channel) / np.maximum(max_channel, 1.0)))
+    warmth = red - blue
+    brightness = metrics["brightness"]
+    contrast = metrics["contrast"]
+
+    if saturation < 0.08:
+        category = "monochrome_or_near_bw"
+    elif contrast >= 58:
+        category = "high_contrast"
+    elif brightness < 82:
+        category = "low_key"
+    elif brightness > 168:
+        category = "high_key"
+    elif warmth >= 12:
+        category = "warm_tone"
+    elif warmth <= -12:
+        category = "cool_tone"
+    elif saturation >= 0.22:
+        category = "vivid_color"
+    else:
+        category = "muted_color"
+
+    return {
+        "tone_category": category,
+        "tone_brightness": round(brightness, 3),
+        "tone_contrast": round(contrast, 3),
+        "tone_saturation": round(saturation, 4),
+        "tone_warmth": round(warmth, 3),
+        "average_rgb": [round(red, 2), round(green, 2), round(blue, 2)],
     }
 
 
@@ -112,7 +151,7 @@ def _local_reasons(metrics: dict[str, float], story_scores: dict[str, float]) ->
     if not positive:
         positive.append("Local proxy found enough recoverable structure for manual review.")
     if not negative:
-        negative.append("Semantic story, human relationship, and decisive moment still require Qwen or human review.")
+        negative.append("Semantic story, human relationship, and decisive moment still require a vision LLM or human review.")
     return positive[:4], negative[:4]
 
 
@@ -123,12 +162,65 @@ def _local_read(metrics: dict[str, float], story_scores: dict[str, float]) -> st
         f"Brightness {metrics['brightness']:.0f}, contrast {metrics['contrast']:.0f}, "
         f"visual-structure proxy {story_scores['visual_tension_score']:.0f}, "
         f"editing-potential proxy {story_scores['editing_potential_score']:.0f}. "
-        "Use Qwen deep review for Top-N frames before making a final story-first keep/reject decision."
+        "Use LLM Deep Analysis for Top-N frames before making a final story-first keep/reject decision."
     )
+
+
+def _format_exif(image: LoadedImage) -> dict[str, Any]:
+    exif = image.exif or {}
+    summary: dict[str, Any] = {}
+    if exif.get("raw_preview_source"):
+        summary["raw_preview_source"] = exif.get("raw_preview_source")
+    mapping = {
+        271: "camera_make",
+        272: "camera_model",
+        306: "date_time",
+        36867: "date_time_original",
+        33434: "shutter_speed",
+        33437: "aperture",
+        34855: "iso",
+        37386: "focal_length",
+        42036: "lens",
+    }
+    for tag, key in mapping.items():
+        if tag not in exif:
+            continue
+        value = exif[tag]
+        if key == "shutter_speed":
+            summary[key] = _format_shutter(value)
+        elif key == "aperture":
+            summary[key] = f"f/{_rational_float(value):.1f}" if _rational_float(value) else str(value)
+        elif key == "focal_length":
+            summary[key] = f"{_rational_float(value):.0f}mm" if _rational_float(value) else str(value)
+        else:
+            summary[key] = str(value).strip()
+    try:
+        summary["file_size_bytes"] = image.path.stat().st_size
+    except OSError:
+        pass
+    return {key: value for key, value in summary.items() if value not in {"", None}}
+
+
+def _rational_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def _format_shutter(value: Any) -> str:
+    shutter = _rational_float(value)
+    if shutter <= 0:
+        return str(value)
+    if shutter >= 1:
+        return f"{shutter:.1f}s"
+    return f"1/{round(1 / shutter)}"
 
 
 def analyze_local_story_proxy(image: LoadedImage) -> dict:
     technical, metrics = _technical_score(image.rgb)
+    tone_profile = _tone_profile(image.rgb, metrics)
+    metrics.update({key: value for key, value in tone_profile.items() if key.startswith("tone_")})
     story_scores = _story_proxy_scores(image.rgb)
     final = (
         story_scores["storytelling_score"] * 0.22
@@ -147,6 +239,7 @@ def analyze_local_story_proxy(image: LoadedImage) -> dict:
         "kind": image.kind,
         "width": image.width,
         "height": image.height,
+        "exif": _format_exif(image),
         "technical_quality_score": round(technical, 2),
         **story_scores,
         "final_selection_score": round(final, 2),
@@ -160,10 +253,12 @@ def analyze_local_story_proxy(image: LoadedImage) -> dict:
             "one_line_reason": "Local technical pre-screen only; semantic photo reading has not been performed.",
         },
         "local_metrics": metrics,
+        "tone_category": tone_profile["tone_category"],
+        "tone_profile": tone_profile,
         "positive_reasons": positive,
         "negative_reasons": negative,
         "story_interpretation": _local_read(metrics, story_scores),
-        "best_editing_direction": "Run qwen_vision mode for concrete artistic editing guidance.",
+        "best_editing_direction": "Run vision LLM deep analysis for concrete artistic editing guidance.",
         "recommended_style": "pending_vision_review",
         "specific_edit_parameters": {},
         "errors": image.errors,

@@ -110,22 +110,22 @@
     },
     {
       "id": "LS-005",
-      "title": "SQLite run history view",
+      "title": "Retire SQLite run history view",
       "priority": 0,
       "status": "done",
       "dependencies": [
         "LS-000"
       ],
       "area": "product-workflow",
-      "source": "planning_agent",
-      "rationale": "Users need to revisit prior runs instead of treating every batch as disposable.",
+      "source": "user_request",
+      "rationale": "The in-app history page added navigation and state-management weight without helping the current analysis-and-advice workflow.",
       "acceptance": [
-        "GUI lists recent runs with time, input folder, output folder, mode, photo count, Qwen count, and failures.",
-        "User can open a run output folder.",
-        "User can restore a historical report into the review board.",
-        "Missing output paths show a clear unavailable state."
+        "The desktop top navigation no longer exposes a History page.",
+        "Review mode no longer shows a history/restore action.",
+        "Run-history persistence and restore code are removed from the app and tests.",
+        "SQLite photo labels, manifest reuse, preview paths, and Qwen cache linkage remain available."
       ],
-      "risk": "Run history can drift from deleted or moved output folders."
+      "risk": "Users who want to revisit an old result now use exported report/contact-sheet files from the output folder."
     },
     {
       "id": "LS-006",
@@ -290,7 +290,7 @@
       "rationale": "A repeatable test matrix makes the product safer to send to friends.",
       "acceptance": [
         "Friend-test guide covers 100/500/2000 photo runs.",
-        "Guide covers local/Qwen, cancel, cache hit, labels, history restore, and reinstall.",
+        "Guide covers local/Qwen, cancel, cache hit, labels, output review, and reinstall.",
         "Expected results match current GUI behavior."
       ],
       "risk": "Docs can drift from implementation."
@@ -535,7 +535,7 @@
       "source": "user_feedback",
       "rationale": "The first screen still wasted vertical space on a hero area, setup controls crowded the review board, and Qwen failures showed only a count without key/quota diagnostics.",
       "acceptance": [
-        "The oversized hero is replaced by a compact top navigation bar with language, history, settings, and run stats.",
+        "The oversized hero is replaced by a compact top navigation bar with language, settings, and run stats.",
         "The workflow strip sits near the top of the app instead of below a decorative header.",
         "The setup/run panel can be folded from the top navigation.",
         "Qwen API keys can be checked from the GUI and return validity plus remaining quota.",
@@ -579,7 +579,7 @@
       "source": "user_feedback",
       "rationale": "The nav still mixed commands with pages, settings overlapped the review surface, Qwen deep review lacked a clear progress affordance, and cancel reused close handling in a way that could make the app appear to exit.",
       "acceptance": [
-        "The top nav exposes independent View, Settings, History, and Help pages, with View placed before Settings.",
+        "The top nav exposes independent View, Settings, Shortcuts, and Help pages, with View placed before Settings.",
         "Run and Cancel are workbench controls, while Run and Output are removed from the navigation bar.",
         "The Settings page is independent and fully expanded instead of sharing space with the review board.",
         "Qwen deep review shows a determinate progress bar, model name, queue counts, current file state, and a short observable pipeline status.",

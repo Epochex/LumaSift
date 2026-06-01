@@ -12,13 +12,15 @@ from lumasift.analysis.grouping import apply_similarity_groups, compute_average_
 from lumasift.analysis.qwen_story import (
     QWEN_STORY_PROMPT_VERSION,
     build_qwen_story_prompt,
+    clear_qwen_review_fields,
+    is_current_concrete_qwen_review,
     merge_qwen_story_analysis,
-    parse_qwen_story_response,
+    validate_qwen_story_response,
 )
 from lumasift.analysis.scoring import rank_records
 from lumasift.core.config import Settings
 from lumasift.core.keyring import ApiKeyRing
-from lumasift.core.manifest import discover_photos
+from lumasift.core.manifest import PhotoFile, discover_photos
 from lumasift.core.run_state import RunState
 from lumasift.io.image_loader import load_image
 from lumasift.io.preview import create_jpeg_preview
@@ -110,6 +112,7 @@ class LumaSiftHarness:
                 continue
             reusable = self._reusable_manifest_record(photo.path)
             if reusable is not None:
+                self._apply_photo_file_metadata(reusable, photo)
                 reusable["manifest_status"] = "reused"
                 records.append(reusable)
                 self.state.append_event("photo_reused_from_manifest", index=index, path=str(photo.path))
@@ -126,6 +129,7 @@ class LumaSiftHarness:
             try:
                 image = load_image(photo.path)
                 record = analyze_local_story_proxy(image)
+                self._apply_photo_file_metadata(record, photo)
                 try:
                     record["preview_path"] = str(create_jpeg_preview(photo.path, self.settings.output_dir / "manifest_previews", max_side=360))
                 except Exception as exc:  # noqa: BLE001 - preview cache failure should not fail local ranking.
@@ -134,15 +138,15 @@ class LumaSiftHarness:
                 self.state.append_event("photo_processed", index=index, path=str(photo.path))
             except Exception as exc:  # noqa: BLE001 - batch robustness is the boundary here.
                 failed += 1
-                records.append(
-                    {
-                        "path": str(photo.path),
-                        "filename": photo.path.name,
-                        "errors": [str(exc)],
-                        "final_selection_score": 0.0,
-                        "category": "failed",
-                    }
-                )
+                failed_record = {
+                    "path": str(photo.path),
+                    "filename": photo.path.name,
+                    "errors": [str(exc)],
+                    "final_selection_score": 0.0,
+                    "category": "failed",
+                }
+                self._apply_photo_file_metadata(failed_record, photo)
+                records.append(failed_record)
                 self.state.append_event("photo_failed", index=index, path=str(photo.path), error=str(exc))
 
             self.state.save_checkpoint(
@@ -200,10 +204,27 @@ class LumaSiftHarness:
             "scanned": len(photos),
             "processed": len([item for item in ranked if item.get("category") != "failed"]),
             "failed": failed_count,
+            "raw_jpeg_pairs": len({item.get("pair_id") for item in ranked if item.get("has_raw_jpeg_pair") and item.get("pair_id")}),
         }
         self.state.append_event("run_completed", **summary)
         self._progress("done", len(photos), len(photos))
         return HarnessResult(summary=summary, report_csv=report_csv, report_json=report_json, run_dir=self.run_dir)
+
+    def _apply_photo_file_metadata(self, record: dict, photo: PhotoFile) -> None:
+        record["extension"] = photo.extension
+        record["pair_id"] = photo.pair_id or ""
+        record["pair_role"] = photo.pair_role
+        record["has_raw_jpeg_pair"] = photo.has_raw_jpeg_pair
+        record["paired_raw_path"] = str(photo.paired_raw_path) if photo.paired_raw_path else ""
+        record["paired_jpeg_path"] = str(photo.paired_jpeg_path) if photo.paired_jpeg_path else ""
+        if photo.has_raw_jpeg_pair:
+            record["pair_status"] = "raw_jpeg_pair"
+        elif photo.pair_role == "raw":
+            record["pair_status"] = "raw_only"
+        elif photo.pair_role == "jpeg":
+            record["pair_status"] = "jpeg_only"
+        else:
+            record["pair_status"] = "single"
 
     def _apply_qwen_vision(self, ranked: list[dict]) -> list[dict]:
         if not self.settings.vision_api_keys:
@@ -216,8 +237,9 @@ class LumaSiftHarness:
             keyring=ApiKeyRing(self.settings.vision_api_keys),
             max_tokens=self.settings.vision_max_tokens,
             timeout_seconds=self.settings.request_timeout_seconds,
+            max_retries=self.settings.vision_max_retries,
             event_callback=lambda event: self._event("qwen_client_event", client_event=event),
-            response_validator=lambda response: parse_qwen_story_response(response),
+            response_validator=validate_qwen_story_response,
         )
         preview_dir = self.settings.output_dir / "previews"
         updated = list(ranked)
@@ -278,7 +300,11 @@ class LumaSiftHarness:
                     path=record.get("path"),
                     filename=record.get("filename"),
                 )
-                preview_path = create_jpeg_preview(Path(record["path"]), preview_dir)
+                preview_path = create_jpeg_preview(
+                    Path(record["path"]),
+                    preview_dir,
+                    max_side=self.settings.vision_preview_max_side,
+                )
                 record["preview_path"] = str(preview_path)
                 response = client.analyze_image(
                     preview_path,
@@ -301,8 +327,13 @@ class LumaSiftHarness:
                     status=status,
                 )
             except Exception as exc:  # noqa: BLE001 - API failures should not kill local output.
-                record["qwen_status"] = "failed"
-                record.setdefault("errors", []).append(f"qwen_vision_failed: {exc}")
+                clear_qwen_review_fields(record, status="failed", reason=str(exc))
+                if getattr(client, "last_failure_kind", ""):
+                    record["qwen_failure_kind"] = client.last_failure_kind
+                if getattr(client, "last_failure_message", ""):
+                    record["qwen_failure_detail"] = client.last_failure_message[:600]
+                if getattr(client, "last_invalid_response_excerpt", ""):
+                    record["qwen_invalid_response_excerpt"] = client.last_invalid_response_excerpt[:1200]
                 self.state.append_event("qwen_failed", path=record.get("path"), error=str(exc))
                 self._event(
                     "qwen_candidate_failed",
@@ -311,6 +342,7 @@ class LumaSiftHarness:
                     path=record.get("path"),
                     filename=record.get("filename"),
                     error=str(exc),
+                    failure_kind=record.get("qwen_failure_kind", ""),
                 )
             finally:
                 self._progress("qwen", qwen_index, len(candidates))
@@ -354,6 +386,10 @@ class LumaSiftHarness:
         if record.get("category") == "failed":
             return None
         if self.settings.ai_mode == "local_only" and any(record.get(key) for key in ("qwen_model", "qwen_status", "qwen_cache_key")):
+            return None
+        if record.get("analysis_source") == "qwen_vision" and not is_current_concrete_qwen_review(record):
+            return None
+        if record.get("qwen_prompt_version") and record.get("qwen_prompt_version") != QWEN_STORY_PROMPT_VERSION:
             return None
         return record
 

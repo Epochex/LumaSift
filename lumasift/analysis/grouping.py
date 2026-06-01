@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ SCENE_BRIGHTNESS_TOLERANCE = 28.0
 SCENE_COLOR_DISTANCE_TOLERANCE = 86.0
 SCENE_SIGNATURE_DISTANCE_TOLERANCE = 38.0
 SEQUENCE_FILENAME_WINDOW = 8
+TIME_SEQUENCE_WINDOW_SECONDS = 8.0
+TIME_SEQUENCE_MAX_SPAN_SECONDS = 45.0
 
 
 def compute_dhash(path: Path, *, hash_size: int = 8) -> str:
@@ -57,27 +60,41 @@ def hamming_distance(left: str, right: str) -> int:
 
 
 def apply_similarity_groups(records: list[dict[str, Any]], *, threshold: int = DEFAULT_HASH_THRESHOLD) -> list[dict[str, Any]]:
-    representatives: list[dict[str, Any]] = []
-    groups: list[list[dict[str, Any]]] = []
-    for record in records:
+    if not records:
+        return records
+
+    parent = list(range(len(records)))
+    representatives: list[int] = []
+    for record_index, record in enumerate(records):
         visual_hash = str(record.get("visual_hash") or "")
         matched_index: int | None = None
         if visual_hash:
-            for index, representative in enumerate(representatives):
-                if _can_group(record, representative, threshold=threshold):
-                    matched_index = index
+            for representative_position, representative_index in enumerate(representatives):
+                if _can_group(record, records[representative_index], threshold=threshold):
+                    matched_index = representative_position
                     break
         if matched_index is None:
-            representatives.append(record)
-            groups.append([record])
+            representatives.append(record_index)
         else:
-            groups[matched_index].append(record)
+            _union(parent, record_index, representatives[matched_index])
+
+    for cluster in _time_clusters(records):
+        first = cluster[0]
+        for record_index in cluster[1:]:
+            _union(parent, first, record_index)
+
+    buckets: dict[int, list[dict[str, Any]]] = {}
+    for record_index, record in enumerate(records):
+        buckets.setdefault(_find(parent, record_index), []).append(record)
+    groups = list(buckets.values())
 
     for index, group in enumerate(groups, start=1):
         group_id = f"g{index:04d}"
         best = max(group, key=_group_best_score)
         best_score = _group_best_score(best)
         ordered = sorted(group, key=_group_best_score, reverse=True)
+        group_basis = _group_basis(group, threshold=threshold)
+        time_span = _group_time_span_seconds(group)
         for group_rank, record in enumerate(ordered, start=1):
             record["group_id"] = group_id
             record["group_size"] = len(group)
@@ -85,10 +102,27 @@ def apply_similarity_groups(records: list[dict[str, Any]], *, threshold: int = D
             record["is_group_best"] = record is best
             record["group_best_path"] = best.get("path", "")
             record["group_score_delta"] = round(best_score - _group_best_score(record), 3)
+            record["group_basis"] = group_basis
+            if time_span is not None:
+                record["group_time_span_seconds"] = round(time_span, 3)
             moment_risk = _is_moment_risk_alternate(record, best, group_rank=group_rank)
             record["group_moment_risk"] = bool(moment_risk and record is not best)
             record["group_review_role"] = "best" if record is best else ("moment_risk" if moment_risk else "similar_non_best")
     return records
+
+
+def _find(parent: list[int], index: int) -> int:
+    while parent[index] != index:
+        parent[index] = parent[parent[index]]
+        index = parent[index]
+    return index
+
+
+def _union(parent: list[int], left: int, right: int) -> None:
+    left_root = _find(parent, left)
+    right_root = _find(parent, right)
+    if left_root != right_root:
+        parent[right_root] = left_root
 
 
 def _is_moment_risk_alternate(record: dict[str, Any], best: dict[str, Any], *, group_rank: int) -> bool:
@@ -97,6 +131,8 @@ def _is_moment_risk_alternate(record: dict[str, Any], best: dict[str, Any], *, g
     label = str(record.get("user_label") or "").strip().lower()
     if label in {"keep", "maybe"}:
         return True
+    if _visually_same_as_best(record, best):
+        return False
     delta = max(0.0, _group_best_score(best) - _group_best_score(record))
     if group_rank <= 3 and delta <= 4.0:
         return True
@@ -105,6 +141,25 @@ def _is_moment_risk_alternate(record: dict[str, Any], best: dict[str, Any], *, g
             if _score(record, key) >= _score(best, key) + 6.0:
                 return True
     return False
+
+
+def _visually_same_as_best(record: dict[str, Any], best: dict[str, Any]) -> bool:
+    left_hash = str(record.get("visual_hash") or "")
+    right_hash = str(best.get("visual_hash") or "")
+    if not left_hash or left_hash != right_hash:
+        return False
+    left_color = _color(record)
+    right_color = _color(best)
+    if left_color is not None and right_color is not None and _color_distance(left_color, right_color) > 3.0:
+        return False
+    signature_distance = _scene_signature_distance(record, best)
+    if signature_distance is not None and signature_distance > 2.0:
+        return False
+    left_brightness = _brightness(record)
+    right_brightness = _brightness(best)
+    if left_brightness is not None and right_brightness is not None and abs(left_brightness - right_brightness) > 2.0:
+        return False
+    return True
 
 
 def _can_group(record: dict[str, Any], representative: dict[str, Any], *, threshold: int) -> bool:
@@ -148,6 +203,132 @@ def _can_group(record: dict[str, Any], representative: dict[str, Any], *, thresh
     if sequence_distance is None:
         return False
     return sequence_distance <= SEQUENCE_FILENAME_WINDOW
+
+
+def _time_clusters(records: list[dict[str, Any]]) -> list[list[int]]:
+    timed: list[tuple[datetime, int]] = []
+    for index, record in enumerate(records):
+        timestamp = _capture_time(record)
+        if timestamp is not None:
+            timed.append((timestamp, index))
+    timed.sort(key=lambda item: (item[0], str(records[item[1]].get("path") or records[item[1]].get("filename") or "")))
+
+    clusters: list[list[int]] = []
+    current: list[int] = []
+    current_start: datetime | None = None
+    previous_time: datetime | None = None
+    previous_index: int | None = None
+    for timestamp, record_index in timed:
+        can_continue = (
+            bool(current)
+            and current_start is not None
+            and previous_time is not None
+            and previous_index is not None
+            and abs((timestamp - previous_time).total_seconds()) <= TIME_SEQUENCE_WINDOW_SECONDS
+            and abs((timestamp - current_start).total_seconds()) <= TIME_SEQUENCE_MAX_SPAN_SECONDS
+            and _time_group_compatible(records[previous_index], records[record_index])
+        )
+        if can_continue:
+            current.append(record_index)
+        else:
+            if len(current) > 1:
+                clusters.append(current)
+            current = [record_index]
+            current_start = timestamp
+        previous_time = timestamp
+        previous_index = record_index
+    if len(current) > 1:
+        clusters.append(current)
+    return clusters
+
+
+def _capture_time(record: dict[str, Any]) -> datetime | None:
+    exif = record.get("exif") if isinstance(record.get("exif"), dict) else {}
+    for value in (
+        record.get("captured_at"),
+        exif.get("date_time_original"),
+        exif.get("date_time"),
+    ):
+        parsed = _parse_datetime(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    candidates = [text]
+    if len(text) >= 10 and text[4] == ":" and text[7] == ":":
+        candidates.append(f"{text[:4]}-{text[5:7]}-{text[8:]}")
+    for candidate in candidates:
+        for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(candidate[:19], fmt)
+            except ValueError:
+                pass
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            continue
+        return parsed.replace(tzinfo=None)
+    return None
+
+
+def _time_group_compatible(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if _parent_dir(left) != _parent_dir(right):
+        return False
+    left_camera = _camera_identity(left)
+    right_camera = _camera_identity(right)
+    if left_camera and right_camera and left_camera != right_camera:
+        return False
+    return True
+
+
+def _parent_dir(record: dict[str, Any]) -> str:
+    return str(Path(str(record.get("path") or record.get("filename") or "")).parent).lower()
+
+
+def _camera_identity(record: dict[str, Any]) -> str:
+    exif = record.get("exif") if isinstance(record.get("exif"), dict) else {}
+    parts = [str(exif.get(key) or "").strip().lower() for key in ("camera_make", "camera_model")]
+    return "|".join(part for part in parts if part)
+
+
+def _group_basis(group: list[dict[str, Any]], *, threshold: int) -> str:
+    has_visual = False
+    has_time = False
+    for left_index, left in enumerate(group):
+        for right in group[left_index + 1 :]:
+            if _can_group(left, right, threshold=threshold):
+                has_visual = True
+            left_time = _capture_time(left)
+            right_time = _capture_time(right)
+            if (
+                left_time is not None
+                and right_time is not None
+                and abs((left_time - right_time).total_seconds()) <= TIME_SEQUENCE_MAX_SPAN_SECONDS
+                and _time_group_compatible(left, right)
+            ):
+                has_time = True
+    if has_visual and has_time:
+        return "visual_time"
+    if has_time:
+        return "time"
+    if has_visual:
+        return "visual"
+    return "single"
+
+
+def _group_time_span_seconds(group: list[dict[str, Any]]) -> float | None:
+    timestamps = [_capture_time(record) for record in group]
+    timestamps = [timestamp for timestamp in timestamps if timestamp is not None]
+    if len(timestamps) < 2:
+        return None
+    return (max(timestamps) - min(timestamps)).total_seconds()
 
 
 def _aspect(record: dict[str, Any]) -> float:

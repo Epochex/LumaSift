@@ -1,0 +1,167 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LumaSift | 本地 AI 摄影工作台</title>
+    <meta
+      name="description"
+      content="LumaSift 是面向街头、纪实、人文与旅行摄影的本地 AI 摄影工作台，覆盖导入、初筛、深评、人工标记和中文修图方案。"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-candidate="keep" data-workflow="import">
+    <header class="topbar" aria-label="LumaSift navigation">
+      <a class="brand" href="#top" aria-label="LumaSift 首页">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>LumaSift</span>
+      </a>
+      <nav>
+        <a href="#top">产品台</a>
+        <a href="#workflow">工作流</a>
+        <a href="#review">下载</a>
+      </nav>
+      <a class="nav-cta" href="../../dist/installer/LumaSiftSetup.exe" download>下载 Windows</a>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <canvas class="particle-field" data-particle-field aria-hidden="true"></canvas>
+        <div class="construct-field" aria-hidden="true">
+          <i></i><i></i><i></i><i></i><i></i>
+        </div>
+        <div class="hero-copy">
+          <p class="eyebrow">本地摄影工作台</p>
+          <h1 id="hero-title"><span class="headline-line">照片工作台</span><span>选片到修图</span></h1>
+          <p class="lead">LumaSift 把一次拍摄拆成可操作的桌面流程：选择照片目录，本地生成候选池，把高价值照片送入 Qwen 深评，再用 KEEP / MAYBE / REJECT 标记和中文修图参数完成交付。</p>
+          <ul class="hero-facts" aria-label="产品工作台功能">
+            <li><span>输入</span><b>RAW / JPG / PNG 目录</b></li>
+            <li><span>处理</span><b>本地初筛 + Qwen 深评</b></li>
+            <li><span>人工</span><b>KEEP / MAYBE / REJECT</b></li>
+            <li><span>输出</span><b>排序表 / 证据 / 修图方案</b></li>
+          </ul>
+          <div class="hero-actions" aria-label="主要操作">
+            <a class="primary-link" href="../../dist/installer/LumaSiftSetup.exe" download>下载 Windows</a>
+            <a class="secondary-link" href="#workflow">查看四步流程</a>
+          </div>
+        </div>
+
+        <div class="solo-panel" aria-label="LumaSift 产品台预览">
+          <div class="panel-toolbar">
+            <span></span><span></span><span></span>
+            <b>LumaSift Contact Desk</b>
+          </div>
+          <div class="workspace-shell">
+            <aside class="workflow-rail" aria-label="工作流阶段">
+              <button class="rail-step is-active" type="button" data-step="import"><span>01</span><b>导入</b><small>本地照片目录</small></button>
+              <button class="rail-step" type="button" data-step="local"><span>02</span><b>初筛</b><small>结构 / 亮度 / 相似组</small></button>
+              <button class="rail-step" type="button" data-step="qwen"><span>03</span><b>深评</b><small>高价值候选</small></button>
+              <button class="rail-step" type="button" data-step="edit"><span>04</span><b>修图</b><small>参数方案</small></button>
+            </aside>
+            <section class="studio-screen">
+              <div class="screen-header">
+                <span data-workflow="label">01 / 选择照片目录</span>
+                <strong data-workflow="status">准备从本地开始</strong>
+              </div>
+              <div class="screen-body">
+                <div class="photo-stack" data-decision="keep">
+                  <figure class="photo-frame frame-a is-active" data-candidate="keep">
+                    <img src="./assets/lumasift-photo-1.jpg" width="1600" height="1000" decoding="async" alt="候选 01：夜街行人形成关系" />
+                    <span class="frame-overlay relation" aria-hidden="true"></span>
+                    <span class="frame-code">#01 / STORY 91</span>
+                    <figcaption><span class="tag tag-keep">KEEP</span><span class="tag tag-score">故事 91</span><span class="tag">关系成立</span></figcaption>
+                  </figure>
+                  <figure class="photo-frame frame-b" data-candidate="maybe">
+                    <img src="./assets/lumasift-photo-2.jpg" width="1600" height="1000" decoding="async" alt="候选 02：公交遮挡造成复核风险" />
+                    <span class="frame-overlay review" aria-hidden="true"></span>
+                    <span class="frame-code">#02 / TIMING RISK</span>
+                    <figcaption><span class="tag tag-maybe">MAYBE</span><span class="tag tag-score">风险 63</span><span class="tag">遮挡复核</span></figcaption>
+                  </figure>
+                  <figure class="photo-frame frame-c" data-candidate="reject">
+                    <img src="./assets/lumasift-photo-3.jpg" width="1600" height="1000" loading="lazy" decoding="async" alt="候选 03：主体缺失" />
+                    <span class="frame-overlay reject" aria-hidden="true"></span>
+                    <span class="frame-code">#03 / SUBJECT LOST</span>
+                    <figcaption><span class="tag tag-reject">REJECT</span><span class="tag tag-score">技术 41</span><span class="tag">主体缺失</span></figcaption>
+                  </figure>
+                </div>
+                <aside class="signal-panel">
+                  <div class="panel-head"><span>QWEN 深评队列</span><strong data-panel="count">5 / 24</strong></div>
+                  <div class="queue-line"><span class="chip done" data-panel="done">完成 3</span><span class="chip cache" data-panel="cache">缓存 1</span><span class="chip fail" data-panel="fail">失败 0</span></div>
+                  <div class="meter" role="progressbar" aria-label="Qwen 深评进度" aria-valuemin="0" aria-valuemax="24" aria-valuenow="5"><span style="width: 21%"></span></div>
+                  <dl>
+                    <div><dt>关系</dt><dd data-panel="relation">手势、视线和街道线索汇到同一动作。</dd></div>
+                    <div><dt>瞬间</dt><dd data-panel="moment">动作峰值清楚，遮挡没有切断主体。</dd></div>
+                    <div><dt>保留</dt><dd data-panel="preserve">保留颗粒、招牌和地面方向线。</dd></div>
+                  </dl>
+                  <div class="decision-strip" aria-label="照片决策轨道">
+                    <button type="button" data-decision="keep" aria-pressed="true">KEEP</button>
+                    <button type="button" data-decision="maybe" aria-pressed="false">MAYBE</button>
+                    <button type="button" data-decision="reject" aria-pressed="false">REJECT</button>
+                  </div>
+                </aside>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section id="workflow" class="workflow-band" aria-labelledby="workflow-title">
+        <div class="section-head">
+          <p class="eyebrow">导入 → 初筛 → 深评 → 修图</p>
+          <h2 id="workflow-title">从照片目录到修图方案的工作流程</h2>
+          <p>工作台把大批照片先压成候选池，再用分数、证据和人工标记决定保留、复核或淘汰，最后生成可执行的中文修图方案。</p>
+        </div>
+        <div class="workflow-grid">
+          <article class="flow-card is-active" data-step-card="import"><span>01</span><h3>选择照片目录</h3><p>读取 RAW / JPG / PNG 预览、文件名、路径和基础元数据。</p><b>工作台生成：照片队列</b></article>
+          <article class="flow-card" data-step-card="local"><span>02</span><h3>本地快速初筛</h3><p>按结构、亮度、相似组、恢复空间和重复片压缩样本量。</p><b>工作台生成：候选池</b></article>
+          <article class="flow-card" data-step-card="qwen"><span>03</span><h3>高价值候选深评</h3><p>把 Top-N 压缩预览交给 Qwen，返回关系、瞬间、风险和保留依据。</p><b>工作台生成：证据链</b></article>
+          <article class="flow-card" data-step-card="edit"><span>04</span><h3>中文修图方案</h3><p>把裁切、局部蒙版、HSL、色彩分级和保留项写成参数。</p><b>工作台生成：编辑计划</b></article>
+        </div>
+        <div class="process-strip" aria-label="处理链路示意">
+          <article><img src="./assets/lumasift-photo-1.jpg" alt="候选队列样片" /><span>827 PHOTOS</span><b>本地队列</b></article>
+          <article><img src="./assets/lumasift-photo-2.jpg" alt="相似组样片" /><span>300 CANDIDATES</span><b>相似聚类</b></article>
+          <article><img src="./assets/lumasift-photo-1.jpg" alt="深评样片" /><span>TOP-N REVIEW</span><b>证据深评</b></article>
+          <article><img src="./assets/lumasift-photo-1.jpg" alt="修图计划样片" /><span>EDIT PLAN</span><b>参数落地</b></article>
+        </div>
+      </section>
+
+      <section id="review" class="review-band" aria-labelledby="review-title">
+        <div class="ranking-copy">
+          <p class="eyebrow">下载与输出</p>
+          <h2 id="review-title">安装后直接进入本地选片工作台</h2>
+          <p>软件会在本地保存排序、标记、深评证据和修图方案。选择候选照片时，右侧分数、证据说明和参数建议同步更新。</p>
+          <div class="download-panel">
+            <a class="primary-link" href="../../dist/installer/LumaSiftSetup.exe" download>下载 Windows</a>
+            <span>CSV RANKING</span><span>JSON EVIDENCE</span><span>EDIT PLAN MD</span>
+          </div>
+        </div>
+        <div class="score-board" aria-label="排序指标示例">
+          <div class="score-row hot" data-score-key="story" style="--score: 94"><b>人文 / 故事</b><span data-value="94">94</span></div>
+          <div class="score-row" data-score-key="moment" style="--score: 87"><b>决定性瞬间</b><span data-value="87">87</span></div>
+          <div class="score-row" data-score-key="structure" style="--score: 82"><b>画面结构</b><span data-value="82">82</span></div>
+          <div class="score-row cool" data-score-key="risk" style="--score: 41"><b>技术风险</b><span data-value="41">41</span></div>
+          <p class="board-note" data-panel="note">KEEP：故事证据强，技术瑕疵只作为后期恢复信号。</p>
+        </div>
+        <div class="contact-sheet" aria-label="候选照片接触表">
+          <button class="thumb is-selected" type="button" data-candidate="keep" aria-pressed="true"><img src="./assets/lumasift-photo-1.jpg" width="1600" height="1000" loading="lazy" decoding="async" alt="候选 01 缩略图" /><span><b>01</b><i class="tag tag-keep">KEEP</i><i class="tag">关系成立</i></span></button>
+          <button class="thumb" type="button" data-candidate="maybe" aria-pressed="false"><img src="./assets/lumasift-photo-2.jpg" width="1600" height="1000" loading="lazy" decoding="async" alt="候选 02 缩略图" /><span><b>02</b><i class="tag tag-maybe">MAYBE</i><i class="tag">遮挡复核</i></span></button>
+          <button class="thumb" type="button" data-candidate="reject" aria-pressed="false"><img src="./assets/lumasift-photo-3.jpg" width="1600" height="1000" loading="lazy" decoding="async" alt="候选 03 缩略图" /><span><b>03</b><i class="tag tag-reject">REJECT</i><i class="tag">主体缺失</i></span></button>
+        </div>
+        <div class="edit-sheet">
+          <div class="sheet-label">SELECTED EDIT PLAN</div>
+          <div class="parameter-grid">
+            <div data-param="exposure"><span>曝光</span><b>+0.15</b><small>轻提人物脸部，不洗掉夜色。</small></div>
+            <div data-param="contrast"><span>对比度</span><b>+12</b><small>强化人车边缘和街道压迫感。</small></div>
+            <div data-param="black"><span>黑色色阶</span><b>-8</b><small>保留暗部重量，让环境成立。</small></div>
+            <div data-param="hsl"><span>HSL / 颜色混合</span><b>黄 -10</b><small>压弱招牌溢色，避免抢主体。</small></div>
+            <div data-param="grade"><span>色彩分级</span><b>阴影偏青</b><small>把冷街景和暖标识拉开。</small></div>
+            <div data-param="mask"><span>局部蒙版</span><b>人物 +0.20</b><small>只提关键动作区域，保留颗粒。</small></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="./script.js"></script>
+    <script src="https://mcp.figma.com/mcp/html-to-design/capture.js" async></script>
+  </body>
+</html>

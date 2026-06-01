@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable
 
+from lumasift.analysis.qwen_story import is_current_concrete_qwen_review
+
 
 LIGHTROOM_PARAMETER_KEYS = [
     "exposure",
@@ -243,19 +245,32 @@ def select_ranked_records(
 
 
 def _advice_for_record(record: dict[str, Any], *, language: str) -> dict[str, Any]:
-    style = _recommended_style(record)
-    parameters = _lightroom_parameters(record, style)
+    has_vision = _has_vision_read(record)
+    reject_review = has_vision and _is_reject_review(record)
+    style = _recommended_style(record, has_vision=has_vision)
+    parameters = {} if reject_review else _lightroom_parameters(record, style, has_vision=has_vision)
     tone = _tone_recommendation(record, style, language=language)
     score = _float(record.get("final_selection_score"))
     photo_reading = _photo_reading(record, language=language)
     content_decision = _content_decision(record, language=language)
-    editing_intent = _editing_intent(record, style, tone["recommendation"], language=language)
-    has_vision = _has_vision_read(record)
-    advanced_parameters = _advanced_lightroom_parameters(record, style, tone["recommendation"], parameters) if has_vision else {}
-    adjustments = _local_adjustments(record, style, tone["recommendation"], language=language) if has_vision else _technical_adjustments(record, language=language)
-    local_masks = _local_masks(record, adjustments, language=language) if has_vision else []
-    crop_plan = _crop_plan(record, language=language)
-    blocked_reason = _blocked_reason(record, has_vision=has_vision, language=language)
+    editing_intent = _reject_editing_intent(language) if reject_review else _editing_intent(record, style, tone["recommendation"], language=language)
+    advanced_parameters = (
+        {}
+        if reject_review
+        else _advanced_lightroom_parameters(record, style, tone["recommendation"], parameters)
+        if has_vision
+        else {}
+    )
+    adjustments = (
+        []
+        if reject_review
+        else _local_adjustments(record, style, tone["recommendation"], language=language)
+        if has_vision
+        else _technical_adjustments(record, language=language)
+    )
+    local_masks = _local_masks(record, adjustments, language=language) if has_vision and not reject_review else []
+    crop_plan = _reject_crop_plan(language) if reject_review else _crop_plan(record, language=language)
+    blocked_reason = _reject_blocked_reason(language) if reject_review else _blocked_reason(record, has_vision=has_vision, language=language)
 
     return {
         "rank": record.get("rank"),
@@ -278,7 +293,7 @@ def _advice_for_record(record: dict[str, Any], *, language: str) -> dict[str, An
         "analysis_status": _analysis_status(record, language=language),
         "analysis_source": "qwen_vision" if has_vision else str(record.get("analysis_source") or "local_proxy"),
         "analysis_quality": str(record.get("analysis_quality") or ("concrete" if has_vision else "missing_semantic_read")),
-        "editing_advice_source": "vision_evidence" if has_vision else "technical_draft",
+        "editing_advice_source": "rejected_by_vision" if reject_review else "vision_evidence" if has_vision else "technical_draft",
         "blocked_reason": blocked_reason,
         "advice_confidence": _advice_confidence(record, has_vision=has_vision),
         "photo_reading": photo_reading,
@@ -300,7 +315,7 @@ def _advice_for_record(record: dict[str, Any], *, language: str) -> dict[str, An
         "lightroom_parameter_labels": _parameter_labels(language),
         "advanced_lightroom_parameters": advanced_parameters,
         "advanced_lightroom_parameter_labels": _advanced_parameter_labels(language),
-        "crop_strategy": _crop_strategy(record, language=language),
+        "crop_strategy": str(crop_plan.get("reason") or "") if reject_review else _crop_strategy(record, language=language),
         "local_adjustments": adjustments,
         "tone_recommendation": tone,
         "grain_sharpness_motion_blur": _grain_sharpness_motion_blur(record, style, tone["recommendation"], language=language),
@@ -308,9 +323,7 @@ def _advice_for_record(record: dict[str, Any], *, language: str) -> dict[str, An
 
 
 def _has_vision_read(record: dict[str, Any]) -> bool:
-    if str(record.get("analysis_source") or "") != "qwen_vision":
-        return False
-    if str(record.get("analysis_quality") or "") != "concrete":
+    if not is_current_concrete_qwen_review(record):
         return False
     evidence = [item for item in _string_list(record.get("visible_evidence")) if _looks_concrete_evidence(item)]
     if len(evidence) < 3:
@@ -318,6 +331,8 @@ def _has_vision_read(record: dict[str, Any]) -> bool:
     verdict = record.get("editorial_verdict")
     if not isinstance(verdict, dict) or not str(verdict.get("one_line_reason") or "").strip():
         return False
+    if str(verdict.get("action") or "").lower() == "reject":
+        return True
     plan = record.get("editing_plan")
     if not isinstance(plan, dict):
         return False
@@ -335,6 +350,41 @@ def _has_vision_read(record: dict[str, Any]) -> bool:
     return False
 
 
+def _is_reject_review(record: dict[str, Any]) -> bool:
+    verdict = record.get("editorial_verdict")
+    if isinstance(verdict, dict) and str(verdict.get("action") or "").lower() == "reject":
+        return True
+    return "reject" in str(record.get("category") or "").lower()
+
+
+def _reject_blocked_reason(language: str) -> str:
+    if language == "zh":
+        return "深评结论是淘汰片：不建议继续生成 Lightroom 参数或裁切方案，避免把废片误导成可修作品。"
+    return "Vision review rejected this frame: no Lightroom recipe or crop plan is recommended."
+
+
+def _reject_editing_intent(language: str) -> str:
+    if language == "zh":
+        return "不建议修图；保留深评证据作为淘汰原因，除非需要做联系表或失败样张说明。"
+    return "Do not edit this frame; keep the review evidence only as the rejection rationale."
+
+
+def _reject_crop_plan(language: str) -> dict[str, Any]:
+    if language == "zh":
+        return {
+            "aspect_ratio": "original",
+            "keep": [],
+            "remove_or_reduce": [],
+            "reason": "深评已判定淘汰；裁切无法挽救主体、瞬间或遮挡问题。",
+        }
+    return {
+        "aspect_ratio": "original",
+        "keep": [],
+        "remove_or_reduce": [],
+        "reason": "Rejected by vision review; cropping cannot rescue the subject, timing, or obstruction issue.",
+    }
+
+
 def _looks_concrete_evidence(text: str) -> bool:
     anchors = ("左", "右", "上", "下", "前景", "中景", "背景", "人物", "行人", "车辆", "招牌", "标志", "标识", "街道", "路口", "栏杆", "车站", "文字", "手", "脸", "背影")
     english = ("left", "right", "foreground", "background", "pedestrian", "cyclist", "vehicle", "street", "sign", "storefront", "face", "hand")
@@ -347,33 +397,33 @@ def _blocked_reason(record: dict[str, Any], *, has_vision: bool, language: str) 
         return ""
     if str(record.get("analysis_source") or "") == "qwen_vision":
         return (
-            "Qwen 返回了部分视觉信息，但证据数量、结论、裁切计划或局部蒙版不完整；不能生成正式摄影修图方案。这里只给技术草案。"
+            "LLM深度分析返回了部分视觉信息，但证据数量、结论、裁切计划或局部蒙版不完整；不能生成正式摄影修图方案。这里只给技术草案。"
             if language == "zh"
-            else "Qwen returned partial visual information, but evidence, verdict, crop plan, or local masks are incomplete. This is only a technical draft."
+            else "LLM Deep Analysis returned partial visual information, but evidence, verdict, crop plan, or local masks are incomplete. This is only a technical draft."
         )
     return (
-        "未完成 Qwen 视觉深评，不能生成正式摄影修图方案；这里只是曝光、明暗和风险控制草案。"
+        "未完成 LLM深度分析，不能生成正式摄影修图方案；这里只是曝光、明暗和风险控制草案。"
         if language == "zh"
-        else "No Qwen vision review yet, so this is a technical grading draft rather than a photographic editing plan."
+        else "No LLM Deep Analysis yet, so this is a technical grading draft rather than a photographic editing plan."
     )
 
 
 def _analysis_status(record: dict[str, Any], *, language: str) -> dict[str, str]:
     if _has_vision_read(record):
         if language == "zh":
-            return {"level": "vision_read", "label": "已深评", "note": "这份方案基于 Qwen 对画面内容的具体阅读。"}
-        return {"level": "vision_read", "label": "Vision-read", "note": "This plan uses Qwen's concrete image read."}
+            return {"level": "vision_read", "label": "已深评", "note": "这份方案基于 LLM深度分析对画面内容的具体阅读。"}
+        return {"level": "vision_read", "label": "LLM-read", "note": "This plan uses LLM Deep Analysis' concrete image read."}
     if str(record.get("analysis_source") or "") == "qwen_vision":
         if language == "zh":
             return {
                 "level": "vision_incomplete",
                 "label": "深评不完整",
-                "note": "Qwen 返回了部分信息，但证据、裁切或局部蒙版不足，不能生成正式摄影修图方案。",
+                "note": "LLM深度分析返回了部分信息，但证据、裁切或局部蒙版不足，不能生成正式摄影修图方案。",
             }
         return {
             "level": "vision_incomplete",
             "label": "Incomplete vision review",
-            "note": "Qwen returned partial information, but evidence or edit-plan structure is insufficient.",
+            "note": "LLM Deep Analysis returned partial information, but evidence or edit-plan structure is insufficient.",
         }
     if language == "zh":
         return {
@@ -432,7 +482,7 @@ def _photo_reading(record: dict[str, Any], *, language: str) -> dict[str, Any]:
         return {
             "summary": (
                 "未完成视觉深评。当前只能说这张在技术预筛中具备一定可修空间；"
-                f"亮度约 {brightness:.0f}、对比约 {contrast:.0f}。请先对选中照片运行 Qwen 深评，再做真正的故事/瞬间判断。"
+                f"亮度约 {brightness:.0f}、对比约 {contrast:.0f}。请先对选中照片运行 LLM深度分析，再做真正的故事/瞬间判断。"
             ),
             "visible_evidence": [],
             "subject_relationship": "",
@@ -453,15 +503,18 @@ def _photo_reading(record: dict[str, Any], *, language: str) -> dict[str, Any]:
 
 def _crop_plan(record: dict[str, Any], *, language: str) -> dict[str, Any]:
     plan = record.get("editing_plan")
-    if isinstance(plan, dict):
+    if _has_vision_read(record) and isinstance(plan, dict):
         crop_plan = plan.get("crop_plan")
         if isinstance(crop_plan, dict):
-            return {
+            normalized = {
                 "aspect_ratio": str(crop_plan.get("aspect_ratio") or "original"),
                 "keep": _string_list(crop_plan.get("keep")),
                 "remove_or_reduce": _string_list(crop_plan.get("remove_or_reduce")),
                 "reason": str(record.get("crop_strategy") or ""),
             }
+            if isinstance(crop_plan.get("crop_box"), dict):
+                normalized["crop_box"] = dict(crop_plan["crop_box"])
+            return normalized
     if _has_vision_read(record):
         keep = _string_list(record.get("visible_evidence"))[:2]
         remove = _string_list(record.get("negative_reasons"))[:2]
@@ -521,7 +574,14 @@ def _local_masks(record: dict[str, Any], adjustments: list[str], *, language: st
 def _content_decision(record: dict[str, Any], *, language: str) -> dict[str, Any]:
     if _has_vision_read(record):
         keep = _string_list(record.get("positive_reasons"))
-        risks = _string_list(record.get("negative_reasons"))
+        risks = _dedupe_strings(
+            _string_list(record.get("negative_reasons"))
+            + _string_list(record.get("critical_flaws"))
+            + _string_list(record.get("frame_failure_reasons"))
+            + _string_list(record.get("selection_risk"))
+            + _string_list(record.get("edit_vs_select_warning"))
+            + _string_list(record.get("subject_identity_uncertainty"))
+        )
         if language == "zh":
             verdict = _category_label(record.get("category"), language)
             return {
@@ -552,11 +612,17 @@ def _content_decision(record: dict[str, Any], *, language: str) -> dict[str, Any
 
 
 def _editing_intent(record: dict[str, Any], style: str, tone: str, *, language: str) -> str:
+    if not _has_vision_read(record):
+        return _editing_direction(record, style, tone, language=language)
     plan = record.get("editing_plan")
     if isinstance(plan, dict) and str(plan.get("edit_intent") or "").strip():
         return str(plan["edit_intent"]).strip()
     existing = str(record.get("best_editing_direction") or "").strip()
-    if _has_vision_read(record) and existing and "Run qwen_vision mode" not in existing:
+    placeholder_directions = {
+        "Run qwen_vision mode for concrete artistic editing guidance.",
+        "Run vision LLM deep analysis for concrete artistic editing guidance.",
+    }
+    if _has_vision_read(record) and existing and existing not in placeholder_directions:
         return existing
     avoid = str(record.get("avoid_overediting") or "").strip()
     if language == "zh":
@@ -625,9 +691,9 @@ def _technical_adjustments(record: dict[str, Any], *, language: str) -> list[str
     return adjustments
 
 
-def _recommended_style(record: dict[str, Any]) -> str:
+def _recommended_style(record: dict[str, Any], *, has_vision: bool = False) -> str:
     style = str(record.get("recommended_style") or "").strip()
-    if style in _BASE_PARAMETERS:
+    if style in _BASE_PARAMETERS and (has_vision or str(record.get("analysis_source") or "") != "qwen_vision"):
         return style
 
     category = str(record.get("category") or "")
@@ -649,10 +715,10 @@ def _recommended_style(record: dict[str, Any]) -> str:
     return "muted_humanistic_color"
 
 
-def _lightroom_parameters(record: dict[str, Any], style: str) -> dict[str, str]:
+def _lightroom_parameters(record: dict[str, Any], style: str, *, has_vision: bool = False) -> dict[str, str]:
     parameters = {key: str(value) for key, value in _BASE_PARAMETERS[style].items()}
     existing = record.get("specific_edit_parameters")
-    if isinstance(existing, dict):
+    if has_vision and isinstance(existing, dict):
         for key in LIGHTROOM_PARAMETER_KEYS:
             if key in existing and existing[key] not in (None, ""):
                 parameters[key] = str(existing[key])
@@ -875,7 +941,11 @@ def _editing_direction(record: dict[str, Any], style: str, tone: str, *, languag
             else "Technical draft only: adjust exposure, tone, and readability; no photographic edit verdict without concrete vision review."
         )
     existing = str(record.get("best_editing_direction") or "").strip()
-    if existing and "Run qwen_vision mode" not in existing and (language != "zh" or _contains_cjk(existing)):
+    placeholder_directions = {
+        "Run qwen_vision mode for concrete artistic editing guidance.",
+        "Run vision LLM deep analysis for concrete artistic editing guidance.",
+    }
+    if existing and existing not in placeholder_directions and (language != "zh" or _contains_cjk(existing)):
         return existing
 
     category = str(record.get("category") or "selected_candidate")
@@ -1294,3 +1364,15 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = " ".join(str(value).strip().split())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(str(value).strip())
+    return result

@@ -9,7 +9,7 @@ a = Analysis(
     ["../lumasift/app/desktop.py"],
     pathex=[],
     binaries=[],
-    datas=[("../lumasift/resources/lumasift.ico", "lumasift/resources")],
+    datas=[("../lumasift/resources", "lumasift/resources")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
